@@ -1,0 +1,12 @@
+# ResultWeb Project Rules (Token-Efficient Workflow)
+- Always read ONLY the specific files mentioned in the prompt. NEVER scan the entire codebase.
+- NEVER read large static files (`src/data/bdLocations.js`, `src/utils/demoSeedData.js`) unless explicitly asked.
+- Keep files modular and concise. Do not rewrite unchanged code blocks.
+- Section-to-File Map:
+  - Auth & Onboarding: `src/context/AuthContext.jsx`, `src/components/onboarding/`
+  - Students: `src/pages/StudentsPage.jsx`, `src/hooks/useStudents.js`, `src/services/database/studentService.js`
+  - Results: `src/pages/ResultsPage.jsx`, `src/hooks/useResults.js`, `src/services/database/resultService.js`
+  - Attendance: `src/pages/AttendancePage.jsx`, `src/hooks/useAttendance.js`, `src/services/database/attendanceService.js`
+  - Teachers & Approval: `src/pages/TeacherManagementPage.jsx`, `src/components/layout/Topbar.jsx`, `src/services/database/memberService.js`
+  - Sessions & Years: `src/services/database/sessionService.js`, `src/services/database/dbPaths.js`
+  - Documents/Print: `src/pages/DocumentsPage.jsx`, `src/components/documents/`

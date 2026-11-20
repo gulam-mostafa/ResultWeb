@@ -1,0 +1,3 @@
+import { Badge } from '../ui/Primitives.jsx';
+import { formatBanglaDecimal, toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
+export default function GradingEngine({result}) { return <div className="flex flex-wrap gap-2"><Badge tone="brand">মোট নম্বর: {toBanglaNumber(result.totalMarks)} / {toBanglaNumber(result.totalFullMarks)}</Badge><Badge tone="violet">GPA: {result.gpa===null?'—':formatBanglaDecimal(result.gpa)}</Badge><Badge tone={result.isPass?'emerald':'rose'}>{result.hasAnyMark?(result.isPass?'উত্তীর্ণ':'অনুত্তীর্ণ'):'মূল্যায়ন হয়নি'}</Badge><Badge tone="slate">গ্রেড: {result.grade}</Badge></div>; }
