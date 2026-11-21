@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { promoteClassInYear } from '../../src/services/database/centralSchoolStore.js';
-import { distributeByCount } from '../../src/components/students/AutoPromotionModal.jsx';
+import { distributeByCount, parseMeritCount, parseMeritRange } from '../../src/components/students/AutoPromotionModal.jsx';
 
 const YEAR = '2026';
 const BASE = 'divisions/d1/districts/d2/upazilas/u3/schools/s4';
@@ -176,6 +176,47 @@ assert.equal(restSplit.get('m6'), 'খ');
 const noCount = distributeByCount(meritIds, { count: '', targetSection: 'গ' });
 assert.equal(noCount.get('m1'), 'গ');
 assert.equal(noCount.get('m6'), 'গ');
+
+// `rest` mode honours the custom second bucket instead of the default `খ`.
+const customRest = distributeByCount(meritIds, { count: 2, mode: 'rest', restSection: 'গ' });
+assert.equal(customRest.get('m1'), 'ক');
+assert.equal(customRest.get('m2'), 'ক');
+assert.equal(customRest.get('m3'), 'গ');
+assert.equal(customRest.get('m6'), 'গ');
+// A blank / `ক` rest label keeps the previous `খ` behaviour.
+const defaultRest = distributeByCount(meritIds, { count: 2, mode: 'rest', restSection: 'ক' });
+assert.equal(defaultRest.get('m3'), 'খ');
+
+// Merit range "১-৩০" (Bangla digits) ➔ pupils inside the range follow the শাখা.
+const banglaRange = distributeByCount(meritIds, { count: '১-৪', targetSection: 'ক', sections: ['ক', 'খ'] });
+assert.equal(banglaRange.get('m1'), 'ক');
+assert.equal(banglaRange.get('m4'), 'ক');
+assert.equal(banglaRange.get('m5'), 'খ');
+assert.equal(banglaRange.get('m6'), 'খ');
+
+// A mid-list range "20-30" style ➔ only that window moves, both sides stay elsewhere.
+const windowRange = distributeByCount(meritIds, { count: '2-3', targetSection: 'খ', sections: ['ক', 'খ'] });
+assert.equal(windowRange.get('m1'), 'ক');
+assert.equal(windowRange.get('m2'), 'খ');
+assert.equal(windowRange.get('m3'), 'খ');
+assert.equal(windowRange.get('m4'), 'ক');
+assert.equal(windowRange.get('m6'), 'ক');
+
+// ASCII range and a reversed range normalise to the same window.
+assert.deepEqual(parseMeritRange('1-30'), { start: 1, end: 30 });
+assert.deepEqual(parseMeritRange('৩০ - ২০'), { start: 20, end: 30 });
+assert.deepEqual(parseMeritRange('20–30'), { start: 20, end: 30 });
+assert.deepEqual(parseMeritRange('১ থেকে ৩০'), { start: 1, end: 30 });
+assert.equal(parseMeritRange('৩০'), null);
+assert.equal(parseMeritCount('৩০'), 30);
+assert.equal(parseMeritCount(''), null);
+
+// A range always targets the selected (possibly custom) শাখা; the rest go elsewhere.
+const customRange = distributeByCount(meritIds, { count: '১-৩', targetSection: 'গ', sections: ['ক', 'খ'] });
+assert.equal(customRange.get('m1'), 'গ');
+assert.equal(customRange.get('m3'), 'গ');
+assert.equal(customRange.get('m4'), 'ক', 'outside the range ➔ the first declared শাখা');
+assert.equal(customRange.get('m6'), 'ক');
 
 console.log('PASS — section-aware annual promotion + count split smoke test');
 

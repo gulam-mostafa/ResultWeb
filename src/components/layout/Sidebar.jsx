@@ -13,6 +13,7 @@ import {
   UserCog,
   School as SchoolIcon,
   ChevronRight,
+  ArrowUpRight,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSchoolData } from '../../context/SchoolDataContext.jsx';
@@ -44,6 +45,9 @@ const NAV_ITEMS = [
     icon: ClipboardList,
     roles: ['super_admin', 'school_admin'],
     hint: 'মার্কস এন্ট্রি ও গ্রেডিং',
+    // Same annual-promotion entry point as the Students page, opened straight from
+    // the Results section (`/results?promote=1`).
+    promotion: { to: '/results?promote=1', label: 'বার্ষিক শ্রেণি উত্তরণ' },
   },
   {
     to: '/attendance',
@@ -174,8 +178,8 @@ export default function Sidebar({ mobileOpen = false, onNavigate }) {
           {visibleItems.map((item) => {
             const Icon = item.icon;
             return (
+              <div key={item.to}>
               <NavLink
-                key={item.to}
                 to={item.to}
                 onClick={onNavigate}
                 className={({ isActive }) =>
@@ -227,6 +231,24 @@ export default function Sidebar({ mobileOpen = false, onNavigate }) {
                   </>
                 )}
               </NavLink>
+              {item.promotion ? (
+                <NavLink
+                  to={item.promotion.to}
+                  onClick={onNavigate}
+                  className={({ isActive }) =>
+                    clsx(
+                      'ml-6 mt-0.5 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold transition',
+                      isActive
+                        ? 'bg-brand-50 text-brand-800'
+                        : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800',
+                    )
+                  }
+                >
+                  <ArrowUpRight size={12} strokeWidth={2.6} aria-hidden="true" />
+                  <span className="truncate">{item.promotion.label}</span>
+                </NavLink>
+              ) : null}
+              </div>
             );
           })}
         </nav>
