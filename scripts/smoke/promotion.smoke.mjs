@@ -8,6 +8,17 @@
 import assert from 'node:assert/strict';
 import { promoteClassInYear } from '../../src/services/database/centralSchoolStore.js';
 import { distributeByCount, parseMeritCount, parseMeritRange } from '../../src/components/students/AutoPromotionModal.jsx';
+import {
+  PROMOTION_ORIGIN,
+  PROMOTION_SORT,
+  daysSincePromotion,
+  isNewlyPromoted,
+  isWithinPromotionWindow,
+  promotionBadgeOf,
+  promotionMonthOptions,
+  promotionOriginOf,
+  sortPromotionRows,
+} from '../../src/utils/promotionMeta.js';
 
 const YEAR = '2026';
 const BASE = 'divisions/d1/districts/d2/upazilas/u3/schools/s4';
@@ -150,8 +161,10 @@ const graduate = await promoteClassInYear(location, YEAR, {
   decisions: [{ studentId: 'z9', studentMasterId: 'STU-2026-0009', action: 'promote', section: 'ক' }],
 });
 assert.equal(graduate.archivedCount, 1);
+// The flat archive row plus BOTH year-wise layouts exist.
 assert.ok(at(`${yearPath}/passedArchive/STU-2026-0009`), 'flat archive row must exist');
-assert.ok(at(`${yearPath}/passedArchive/years/${YEAR}/STU-2026-0009`), 'year-wise archive row must exist');
+assert.ok(at(`${yearPath}/passedArchive/years/${YEAR}/STU-2026-0009`), 'years/{year} archive row must exist');
+assert.ok(at(`${yearPath}/passedArchive/${YEAR}/STU-2026-0009`), 'year-keyed archive row must exist');
 assert.equal(at(`${yearPath}/passedArchive/years/${YEAR}/STU-2026-0009`).passedYear, YEAR);
 assert.ok(!at(`${yearPath}/students/class-5/ক/STU-2026-0009`), 'leaver must leave the roster');
 
@@ -218,5 +231,164 @@ assert.equal(customRange.get('m3'), 'গ');
 assert.equal(customRange.get('m4'), 'ক', 'outside the range ➔ the first declared শাখা');
 assert.equal(customRange.get('m6'), 'ক');
 
-console.log('PASS — section-aware annual promotion + count split smoke test');
+// ---- Promotion origin metadata (new vs repeating pupil) ----------------------
+// A promoted pupil must carry promotedAt / promotedFromClass / promotedFromYear /
+// isNewPromotion so the roster can show the month badge and the "নতুন উত্তীর্ণ" tag.
+const promoted = class4['ক']['STU-2026-0003'];
+assert.ok(promoted.promotedAt, 'promoted row must carry promotedAt');
+assert.equal(promoted.promotedFromClass, 'class-3', 'promotedFromClass must be the source class');
+assert.equal(promoted.promotedFromYear, YEAR, 'promotedFromYear must be the source year');
+assert.equal(promoted.isNewPromotion, true, 'promoted row must be flagged as a new promotion');
+assert.equal(promoted.classId, 'class-4', 'target class must be the next class');
+
+// A retained pupil is NOT a new promotion: any earlier origin marker is cleared.
+assert.equal(retained.isNewPromotion, false, 'retained pupil must not be flagged as promoted');
+assert.ok(!retained.promotedAt, 'retained pupil must not carry a promotion stamp');
+assert.ok(!retained.promotedFromClass, 'retained pupil must not carry a source class');
+
+// The Class-5 leaver keeps its origin metadata in the year-wise archive.
+const archived = at(`${yearPath}/passedArchive/years/${YEAR}/STU-2026-0009`);
+assert.equal(archived.isNewPromotion, true);
+assert.equal(archived.promotedFromClass, 'class-5');
+assert.ok(archived.promotedAt, 'archived leaver must carry promotedAt');
+
+// ---- Promotion badge window (3 months ≈ 90 days) + origin classification ----
+const NOW = new Date('2026-11-21T12:00:00.000Z');
+const fresh = { promotedAt: '2026-11-05T10:00:00.000Z', promotedFromClass: 'c1', classId: 'c2', isNewPromotion: true };
+const old = { promotedAt: '2026-07-01T10:00:00.000Z', promotedFromClass: 'c1', classId: 'c2', isNewPromotion: true };
+const repeating = { classId: 'c2', section: 'ক', roll: 1 };
+
+assert.equal(promotionBadgeOf(fresh, NOW).label, 'নভেম্বর ২০২৬', 'badge shows the Bengali month + year');
+assert.equal(promotionBadgeOf(fresh, NOW).monthKey, '2026-11');
+assert.ok(daysSincePromotion(fresh.promotedAt, NOW) <= 90, 'fresh stamp is inside the window');
+assert.equal(promotionBadgeOf(old, NOW), null, 'badge must be REMOVED (null) after 90 days');
+assert.equal(isWithinPromotionWindow('2026-08-22T10:00:00.000Z', NOW), false, '91 days is outside the window');
+assert.equal(isWithinPromotionWindow('2026-08-23T10:00:00.000Z', NOW), true, '90 days is inside the window');
+
+assert.equal(promotionOriginOf(fresh, 'c2'), PROMOTION_ORIGIN.PROMOTED, 'came from class 1 ➔ নতুন উত্তীর্ণ');
+assert.equal(isNewlyPromoted(fresh, 'c2'), true);
+assert.equal(promotionOriginOf(repeating, 'c2'), PROMOTION_ORIGIN.EXISTING, 'no source class ➔ এই শ্রেণিতেই ছিল');
+assert.equal(promotionOriginOf({ ...fresh, promotedFromClass: 'c2' }, 'c2'), PROMOTION_ORIGIN.EXISTING, 'retained in the same class ➔ existing');
+
+// Month options only list stamps inside the badge window, newest first.
+const monthOptions = promotionMonthOptions([fresh, old, repeating], NOW);
+assert.deepEqual(monthOptions.map((option) => option.key), ['2026-11'], 'only windowed months are listed');
+
+// Display sort: newest promotion first / oldest first; unstamped rows keep merit order.
+const sortRows = [{ student: repeating }, { student: fresh }, { student: old }];
+assert.deepEqual(
+  sortPromotionRows(sortRows, PROMOTION_SORT.NEWEST).map((row) => row.student.promotedAt ?? null),
+  [fresh.promotedAt, old.promotedAt, null],
+);
+assert.deepEqual(
+  sortPromotionRows(sortRows, PROMOTION_SORT.OLDEST).map((row) => row.student.promotedAt ?? null),
+  [old.promotedAt, fresh.promotedAt, null],
+);
+
+console.log('PASS — section-aware annual promotion + origin metadata + badge window smoke test');
+
+/* ------------------------------------------------------------------ *
+ * Individual class change (`উত্তীর্ণ` / `এক শ্রেণি নিচে যাবে` / শাখা বদল)
+ * of ONE pupil — the profile-edit path (`moveStudentClass`).
+ * ------------------------------------------------------------------ */
+{
+  const { moveStudentClass } = await import('../../src/services/database/studentService.js');
+  const { classChangeTarget, nextFreeRoll } = await import('../../src/components/students/AddStudentModal.jsx');
+  const { CLASS_CHANGE_MODE, NEXT_CLASS_MAP, PREV_CLASS_MAP } = await import('../../src/utils/constants.js');
+
+  // ---- Class-change decision mapping (pure) --------------------------------
+  assert.equal(classChangeTarget('c2', CLASS_CHANGE_MODE.STAY, 'c2'), 'c2', 'stay keeps the class');
+  assert.equal(classChangeTarget('c2', CLASS_CHANGE_MODE.STAY, 'c4'), 'c4', 'stay honours an edited class');
+  assert.equal(classChangeTarget('c2', CLASS_CHANGE_MODE.PROMOTE), NEXT_CLASS_MAP.c2, 'promote = next class');
+  assert.equal(classChangeTarget('c5', CLASS_CHANGE_MODE.PROMOTE), 'archive', 'class-5 promote graduates');
+  assert.equal(classChangeTarget('c3', CLASS_CHANGE_MODE.DEMOTE), PREV_CLASS_MAP.c3, 'demote = one class down');
+  assert.equal(classChangeTarget('pre', CLASS_CHANGE_MODE.DEMOTE), 'pre', 'pre-primary has no lower class');
+
+  // ---- Destination roll never collides -------------------------------------
+  const destinationRoster = [
+    { id: 'x1', classId: 'c4', section: 'ক', roll: 1 },
+    { id: 'x2', classId: 'c4', section: 'ক', roll: 7 },
+    { id: 'x3', classId: 'c4', section: 'খ', roll: 3 },
+  ];
+  assert.equal(nextFreeRoll(destinationRoster, { classId: 'c4', section: 'ক' }), 8, 'roll continues after the ones already there');
+  assert.equal(nextFreeRoll(destinationRoster, { classId: 'c4', section: 'খ' }), 4, 'শাখা খ numbers independently');
+  assert.equal(nextFreeRoll(destinationRoster, { classId: 'c4', section: 'ক', ignoreId: 'x2' }), 2, 'own row is ignored');
+
+  // ---- Promote one pupil: c4/ক ➔ c5/খ, old folder cleared ------------------
+  seed(`${yearPath}/students/class-4/ক/STU-2026-0004`, {
+    studentMasterId: 'STU-2026-0004',
+    legacyId: 'a4',
+    classId: 'class-4',
+    section: 'ক',
+    roll: 1,
+    status: 'active',
+    year: YEAR,
+  });
+  await moveStudentClass(location, {
+    year: YEAR,
+    studentMasterId: 'STU-2026-0004',
+    legacyId: 'a4',
+    prevClassId: 'c4',
+    prevSectionId: 'ক',
+    nextClassId: 'c5',
+    nextSectionId: 'খ',
+    roll: 12,
+    promotion: {
+      promotedAt: '2026-11-21T00:00:00.000Z',
+      promotedFromClass: 'class-4',
+      promotedFromYear: YEAR,
+      isNewPromotion: true,
+      previousClassId: 'c4',
+    },
+  });
+  const promotedRow = at(`${yearPath}/students/class-5/খ/STU-2026-0004`);
+  assert.equal(promotedRow?.section, 'খ', 'the pupil lands in the destination শাখা');
+  assert.equal(promotedRow?.classId, 'class-5', 'the stored class is the canonical key');
+  assert.equal(promotedRow?.roll, 12, 'the destination roll is stored');
+  assert.equal(promotedRow?.promotedFromClass, 'class-4', 'the promotion stamp is written');
+  assert.equal(promotedRow?.isNewPromotion, true);
+  assert.equal(at(`${yearPath}/students/class-4/ক/STU-2026-0004`), undefined, 'the old row is removed');
+  assert.equal(at(`${BASE}/studentMaster/STU-2026-0004`).currentClassId, 'class-5', 'master follows the move');
+
+  // ---- A শাখা-only move keeps the promotion metadata ----------------------
+  seed(`${yearPath}/students/class-5/খ/STU-2026-0004`, at(`${yearPath}/students/class-5/খ/STU-2026-0004`));
+  await moveStudentClass(location, {
+    year: YEAR,
+    studentMasterId: 'STU-2026-0004',
+    prevClassId: 'c5',
+    prevSectionId: 'খ',
+    nextClassId: 'c5',
+    nextSectionId: 'গ',
+    roll: 12,
+  });
+  const movedRow = at(`${yearPath}/students/class-5/গ/STU-2026-0004`);
+  assert.equal(movedRow?.section, 'গ', 'the শাখা-only move lands in the new folder');
+  assert.equal(movedRow?.promotedFromClass, 'class-4', 'a section change never drops the promotion stamp');
+  assert.equal(at(`${yearPath}/students/class-5/খ/STU-2026-0004`), undefined, 'the old শাখা folder is cleared');
+
+  // ---- Graduating a Class-5 pupil files them in passedArchive -------------
+  seed(`${yearPath}/students/class-5/গ/STU-2026-0004`, at(`${yearPath}/students/class-5/গ/STU-2026-0004`));
+  await moveStudentClass(location, {
+    year: YEAR,
+    studentMasterId: 'STU-2026-0004',
+    prevClassId: 'c5',
+    prevSectionId: 'গ',
+    nextClassId: 'archive',
+    nextSectionId: 'গ',
+    roll: 12,
+    promotion: {
+      promotedAt: '2026-11-21T00:00:00.000Z',
+      promotedFromClass: 'class-5',
+      promotedFromYear: YEAR,
+      isNewPromotion: true,
+    },
+  });
+  assert.equal(at(`${yearPath}/students/class-5/গ/STU-2026-0004`), undefined, 'the class row is gone after graduation');
+  const archivedRow = at(`${yearPath}/passedArchive/STU-2026-0004`);
+  assert.equal(archivedRow?.status, 'passed', 'the leaver is filed in passedArchive');
+  assert.ok(at(`${yearPath}/passedArchive/years/${YEAR}/STU-2026-0004`), 'the year-wise archive folder is written');
+  assert.equal(at(`${BASE}/studentMaster/STU-2026-0004`).overallStatus, 'graduated', 'master marks the graduate');
+
+  console.log('PASS — individual class change writes class row + master + passedArchive exactly once');
+}
 

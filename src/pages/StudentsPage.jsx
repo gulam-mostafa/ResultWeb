@@ -13,6 +13,7 @@ import StudentTable from '../components/students/StudentTable.jsx';
 import AddStudentModal from '../components/students/AddStudentModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
 import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
+import StudentResultModal from '../components/results/StudentResultModal.jsx';
 
 export default function StudentsPage() {
   const { students, studentsByClass, sectionCounts, marks, addStudent, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
@@ -22,6 +23,7 @@ export default function StudentsPage() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [resultTarget, setResultTarget] = useState(null);
   const [restoring, setRestoring] = useState(null);
   const [restoreClassId, setRestoreClassId] = useState('pre');
   const [promoting, setPromoting] = useState(false);
@@ -86,13 +88,17 @@ export default function StudentsPage() {
         onRemoveSection={(label) => removeSection(tab, label)}
       />}
       <StudentTable students={visibleStudents} canEdit={canManageStudents} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
+        onShowResult={setResultTarget} getStudentResult={getStudentResult}
         onRestore={(student) => { setRestoring(student); setRestoreClassId(CLASS_LEVELS.some((item) => item.id === student.previousClassId) ? student.previousClassId : 'pre'); }} />
     </Card>
-    <AddStudentModal open={adding} onClose={() => setAdding(false)} onSave={saveStudent} defaultClass={tab === 'archive' ? 'pre' : tab} sectionOptions={sectioned ? sections : []} />
-    <AddStudentModal open={Boolean(editing)} onClose={() => setEditing(null)} onSave={saveStudent} student={editing} defaultClass={editing?.classId === 'archive' ? (editing?.previousClassId || 'pre') : (editing?.classId || tab)} onArchive={confirmArchive} sectionOptions={editing ? getSectionsOfClass(editing.classId === 'archive' ? (editing.previousClassId || 'pre') : editing.classId) : []} />
+    <AddStudentModal open={adding} onClose={() => setAdding(false)} onSave={saveStudent} defaultClass={tab === 'archive' ? 'pre' : tab} sectionOptions={sectioned ? sections : []} roster={students} />
+    <AddStudentModal open={Boolean(editing)} onClose={() => setEditing(null)} onSave={saveStudent} student={editing} defaultClass={editing?.classId === 'archive' ? (editing?.previousClassId || 'pre') : (editing?.classId || tab)} onArchive={confirmArchive} sectionOptions={editing ? getSectionsOfClass(editing.classId === 'archive' ? (editing.previousClassId || 'pre') : editing.classId) : []} roster={students} getSectionsOfClass={getSectionsOfClass} />
     <StudentDetailsModal open={Boolean(selected)} onClose={() => setSelected(null)} student={selected ? (students.find((item) => item.id === selected.id) ?? selected) : null}
       marks={marks} allStudents={students} getTermResult={getTermResult} getStudentResult={getStudentResult} getClassAnalytics={getClassAnalytics}
       onEdit={canManageStudents ? (student) => { setSelected(null); setEditing(student); } : null} />
+    <StudentResultModal open={Boolean(resultTarget)} onClose={() => setResultTarget(null)}
+      student={resultTarget ? (students.find((item) => item.id === resultTarget.id) ?? resultTarget) : null}
+      marks={marks} getStudentResult={getStudentResult} getTermResult={getTermResult} getClassAnalytics={getClassAnalytics} />
     <Modal open={Boolean(restoring)} onClose={() => setRestoring(null)} title="শিক্ষার্থীকে শ্রেণিতে ফিরিয়ে নিন" subtitle={restoring?.name} icon={RotateCcw}>
       <div className="space-y-4">
         <label className="block"><span className="label-base">যে শ্রেণিতে ফিরিয়ে নেবেন</span><select className="input-base" value={restoreClassId} onChange={(event) => setRestoreClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -103,7 +109,11 @@ export default function StudentsPage() {
       open={promoting}
       onClose={() => setPromoting(false)}
       students={students}
+      allStudents={students}
+      marks={marks}
       getStudentResult={getStudentResult}
+      getTermResult={getTermResult}
+      getClassAnalytics={getClassAnalytics}
       getStudentClassRank={getStudentClassRank}
       getClassRankMap={getClassRankMap}
       getSectionsOfClass={getSectionsOfClass}

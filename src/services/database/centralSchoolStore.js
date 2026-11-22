@@ -2,6 +2,7 @@ import { runTransaction, ref } from 'firebase/database';
 import { db } from '../../firebase/firebaseConfig.js';
 import { MEMBER_STATUS, resolveClassKey } from '../../utils/constants.js';
 import { normalizeSchoolProfile, pickProfileFields } from '../../utils/schoolProfile.js';
+import { normalizeRoll, planPromotionRolls } from '../../utils/rollAssignment.js';
 import { cleanForCloud, safeRead, safeSubscribe, safeUpdate } from './dbFallback.js';
 import {
   dbPaths,
@@ -164,7 +165,8 @@ const MASTER_LIFETIME_KEYS = Object.freeze([
   'classId', 'roll', 'section', 'status',
   'overallStatus', 'isDeleted', 'createdAt', 'updatedAt', 'deletedAt',
   // Year/roster bookkeeping belongs to the enrollment row only.
-  'year', 'previousClassId', 'promotedFromYear', 'promotedAt',
+  'year', 'previousClassId', 'promotedFromClass', 'promotedFromYear', 'promotedAt',
+  'isNewPromotion', 'retainedAt',
   'academicYear', 'archivedYear', 'archivedAt', 'archivedFromClass',
   'passedYear', 'passedAt', 'graduatedYear',
   'meritPosition', 'gpa', 'grade', 'grandTotal',
@@ -538,30 +540,44 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
     });
   });
 
-  const operations = [];
+  // PRIMARY writes = the actual pupil movement (next year's roster + the leavers'
+  // archive). SECONDARY writes = permanent identity + the profile's active year.
+  // Only the primary verdict decides `synced`, so a blocked/failed identity or
+  // profile write can NEVER report the promotion itself as failed.
+  const primaryOperations = [];
   if (Object.keys(nextYearClassUpdates).length > 0) {
-    operations.push(safeUpdate(`${toYearPath}/students`, nextYearClassUpdates));
+    primaryOperations.push(safeUpdate(`${toYearPath}/students`, nextYearClassUpdates));
   }
   if (Object.keys(archiveUpdates).length > 0) {
-    operations.push(safeUpdate(`${fromYearPath}/passedArchive`, archiveUpdates));
+    primaryOperations.push(safeUpdate(`${fromYearPath}/passedArchive`, archiveUpdates));
   }
+
+  const secondaryWrites = [];
   if (Object.keys(masterUpdates).length > 0) {
-    operations.push(safeUpdate(`${basePath}/studentMaster`, masterUpdates));
+    secondaryWrites.push({ path: `${basePath}/studentMaster`, patch: masterUpdates });
   }
   // The annual rollover also moves the school's active year. A partial/decided
   // promotion from the roster screen leaves that to the year switcher, so
   // `profile.activeYear` (and therefore the whole UI) never jumps by surprise.
   if (options?.advanceProfileYear !== false) {
-    operations.push(safeUpdate(`${basePath}/profile`, {
-      academicYear: toYear,
-      activeYear: toYear,
-      updatedAt: now,
-    }));
+    secondaryWrites.push({
+      path: `${basePath}/profile`,
+      patch: { academicYear: toYear, activeYear: toYear, updatedAt: now },
+    });
   }
 
-  const results = await Promise.all(operations);
+  const primaryResults = await Promise.all(primaryOperations);
+  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
+
+  const secondaryResults = await Promise.all(secondaryWrites.map(async ({ path, patch: value }) => {
+    const first = await safeUpdate(path, value).catch(() => ({ synced: false }));
+    if (first?.synced !== false) return first;
+    return safeUpdate(path, value).catch(() => ({ synced: false }));
+  }));
+
   return {
-    synced: results.every((entry) => entry?.synced !== false),
+    synced: primarySynced,
+    partial: !secondaryResults.every((entry) => entry?.synced !== false),
     fromYear,
     toYear,
     promotedCount: promotions.length,
@@ -618,7 +634,10 @@ const orderSections = (sections = []) => {
  * @param {{fromClassId:string,
  *   decisions?:Array<{studentId?:string, studentMasterId?:string,
  *     action?:'promote'|'retain', section?:string}>,
- *   students?:Array<object>, targetSections?:Array<string>}} options
+ *   students?:Array<object>, targetSections?:Array<string>,
+ *   promotedAt?:string}} options
+ *   `promotedAt` is the batch timestamp the caller stamped on its local rows; a
+ *   caller that omits it gets one minted here.
  */
 export async function promoteClassInYear(location, year, options = {}) {
   const normalized = normalizeLocation(location);
@@ -630,7 +649,9 @@ export async function promoteClassInYear(location, year, options = {}) {
   rememberSchoolLocation(normalized);
   const basePath = getSchoolBasePath(normalized);
   const yearPath = `${basePath}/sessions/${yearKey}`;
-  const now = new Date().toISOString();
+  // The caller's batch timestamp wins, so the rows stored here and the rows the
+  // roster already shows carry the SAME `promotedAt` (badge + filter stay in sync).
+  const now = String(options?.promotedAt ?? '').trim() || new Date().toISOString();
 
   await ensureSchoolYearBuckets(normalized, yearKey);
 
@@ -704,41 +725,80 @@ async function applyClassPromotion({
     ...sourceEntries.map((entry) => sectionSegment(entry.record?.section)),
   ]));
 
-  // Roll numbers continue after the pupils of the destination class that are NOT
-  // part of this promotion (a retained class-1 pupil next to a demoted class-2 one),
-  // so the local numbering in `useStudents` and these stored rolls always agree.
-  // Both destinations matter: `nextClassId` for `উত্তীর্ণ` and `fromClassId` for
-  // `এই ক্লাসেই থাকুক`.
-  const movingIds = new Set(sourceEntries.map((entry) => entry.studentMasterId));
+  /* ------------------------------------------------------------------ *
+   * Roll plan of the whole batch — the single source of truth.
+   *
+   * `planPromotionRolls` hands clean `১..n` numbers (in merit order) to the pupils
+   * promoted INTO a class from a lower one, and pushes everybody already sitting in
+   * that class (including the `এই ক্লাসেই থাকুক` pupils) AFTER them, so a class that
+   * receives lower-class students never ends up with two pupils sharing a roll. A
+   * bucket that receives nobody keeps its residents' numbers and simply appends the
+   * batch's own pupils at the very end.
+   *
+   * The stored roster (`studentsNode`, every class) is used as the resident source, so
+   * a demoted/kept pupil is numbered against the pupils who really are in the class.
+   * ------------------------------------------------------------------ */
   const storedByClass = flattenEnrollmentNode(studentsNode);
-  const rollBaseline = {};
-  [fromClassId, nextClassId].filter((classId) => classId && classId !== 'archive').forEach((classId) => {
-    Object.entries(asRecord(storedByClass[classId])).forEach(([studentMasterId, record]) => {
-      if (!studentMasterId || movingIds.has(studentMasterId)) return;
-      const key = `${classId}/${sectionSegment(record?.section)}`;
-      rollBaseline[key] = (rollBaseline[key] ?? 0) + 1;
-    });
+  const storedRoster = Object.entries(storedByClass).flatMap(([classId, entries]) => (
+    Object.entries(asRecord(entries)).map(([studentMasterId, record]) => ({
+      ...record,
+      id: studentMasterId,
+      classId: classKey(classId),
+      section: sectionSegment(record?.section),
+    }))
+  ));
+  const batchDecisions = ranked.map((entry) => {
+    const decision = decisionOf(entry);
+    const sourceSection = sectionSegment(entry.record?.section);
+    return {
+      id: entry.studentMasterId,
+      action: decision.action === 'retain' ? 'retain' : 'promote',
+      targetClassId: decision.action === 'retain' ? fromClassId : nextClassId,
+      section: sectionSegment(decision.section === '' ? sourceSection : decision.section),
+    };
+  });
+  const rollPlan = planPromotionRolls({
+    entries: batchDecisions,
+    roster: storedRoster,
+    movingIds: sourceEntries.map((entry) => entry.studentMasterId),
+    // A resident's merit is published in THEIR OWN class, not in the source class.
+    meritOf: (student) => finalMeritOf(resultsTree, student.classId, student.id).meritPosition,
   });
 
   return writeClassPromotion({
     fromClassId, nextClassId, yearKey, basePath, yearPath, now,
-    ranked, knownSections, decisionOf, resultsTree, masterMap, rollBaseline,
+    ranked, knownSections, decisionOf, resultsTree, masterMap, rollPlan, storedRoster,
   });
 }
 
 /** Writes one class's promotion: destination rows, registry, masters, year meta. */
 async function writeClassPromotion({
   fromClassId, nextClassId, yearKey, basePath, yearPath, now,
-  ranked, knownSections, decisionOf, resultsTree, masterMap, rollBaseline = {},
+  ranked, knownSections, decisionOf, resultsTree, masterMap,
+  rollPlan = new Map(), storedRoster = [],
 }) {
   const patch = {};
   const archivePatch = {};
   const masterUpdates = {};
-  // Per destination class AND শাখা, continuing after the pupils already there.
-  const sectionRolls = { ...rollBaseline };
   let promotedCount = 0;
   let retainedCount = 0;
   let archivedCount = 0;
+  /** `{ [studentMasterId]: roll }` — the authoritative rolls of this batch. */
+  const assignment = {};
+  // Fallback numbering for a pupil the plan did not cover (never expected, but a
+  // promotion must always write a valid roll).
+  const fallbackRolls = new Map();
+  const fallbackRoll = (targetClassId, section) => {
+    const key = `${targetClassId}/${section}`;
+    fallbackRolls.set(key, (fallbackRolls.get(key) ?? 0) + 1);
+    return fallbackRolls.get(key);
+  };
+  const highestPlanned = [...rollPlan.values()].reduce((max, roll) => Math.max(max, Number(roll) || 0), 0);
+  const batchRollOf = (entry, targetClassId, section) => {
+    const planned = normalizeRoll(rollPlan.get(String(entry.studentMasterId)));
+    if (planned) return planned;
+    return highestPlanned + fallbackRoll(targetClassId, section);
+  };
 
   ranked.forEach((entry) => {
     const decision = decisionOf(entry);
@@ -752,17 +812,18 @@ async function writeClassPromotion({
     const targetClassId = decision.action === 'retain' ? fromClassId : nextClassId;
     knownSections.add(section);
 
-    // Rolls are re-numbered ১..n per destination class AND শাখা, in merit order —
-    // written incrementally so the very first pupil of a folder is roll ১.
-    const bucketKey = `${targetClassId}/${section}`;
-    sectionRolls[bucketKey] = (sectionRolls[bucketKey] ?? 0) + 1;
-    const roll = sectionRolls[bucketKey];
+    // Rolls come from the batch plan: clean ১, ২, ৩… in merit order inside each
+    // destination class AND শাখা, with every already-present pupil placed after them.
+    const roll = graduated ? normalizeRoll(entry.record?.roll) : batchRollOf(entry, targetClassId, section);
+    if (!graduated) assignment[entry.studentMasterId] = roll;
 
     // The source row always goes away: a pupil is never listed twice.
     patch[`${fromClassId}/${sourceSection}/${entry.studentMasterId}`] = null;
 
     if (decision.action === 'retain') {
-      // `এই ক্লাসেই থাকুক` — same class, possibly a different শাখা.
+      // `এই ক্লাসেই থাকুক` — same class, possibly a different শাখা. Any promotion
+      // marker from an earlier run is cleared, so a repeating pupil is never listed
+      // as "নতুন উত্তীর্ণ" in the class they already sat in.
       retainedCount += 1;
       patch[`${fromClassId}/${section}/${entry.studentMasterId}`] = cleanForCloud({
         ...entry.record,
@@ -773,6 +834,11 @@ async function writeClassPromotion({
         roll,
         status: 'active',
         year: yearKey,
+        previousClassId: null,
+        promotedFromClass: null,
+        promotedFromYear: null,
+        promotedAt: null,
+        isNewPromotion: false,
         meritPosition: merit.meritPosition,
         gpa: merit.gpa,
         grade: merit.grade,
@@ -795,6 +861,10 @@ async function writeClassPromotion({
         passedYear: yearKey,
         archivedYear: yearKey,
         archivedFromClass: fromClassId,
+        promotedFromClass: fromClassId,
+        promotedFromYear: yearKey,
+        promotedAt: now,
+        isNewPromotion: true,
         meritPosition: merit.meritPosition,
         gpa: merit.gpa,
         grade: merit.grade,
@@ -803,7 +873,12 @@ async function writeClassPromotion({
         updatedAt: now,
       });
       archivePatch[entry.studentMasterId] = archivedRecord;
+      // Year-wise flows: `passedArchive/years/{year}/{id}` (canonical folder) and
+      // `passedArchive/{year}/{id}` (year-keyed alias). Both are readable by
+      // `studentService.buildYearRoster`, so "who passed in which year" is always
+      // answerable without walking every year node.
       archivePatch[`years/${yearKey}/${entry.studentMasterId}`] = archivedRecord;
+      archivePatch[`${yearKey}/${entry.studentMasterId}`] = archivedRecord;
     } else {
       // `উত্তীর্ণ`: the next class, inside the SAME year partition.
       promotedCount += 1;
@@ -817,8 +892,10 @@ async function writeClassPromotion({
         status: 'active',
         year: yearKey,
         previousClassId: fromClassId,
+        promotedFromClass: fromClassId,
         promotedFromYear: yearKey,
         academicYear: yearKey,
+        isNewPromotion: true,
         meritPosition: merit.meritPosition,
         gpa: merit.gpa,
         grade: merit.grade,
@@ -846,11 +923,76 @@ async function writeClassPromotion({
     );
   });
 
-  const operations = [];
-  if (Object.keys(patch).length > 0) operations.push(safeUpdate(`${yearPath}/students`, patch));
+  /* ------------------------------------------------------------------ *
+   * Displaced residents.
+   *
+   * When pupils are promoted INTO a class, the pupils already sitting there are
+   * pushed AFTER them (see `planPromotionRolls`), and a resident whose stored roll is
+   * a duplicate or a legacy suffix notation (`১-১`) is repaired. Their destination row
+   * must therefore be rewritten with the new roll — otherwise two pupils would keep
+   * the same number in the same class + শাখা after a refresh.
+   * ------------------------------------------------------------------ */
+  const batchIds = new Set(ranked.map((entry) => String(entry.studentMasterId)));
+  /** `{ [studentMasterId]: roll }` — every row this batch renumbered. */
+  const rolls = { ...assignment };
+  (Array.isArray(storedRoster) ? storedRoster : []).forEach((student) => {
+    const id = String(student?.id ?? '').trim();
+    if (!id || batchIds.has(id)) return;
+    const planned = Number(rollPlan.get(id));
+    if (!Number.isFinite(planned) || planned < 1) return;
+    const storedRoll = normalizeRoll(student.roll);
+    if (planned === storedRoll) return;
+    const storageClassId = classKey(student.classId);
+    const section = sectionSegment(student.section);
+    patch[`${storageClassId}/${section}/${id}`] = cleanForCloud({
+      ...student,
+      id: undefined,
+      studentMasterId: String(student.studentMasterId ?? id),
+      legacyId: student.legacyId ?? student.id ?? id,
+      classId: storageClassId,
+      section,
+      roll: planned,
+      year: yearKey,
+      updatedAt: now,
+    });
+    rolls[id] = planned;
+  });
+
+  /** `{ 'class-4/ক': <highest roll used> }` — the auditable summary of the batch. */
+  const sections = {};
+  Object.entries(assignment).forEach(([studentMasterId, roll]) => {
+    const entry = ranked.find((row) => String(row.studentMasterId) === studentMasterId);
+    if (!entry) return;
+    const decision = decisionOf(entry);
+    const targetClassId = decision.action === 'retain' ? fromClassId : nextClassId;
+    if (!targetClassId || targetClassId === 'archive') return;
+    const section = sectionSegment(decision.section === '' ? entry.record?.section : decision.section);
+    const key = `${targetClassId}/${section}`;
+    sections[key] = Math.max(sections[key] ?? 0, Number(roll) || 0);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * PRIMARY vs SECONDARY writes.
+   *
+   * The promotion itself is the pair of roster writes:
+   *   - `sessions/{year}/students`  (promoted + retained pupils)
+   *   - `sessions/{year}/passedArchive` (Class-5 leavers)
+   * If those succeed the movement really happened, so the save MUST NOT be
+   * reported as failed just because one of the non-critical side writes below
+   * (permanent identity, শাখা registry, year audit log) hit a permission rule or
+   * a transient network hiccup.
+   *
+   * Secondary writes are still attempted (and retried once), but only the PRIMARY
+   * verdict decides `synced`.
+   * ------------------------------------------------------------------ */
+  const primaryOperations = [];
+  if (Object.keys(patch).length > 0) primaryOperations.push(safeUpdate(`${yearPath}/students`, patch));
   if (Object.keys(archivePatch).length > 0) {
-    operations.push(safeUpdate(`${yearPath}/passedArchive`, archivePatch));
+    primaryOperations.push(safeUpdate(`${yearPath}/passedArchive`, archivePatch));
   }
+
+  /** `[{ path, patch }]` — non-critical side writes, ranked after the roster. */
+  const secondaryWrites = [];
 
   // Declared শাখা registry (so an empty-but-created শাখা survives a refresh).
   const registryPatch = {};
@@ -859,39 +1001,58 @@ async function writeClassPromotion({
     if (nextClassId !== 'archive') registryPatch[`${nextClassId}/${section}`] = true;
   });
   if (Object.keys(registryPatch).length > 0) {
-    operations.push(safeUpdate(`${yearPath}/meta/sections`, registryPatch));
+    secondaryWrites.push({ path: `${yearPath}/meta/sections`, patch: registryPatch });
   }
 
   if (Object.keys(masterUpdates).length > 0) {
-    operations.push(safeUpdate(`${basePath}/studentMaster`, masterUpdates));
+    secondaryWrites.push({ path: `${basePath}/studentMaster`, patch: masterUpdates });
   }
 
   // The year keeps its own auditable log, readable by every teacher after a refresh.
-  operations.push(safeUpdate(`${yearPath}/meta`, cleanForCloud({
-    year: yearKey,
-    lastPromotionAt: now,
-    lastPromotion: {
-      fromClassId,
-      nextClassId,
-      promoted: promotedCount,
-      retained: retainedCount,
-      archived: archivedCount,
-      sections: sectionRolls,
-      at: now,
-    },
-    updatedAt: now,
-  })));
+  secondaryWrites.push({
+    path: `${yearPath}/meta`,
+    patch: cleanForCloud({
+      year: yearKey,
+      lastPromotionAt: now,
+      lastPromotion: {
+        fromClassId,
+        nextClassId,
+        promoted: promotedCount,
+        retained: retainedCount,
+        archived: archivedCount,
+        sections,
+        at: now,
+      },
+      updatedAt: now,
+    }),
+  });
 
-  const results = await Promise.all(operations);
+  const primaryResults = await Promise.all(primaryOperations);
+  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
+
+  // Secondary writes never flip the save verdict. A single retry keeps a transient
+  // hiccup from leaving the permanent identity / registry / audit log stale.
+  const secondaryResults = await Promise.all(secondaryWrites.map(async ({ path, patch: value }) => {
+    const first = await safeUpdate(path, value).catch(() => ({ synced: false }));
+    if (first?.synced !== false) return first;
+    return safeUpdate(path, value).catch(() => ({ synced: false }));
+  }));
+
   return {
-    synced: results.every((entry) => entry?.synced !== false),
+    // The promotion is saved when the ROSTER write succeeded. Secondary/audit
+    // writes never mark it as failed (that was the false "সেভ ব্যর্থ হয়েছে").
+    synced: primarySynced,
+    partial: !secondaryResults.every((entry) => entry?.synced !== false),
     year: yearKey,
     fromClassId,
     nextClassId,
     promotedCount,
     retainedCount,
     archivedCount,
-    sections: sectionRolls,
+    sections,
+    // Authoritative `{ studentMasterId: roll }` of this batch, so the roster hook can
+    // mirror exactly what was written instead of re-deriving it.
+    assignment: rolls,
   };
 }
 

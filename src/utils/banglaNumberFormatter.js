@@ -74,6 +74,18 @@ export function formatBanglaDate(isoDate) {
   return `${day} ${month} ${year}`;
 }
 
+/**
+ * Bengali month + year label of a date: `2026-11-05` ➔ "নভেম্বর ২০২৬".
+ * Used by the promotion (উত্তরণ) badge, which names the month a pupil was
+ * promoted in. Returns `''` for a missing/unparseable value.
+ */
+export function formatBanglaMonthYear(isoDate) {
+  if (!isoDate) return '';
+  const parsed = isoDate instanceof Date ? isoDate : new Date(isoDate);
+  if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) return '';
+  return `${BN_MONTHS[parsed.getMonth()]} ${toBanglaNumber(parsed.getFullYear())}`;
+}
+
 /** Long-form date used on official documents: "১৫ মার্চ ২০২৬ খ্রিষ্টাব্দ". */
 export function formatOfficialBanglaDate(isoDate = new Date()) {
   const value = typeof isoDate === 'string' ? new Date(isoDate) : isoDate;
@@ -96,6 +108,7 @@ export default {
   formatBanglaInt,
   toBanglaOrdinal,
   formatBanglaDate,
+  formatBanglaMonthYear,
   formatOfficialBanglaDate,
   formatBanglaPercent,
 };

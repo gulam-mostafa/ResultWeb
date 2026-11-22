@@ -77,6 +77,28 @@ export const NEXT_CLASS_MAP = Object.freeze({
   c5: 'archive',
 });
 
+/**
+ * ক্লাস ➔ আগের ক্লাস (এক শ্রেণি নিচে নামানোর মানচিত্র).
+ * `pre` is the first class, so it has no lower class (`undefined`).
+ */
+export const PREV_CLASS_MAP = Object.freeze({
+  c1: 'pre',
+  c2: 'c1',
+  c3: 'c2',
+  c4: 'c3',
+  c5: 'c4',
+});
+
+/**
+ * The three per-pupil class-change decisions of the student edit form.
+ * `stay` keeps the current class, `promote` moves one class up and `demote` one down.
+ */
+export const CLASS_CHANGE_MODE = Object.freeze({
+  STAY: 'stay',
+  PROMOTE: 'promote',
+  DEMOTE: 'demote',
+});
+
 export const CLASS_LABEL_MAP = Object.freeze(
   CLASS_TABS.reduce((acc, item) => {
     acc[item.id] = item.name;

@@ -32,10 +32,39 @@ const nowISO = () => new Date().toISOString();
 /** Keys that belong to the yearly enrollment row, not the permanent identity. */
 const ENROLLMENT_FIELD_KEYS = Object.freeze(['classId', 'roll', 'section', 'status']);
 
+/**
+ * Enrollment-level promotion metadata (`উত্তরণ`). These fields describe the row of
+ * ONE academic year — never the permanent identity — so they are carried by
+ * `buildEnrollmentRecord` and merged back by `mergeStudentRecord`.
+ */
+const PROMOTION_FIELD_KEYS = Object.freeze([
+  'promotedAt', 'promotedFromClass', 'promotedFromYear', 'isNewPromotion', 'previousClassId',
+]);
+
+/** Only the promotion fields the caller actually supplied (a blank/null one is skipped). */
+const promotionFieldsOf = (record = {}) => Object.fromEntries(
+  PROMOTION_FIELD_KEYS
+    .filter((key) => Object.prototype.hasOwnProperty.call(record, key))
+    .filter((key) => record[key] !== undefined && record[key] !== null && record[key] !== '')
+    .map((key) => [key, record[key]]),
+);
+
+
 /** Keys never copied verbatim into the master node. */
 const RESERVED_FIELD_KEYS = Object.freeze([
   'id', 'studentMasterId', 'legacyId', 'localId', 'classId', 'roll', 'section',
   'status', 'overallStatus', 'isDeleted', 'createdAt', 'updatedAt',
+]);
+
+/**
+ * Year/roster bookkeeping that belongs to an enrollment row. A roster row is a MERGE
+ * of identity + enrollment, so these must be filtered out before it is written back
+ * onto `studentMaster` (otherwise last year's class/merit would win on display).
+ */
+const YEAR_ONLY_FIELD_KEYS = Object.freeze([
+  'year', 'retainedAt', 'academicYear', 'archivedYear', 'archivedAt', 'archivedFromClass',
+  'passedYear', 'passedAt', 'graduatedYear', 'meritPosition', 'gpa', 'grade', 'grandTotal',
+  ...PROMOTION_FIELD_KEYS,
 ]);
 
 /** Markers that identify a leaf record (tells flat nodes from class-nested nodes). */
@@ -77,6 +106,9 @@ export const toAppClassId = (classId) => {
   if (!key || key === 'archive' || key === 'unassigned') return key;
   return APP_CLASS_IDS[key] ?? key;
 };
+
+/** Every active class, in both vocabularies (`c1` … and `class-1` …). */
+const CLASS_LEVEL_IDS = Object.freeze(Object.values(APP_CLASS_IDS));
 
 /**
  * Storage name of a শাখা folder — `''` (a pupil admitted before sections existed)
@@ -212,6 +244,11 @@ export function buildStudentMasterRecord(record = {}, { studentMasterId, year } 
   const personal = {};
   Object.entries(record).forEach(([key, value]) => {
     if (RESERVED_FIELD_KEYS.includes(key) || value === undefined) return;
+    // A roster row also carries THIS year's enrollment data. `studentMaster` is a
+    // permanent, year-less node, so copying an old `year` / promotion stamp into it
+    // would let stale data win over the live enrollment row when the two are merged
+    // after a reload (the old class/section reappearing).
+    if (YEAR_ONLY_FIELD_KEYS.includes(key)) return;
     personal[key] = value;
   });
   const yearKey = normalizeSessionYear(year, String(new Date().getFullYear()));
@@ -238,7 +275,11 @@ export function buildStudentMasterRecord(record = {}, { studentMasterId, year } 
   });
 }
 
-/** Yearly enrollment row — the only part of a pupil that changes year to year. */
+/**
+ * Yearly enrollment row — the only part of a pupil that changes year to year.
+ * Promotion metadata is written on this row (never on the master), so the month
+ * badge / origin tag of the roster survive a refresh and a class move.
+ */
 export function buildEnrollmentRecord(record = {}, { studentMasterId, year, classId, section } = {}) {
   const sectionId = toSectionId(section ?? record.section);
   return cleanForCloud({
@@ -250,6 +291,7 @@ export function buildEnrollmentRecord(record = {}, { studentMasterId, year, clas
     status: record.status === 'archived' ? 'archived' : 'active',
     year: normalizeSessionYear(year, String(new Date().getFullYear())),
     isDeleted: record.isDeleted === true,
+    ...promotionFieldsOf(record),
     updatedAt: nowISO(),
   });
 }
@@ -262,6 +304,16 @@ export function mergeStudentRecord(master = {}, enrollment = {}, classId = '') {
     || enrollment?.id
     || '';
   const legacyId = enrollment?.legacyId || master?.legacyId || master?.localId || '';
+  // Promotion metadata describes THIS year's enrollment, never the permanent
+  // identity: when merging, the enrollment row always wins (even `null`), so a
+  // retained pupil can never inherit an old `promotedAt` from the master node.
+  const PROMOTION_KEYS = ['promotedAt', 'promotedFromClass', 'promotedFromYear', 'isNewPromotion', 'previousClassId'];
+  const promotionFields = {};
+  PROMOTION_KEYS.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(enrollment ?? {}, key)) promotionFields[key] = enrollment[key];
+    else if (!Object.prototype.hasOwnProperty.call(master ?? {}, key)) return;
+    else promotionFields[key] = null;
+  });
   return {
     ...enrollment,
     ...master,
@@ -278,6 +330,7 @@ export function mergeStudentRecord(master = {}, enrollment = {}, classId = '') {
     status: enrollment?.status ?? master?.status ?? 'active',
     isDeleted: master?.isDeleted === true || enrollment?.isDeleted === true,
     overallStatus: master?.overallStatus ?? 'active',
+    ...promotionFields,
   };
 }
 
@@ -328,8 +381,29 @@ export function normalizeEnrollmentMap(value) {
   return out;
 }
 
-const mergeEnrollmentMaps = (...maps) => maps.reduce((acc, map) => {
-  Object.entries(normalizeEnrollmentMap(map)).forEach(([classId, entries]) => {
+/**
+ * Merges several enrollment layouts into one `{classId: {masterId: row}}` map.
+ *
+ * The maps are given oldest-layout-first, so a LATER map is authoritative: when the
+ * same pupil appears in an older layout (a legacy flat roster / `sessions/{year}/
+ * students/{id}`) and in the current one, only the current row survives. That is what
+ * stops an old class/শাখা copy from resurrecting after a reload.
+ */
+export const mergeEnrollmentMaps = (...maps) => maps.reduce((acc, map) => {
+  const normalized = normalizeEnrollmentMap(map);
+  // Every pupil this (newer) map knows about leaves any earlier class bucket.
+  const claimed = new Set(
+    Object.values(normalized).flatMap((entries) => Object.keys(entries)),
+  );
+  if (claimed.size) {
+    Object.keys(acc).forEach((classId) => {
+      Object.keys(acc[classId]).forEach((masterId) => {
+        if (claimed.has(masterId)) delete acc[classId][masterId];
+      });
+      if (Object.keys(acc[classId]).length === 0) delete acc[classId];
+    });
+  }
+  Object.entries(normalized).forEach(([classId, entries]) => {
     acc[classId] = { ...(acc[classId] ?? {}), ...entries };
   });
   return acc;
@@ -349,14 +423,31 @@ export function buildYearRoster({ masters = {}, enrollments = {}, passed = {}, i
   const masterMap = asRecord(masters);
   const students = [];
   const archive = [];
+  /**
+   * One pupil can still be present under an older layout (`students/{classId}/{id}`,
+   * the flat legacy mirror, …) after a class/শাখা change. Only ONE row per
+   * `studentMasterId` may reach the roster — otherwise a refresh would list the pupil
+   * in the class they just left next to the class they moved to. The newest
+   * `updatedAt` wins, so the row written by the last move is authoritative.
+   */
+  const byMasterId = new Map();
+  const enroll = (merged) => {
+    const key = String(merged.studentMasterId || merged.id || '');
+    if (!key) return;
+    const stamp = String(merged.updatedAt ?? '');
+    const existing = byMasterId.get(key);
+    // The row written by the LAST move carries the newest `updatedAt` and wins.
+    if (!existing || stamp > String(existing.merged.updatedAt ?? '')) byMasterId.set(key, { merged });
+  };
 
   Object.entries(normalizeEnrollmentMap(enrollments)).forEach(([classId, entries]) => {
-    Object.entries(entries).forEach(([masterId, enrollment]) => {
-      const merged = mergeStudentRecord(masterMap[masterId], enrollment, classId);
+    Object.entries(entries).forEach(([, enrollment]) => {
+      const merged = mergeStudentRecord(masterMap[enrollment.studentMasterId], enrollment, classId);
       if (merged.isDeleted && !includeDeleted) return;
-      students.push(merged);
+      enroll(merged);
     });
   });
+  byMasterId.forEach(({ merged }) => students.push(merged));
 
   Object.entries(asRecord(passed)).forEach(([masterId, record]) => {
     if (!isObject(record)) return;
@@ -917,6 +1008,207 @@ export async function writePromotionEnrollment(schoolId, move = {}) {
   });
 }
 
+/** Only identity fields of a roster row — never an enrollment/year value. */
+const personalFieldsOf = (record = {}) => Object.fromEntries(
+  Object.entries(record).filter(([key, value]) => (
+    value !== undefined
+    && !ENROLLMENT_FIELD_KEYS.includes(key)
+    && !YEAR_ONLY_FIELD_KEYS.includes(key)
+    && !['id', 'studentMasterId', 'legacyId', 'localId', 'overallStatus', 'isDeleted', 'createdAt', 'updatedAt'].includes(key)
+  )),
+);
+
+/**
+ * Writes ONE pupil's individual class change (`উত্তীর্ণ` / `এই শ্রেণিতেই থাকুক` /
+ * `এক শ্রেণি নিচে যাবে`) inside the active year.
+ *
+ * A single multi-path `update()` keeps every node in step, so the same pupil is never
+ * listed twice and no reader ever observes a half-applied move:
+ *
+ * ```text
+ * sessions/{year}/students/{targetClassId}/{targetSectionId}/{studentMasterId} ← written
+ * sessions/{year}/students/{prevClassId}/{prevSectionId}/{studentMasterId}     ← removed
+ * sessions/{year}/passedArchive/{studentMasterId}          ← Class-5 leavers only
+ * sessions/{year}/passedArchive/years/{year}/{studentMasterId} ← same leaver, year-wise
+ * studentMaster/{studentMasterId}                          ← currentClassId / overallStatus
+ * ```
+ *
+ * @param {object}  move
+ * @param {string}  move.year              active session year
+ * @param {string}  move.prevClassId       class the pupil sits in today
+ * @param {string}  move.prevSectionId     শাখা the pupil sits in today
+ * @param {string}  move.nextClassId       destination class (`archive` = graduated)
+ * @param {string}  move.nextSectionId     destination শাখা (defaults to `ক`)
+ * @param {number}  move.roll              roll in the destination folder
+ * @param {string}  move.studentMasterId   permanent pupil id
+ * @param {object} [move.promotion]        promotion block written verbatim (`null`s clear it)
+ * @param {object} [move.personal]         permanent fields kept on `studentMaster`
+ */
+export async function moveStudentClass(schoolId, move = {}) {
+  const studentMasterId = String(move.studentMasterId ?? '').trim();
+  const yearKey = normalizeSessionYear(move.year);
+  if (!schoolId || !studentMasterId || !yearKey) return { synced: false };
+  const prevClassId = String(move.prevClassId ?? '').trim();
+  const nextClassId = String(move.nextClassId ?? prevClassId).trim();
+  if (!nextClassId) return { synced: false };
+  const prevSectionId = toSectionId(move.prevSectionId);
+  const nextSectionId = toSectionId(move.nextSectionId);
+  const graduated = nextClassId === 'archive';
+  const now = nowISO();
+  const promotion = isObject(move.promotion) ? move.promotion : null;
+
+  await ensureSchoolYear(schoolId, yearKey);
+  const base = studentSchoolBasePath(schoolId);
+  const paths = {};
+
+  /**
+   * The promotion metadata the pupil ALREADY carries. A শাখা-only move must not drop
+   * a month badge / origin tag, while an explicit decision (`promotion` supplied by the
+   * caller, `null`s included) always wins — that is what clears a stamp on a demotion.
+   */
+  const sourceRow = !graduated && prevClassId && prevClassId !== 'archive'
+    ? asRecord(await safeRead(
+      dbPaths.yearSectionStudent(schoolId, yearKey, toDbClassId(prevClassId), prevSectionId, studentMasterId),
+      {},
+    ))
+    : {};
+  const carriedPromotion = Object.fromEntries(
+    PROMOTION_FIELD_KEYS
+      .filter((key) => sourceRow[key] !== undefined)
+      .map((key) => [key, sourceRow[key]]),
+  );
+  const rowPromotion = { ...carriedPromotion, ...(promotion ?? {}) };
+
+  /* 1. The destination row. -------------------------------------------------- */
+  const personal = personalFieldsOf(move.personal ?? {});
+  if (graduated) {
+    const archivedRecord = cleanForCloud({
+      ...personal,
+      studentMasterId,
+      legacyId: move.legacyId ?? studentMasterId,
+      classId: prevClassId,
+      section: prevSectionId,
+      roll: Number(move.roll) || 0,
+      status: 'passed',
+      year: yearKey,
+      passedYear: yearKey,
+      archivedYear: yearKey,
+      archivedFromClass: prevClassId,
+      passedAt: rowPromotion.promotedAt ?? now,
+      ...rowPromotion,
+      updatedAt: now,
+    });
+    // Flat node + the year-wise folder + its year-keyed alias: the same three shapes
+    // the class-wide promotion writes, so every archive reader sees the leaver.
+    paths[relativeKey(base, dbPaths.yearPassedStudent(schoolId, yearKey, studentMasterId))] = archivedRecord;
+    paths[relativeKey(base, dbPaths.yearPassedArchiveYearStudent(schoolId, yearKey, yearKey, studentMasterId))] = archivedRecord;
+    paths[`${relativeKey(base, dbPaths.yearPassedArchive(schoolId, yearKey))}/${yearKey}/${studentMasterId}`] = archivedRecord;
+  } else {
+    paths[relativeKey(base, dbPaths.yearSectionStudent(
+      schoolId, yearKey, toDbClassId(nextClassId), nextSectionId, studentMasterId,
+    ))] = cleanForCloud({
+      ...buildEnrollmentRecord(
+        { ...personal, roll: move.roll, section: nextSectionId, status: 'active', legacyId: move.legacyId },
+        { studentMasterId, year: yearKey, classId: nextClassId, section: nextSectionId },
+      ),
+      ...rowPromotion,
+      updatedAt: now,
+    });
+  }
+
+  /* 2. The source row goes away, so the pupil is listed exactly once. --------- */
+  const movedClass = Boolean(prevClassId) && prevClassId !== nextClassId;
+  const movedSection = !graduated && prevClassId === nextClassId && prevSectionId !== nextSectionId;
+  if (prevClassId && (movedClass || movedSection)) {
+    paths[relativeKey(base, enrollmentNodePath(schoolId, yearKey, prevClassId, studentMasterId, prevSectionId))] = null;
+    legacyEnrollmentPaths(schoolId, yearKey, prevClassId, studentMasterId)
+      .forEach((path) => { paths[relativeKey(base, path)] = null; });
+  }
+  legacyEnrollmentPaths(schoolId, yearKey, nextClassId, studentMasterId)
+    .forEach((path) => { paths[relativeKey(base, path)] = null; });
+
+  /* 2b. Every OTHER folder of this year is swept as well. ---------------------
+   * A pupil may still sit under a class/শাখা spelling the caller did not know about
+   * (an older layout, a rename, or a row written by a previous half-applied move).
+   * Leaving such a row behind is exactly what made a class change "revert" (the old
+   * class row survived next to the new one and won the merge on reload), so each one
+   * is removed in the same atomic update.
+   * ------------------------------------------------------------------------ */
+  const destinationNode = graduated
+    ? ''
+    : relativeKey(base, dbPaths.yearSectionStudent(
+      schoolId, yearKey, toDbClassId(nextClassId), nextSectionId, studentMasterId,
+    ));
+
+  // The real location(s) of this pupil inside the year's roster — discovered, not
+  // guessed, so a custom শাখা label (or a row left by an earlier half-applied move in
+  // a class the caller does not know about) can never keep a stale row alive.
+  const yearStudentsNode = asRecord(await safeRead(dbPaths.yearStudents(schoolId, yearKey), {}));
+  Object.entries(yearStudentsNode).forEach(([rawClassId, classNode]) => {
+    const classKey = toDbClassId(rawClassId);
+    if (!classKey || classKey === 'archive' || !isObject(classNode)) return;
+    Object.entries(classNode).forEach(([sectionOrId, entry]) => {
+      if (!isObject(entry)) return;
+      // `students/{classId}/{studentMasterId}` — the layout written before শাখা folders.
+      if (sectionOrId === studentMasterId) {
+        const node = relativeKey(base, dbPaths.yearStudent(schoolId, yearKey, classKey, studentMasterId));
+        if (node !== destinationNode) paths[node] = null;
+        return;
+      }
+      // `students/{classId}/{sectionId}/{studentMasterId}` — one শাখা folder.
+      Object.keys(entry).forEach((nestedId) => {
+        const row = entry[nestedId];
+        if (!isObject(row)) return;
+        if (nestedId !== studentMasterId && row.studentMasterId !== studentMasterId) return;
+        const node = relativeKey(base, dbPaths.yearSectionStudent(
+          schoolId, yearKey, classKey, sectionOrId, studentMasterId,
+        ));
+        if (node !== destinationNode) paths[node] = null;
+      });
+    });
+  });
+
+  // Belt and braces: the nominal source folder and every class-level legacy node.
+  if (prevClassId && prevClassId !== 'archive' && !graduated) {
+    const sourceNode = relativeKey(base, enrollmentNodePath(
+      schoolId, yearKey, prevClassId, studentMasterId, prevSectionId,
+    ));
+    if (sourceNode !== destinationNode) paths[sourceNode] = null;
+  }
+  [...CLASS_LEVEL_IDS, ...CLASS_LEVEL_IDS.map(toDbClassId)].forEach((classId) => {
+    legacyEnrollmentPaths(schoolId, yearKey, classId, studentMasterId)
+      .forEach((path) => {
+        const node = relativeKey(base, path);
+        if (node !== destinationNode) paths[node] = null;
+      });
+  });
+  if (!graduated) {
+    // A pupil restored/promoted out of the archive must not linger there either.
+    [dbPaths.yearPassedStudent(schoolId, yearKey, studentMasterId),
+      dbPaths.yearPassedArchiveYearStudent(schoolId, yearKey, yearKey, studentMasterId),
+      `${dbPaths.yearPassedArchive(schoolId, yearKey)}/${yearKey}/${studentMasterId}`,
+    ].forEach((path) => { paths[relativeKey(base, path)] = null; });
+  }
+
+  /* 3. The permanent identity records the new current class. ------------------ */
+  const master = asRecord(await safeRead(dbPaths.studentMasterEntry(schoolId, studentMasterId), {}));
+  paths[relativeKey(base, dbPaths.studentMasterEntry(schoolId, studentMasterId))] = cleanForCloud({
+    ...master,
+    ...personal,
+    studentMasterId,
+    legacyId: master.legacyId || move.legacyId || studentMasterId,
+    overallStatus: graduated ? 'graduated' : 'active',
+    currentClassId: graduated ? 'archived' : toDbClassId(nextClassId),
+    ...(graduated
+      ? { graduatedYear: yearKey, archivedYear: yearKey }
+      : { academicYear: yearKey }),
+    updatedAt: now,
+  });
+
+  invalidateStudentMasterIndex(schoolId);
+  return safeUpdate(base, paths);
+}
+
 /**
  * Marks a pupil as graduated: permanent identity status + this year's archive row.
  * The previous year's roster node is intentionally left untouched.
@@ -996,6 +1288,7 @@ export default {
   moveStudentsCloud,
   saveStudents,
   writePromotionEnrollment,
+  moveStudentClass,
   markStudentGraduated,
   formatStudentMasterId,
   generateStudentMasterId,

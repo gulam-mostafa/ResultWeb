@@ -5,7 +5,7 @@ import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 
 const cellKey = (studentId, subjectId, termId) => `${studentId}:${subjectId}:${termId}`;
 
-export default function SpreadsheetMarksGrid({ students, marks, getStudentResult, getResult, setMark, canEdit, activeTerm = null }) {
+export default function SpreadsheetMarksGrid({ students, marks, getStudentResult, getResult, setMark, canEdit, activeTerm = null, onShowStudent, onShowResult }) {
   const resolveResult = getResult ?? getStudentResult;
   const [drafts, setDrafts] = useState({});
   const draftsRef = useRef(drafts);
@@ -80,14 +80,17 @@ export default function SpreadsheetMarksGrid({ students, marks, getStudentResult
     <tr><th className="sticky left-0 z-20">শিক্ষার্থী</th>{SUBJECTS.map((subject) => <th key={subject.id} colSpan={activeTerm ? 1 : 3} className="text-center">{subject.name}</th>)}<th>মোট</th><th>GPA</th><th>গ্রেড</th><th>মেধাক্রম</th><th>নতুন রোল</th></tr>
     <tr><th className="sticky left-0 z-20">রোল</th>{SUBJECTS.flatMap((subject) => visibleTerms.map((term) => <th key={`${subject.id}-${term.id}`} className="text-center">{term.shortName}</th>))}<th>{activeTerm ? '১০০' : '৬০০'}</th><th>৫.০০</th><th>—</th><th>—</th><th>—</th></tr>
   </thead><tbody>{rows.map(({ student, result, position, newRoll }) => <tr key={student.id}>
-    <td className="sticky left-0 bg-white"><div className="font-bold">{student.name}</div><div className="text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</div></td>
+    <td className="sticky left-0 bg-white"><button type="button" className="text-left" onClick={() => onShowStudent?.(student)} aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য`}><span className="font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">{student.name}</span></button><div className="text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</div></td>
     {SUBJECTS.flatMap((subject) => visibleTerms.map((term) => {
       const key = cellKey(student.id, subject.id, term.id);
       const remote = marks?.[student.id]?.[subject.id]?.[term.id] ?? '';
       const value = Object.prototype.hasOwnProperty.call(drafts, key) ? drafts[key] : remote;
       return <td key={key} className="min-w-16 p-1"><input data-grid="true" data-grid-key={key} aria-label={`${student.name}, ${subject.name}, ${term.name}`} disabled={!canEdit} type="number" min="0" max="100" className="mark-cell" value={value} onFocus={(event) => { editingKey.current = key; if (!Object.prototype.hasOwnProperty.call(draftsRef.current, key)) changeDraft(key, event.currentTarget.value); }} onChange={(event) => changeDraft(key, event.target.value)} onBlur={(event) => commitCell(student.id, subject.id, term.id, event.currentTarget.value)} onKeyDown={move} /></td>;
     }))}
-    <td className="font-bold">{toBanglaNumber(result.totalMarks)}</td><td>{result.gpa?.toFixed(2) ?? '—'}</td><td><span className={`badge ${result.isPass ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{result.grade}</span></td><td>{toBanglaNumber(position ?? '—')}</td><td>{toBanglaNumber(newRoll ?? '—')}</td>
+    <td className="font-bold">{toBanglaNumber(result.totalMarks)}</td><td>{result.gpa?.toFixed(2) ?? '—'}</td>
+    {/* The result badge opens the detailed result popup. */}
+    <td><button type="button" onClick={() => onShowResult?.(student)} aria-label={`${student.name} এর ফলাফল`} disabled={!onShowResult} className={`badge ${result.isPass ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} underline-offset-2 hover:underline`}>{result.grade}</button></td>
+    <td>{toBanglaNumber(position ?? '—')}</td><td>{toBanglaNumber(newRoll ?? '—')}</td>
   </tr>)}</tbody></table></div>;
 }
 

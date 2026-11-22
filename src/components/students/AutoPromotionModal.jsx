@@ -5,6 +5,19 @@ import { Badge } from '../ui/Primitives.jsx';
 import { CLASS_LEVELS, NEXT_CLASS_MAP, getClassName } from '../../utils/constants.js';
 import { toBanglaNumber, toBanglaOrdinal, toEnglishNumber } from '../../utils/banglaNumberFormatter.js';
 import { DEFAULT_SECTION_ID } from '../../services/database/dbPaths.js';
+import PromotionBadge from './PromotionBadge.jsx';
+import StudentDetailsModal from './StudentDetailsModal.jsx';
+import StudentResultModal from '../results/StudentResultModal.jsx';
+import {
+  PROMOTION_ORIGIN,
+  PROMOTION_ORIGIN_LABELS,
+  PROMOTION_SORT,
+  PROMOTION_SORT_LABELS,
+  promotionMonthKey,
+  promotionMonthOptions,
+  promotionOriginOf,
+  sortPromotionRows,
+} from '../../utils/promotionMeta.js';
 
 const STATUS_PASS = 'promote';   // উত্তীর্ণ
 const STATUS_FAIL = 'retain';    // এই ক্লাসেই থাকুক
@@ -125,6 +138,12 @@ export default function AutoPromotionModal({
   getClassRankMap,
   getSectionsOfClass,
   onExecute,
+  // Optional read-only context for the two drill-down popups (result + profile).
+  // Without it the popups still open, they just show the marks-free view.
+  allStudents = [],
+  marks = {},
+  getTermResult,
+  getClassAnalytics,
 }) {
   const [classId, setClassId] = useState('c5');
   const [overrides, setOverrides] = useState({});     // {studentId: 'promote' | 'retain'}
@@ -133,6 +152,12 @@ export default function AutoPromotionModal({
   const [failSection, setFailSection] = useState(DEFAULT_SECTION_ID);
   const [splitMode, setSplitMode] = useState('top');  // 'top' | 'rest'
   const [topCount, setTopCount] = useState('');
+  // Display-only controls: never affect the merit order used for roll assignment.
+  const [monthFilter, setMonthFilter] = useState('');
+  const [sortOrder, setSortOrder] = useState(PROMOTION_SORT.NEWEST);
+  // Drill-down popups opened from a roster row (name ➔ profile, result ➔ result).
+  const [profileTarget, setProfileTarget] = useState(null);
+  const [resultTarget, setResultTarget] = useState(null);
 
   const nextClassId = NEXT_CLASS_MAP[classId];
   const isGraduating = nextClassId === 'archive';
@@ -187,6 +212,7 @@ export default function AutoPromotionModal({
     setFailSection(DEFAULT_SECTION_ID);
     setTopCount('');
     setSplitMode('top');
+    setMonthFilter('');
   }, [classId]);
 
   // Opening the modal starts on the class the caller came from (the Results page
@@ -305,6 +331,49 @@ export default function AutoPromotionModal({
   /** Rows whose শাখা was picked by hand (overriding the bulk distribution). */
   const manualCount = Object.keys(sectionOverrides).length;
 
+  /* ------------------------------------------------------------------ *
+   * Origin + promotion-month views (display only).
+   *
+   * Roll assignment always follows MERIT order (`ranked` above), exactly as the
+   * campus store writes it. The controls below only decide WHICH rows are listed
+   * and in what order they are painted, so a teacher can see, for example, the
+   * pupils that arrived from class 1 inside class 2 without losing the merit view.
+   * ------------------------------------------------------------------ */
+
+  /** `{ [studentId]: 'promoted' | 'existing' }` inside the selected class. */
+  const originById = useMemo(
+    () => new Map(ranked.map((row) => [
+      row.student.id,
+      promotionOriginOf(row.student, classId),
+    ])),
+    [ranked, classId],
+  );
+  const promotedOriginCount = useMemo(
+    () => [...originById.values()].filter((origin) => origin === PROMOTION_ORIGIN.PROMOTED).length,
+    [originById],
+  );
+  const existingOriginCount = ranked.length - promotedOriginCount;
+
+  /** Months of the pupils already promoted into THIS class (badges on screen). */
+  const monthOptions = useMemo(() => promotionMonthOptions(classStudents), [classStudents]);
+
+  /**
+   * The list actually painted in the table: month filter, then the display sort.
+   * `meritIndex` keeps the original merit position so the execute payload (which
+   * must stay in merit order) can still be derived from `ranked`.
+   */
+  const visibleRows = useMemo(() => {
+    const withMerit = ranked.map((row, index) => ({
+      ...row,
+      meritIndex: index,
+      origin: originById.get(row.student.id) ?? PROMOTION_ORIGIN.EXISTING,
+    }));
+    const filtered = monthFilter
+      ? withMerit.filter((row) => promotionMonthKey(row.student.promotedAt) === monthFilter)
+      : withMerit;
+    return sortPromotionRows(filtered, sortOrder);
+  }, [ranked, originById, monthFilter, sortOrder]);
+
   const execute = () => {
     if (!ranked.length) return;
     // The decision list is already in merit order, so the new rolls follow it.
@@ -326,13 +395,26 @@ export default function AutoPromotionModal({
     onClose();
   };
 
-  return <Modal open={open} onClose={onClose} title="বার্ষিক শ্রেণি উত্তরণ" subtitle="মেধাক্রম অনুযায়ী উত্তীর্ণ / একই শ্রেণিতে রাখুন এবং শাখা বণ্টন" icon={GraduationCap} size="xl">
+  /**
+   * The promotion modal must never close while a drill-down popup is open: Escape is
+   * handled by BOTH dialogs (they listen on `document`), so the parent ignores the
+   * key while a child popup is on screen and the child closes itself.
+   */
+  const closeParent = () => {
+    if (profileTarget || resultTarget) return;
+    onClose?.();
+  };
+
+  return <>
+    <Modal open={open} onClose={closeParent} title="বার্ষিক শ্রেণি উত্তরণ" subtitle="মেধাক্রম অনুযায়ী উত্তীর্ণ / একই শ্রেণিতে রাখুন এবং শাখা বণ্টন" icon={GraduationCap} size="xl">
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <label><span className="label-base mb-0">শ্রেণি</span><select className="input-base max-w-xs" value={classId} onChange={(event) => setClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label><span className="label-base mb-0">পরবর্তী শ্রেণি</span><p className="input-base max-w-xs bg-slate-50 text-xs font-bold dark:bg-slate-800">{isGraduating ? 'আর্কাইভ (পাসড আর্কাইভ)' : getClassName(nextClassId)}</p></label>
         <Badge tone="emerald">উত্তীর্ণ: {toBanglaNumber(passedCount)}</Badge>
         <Badge tone="rose">এই ক্লাসেই থাকুক: {toBanglaNumber(failedCount)}</Badge>
+        <Badge tone="sky">{PROMOTION_ORIGIN_LABELS[PROMOTION_ORIGIN.PROMOTED]}: {toBanglaNumber(promotedOriginCount)}</Badge>
+        <Badge tone="slate">{PROMOTION_ORIGIN_LABELS[PROMOTION_ORIGIN.EXISTING]}: {toBanglaNumber(existingOriginCount)}</Badge>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -346,33 +428,89 @@ export default function AutoPromotionModal({
 
       <div className="flex flex-wrap items-end justify-between gap-2">
         <p className="text-[11px] font-semibold text-slate-500">মেধাক্রম অনুযায়ী তালিকা (সব শাখা একসাথে)</p>
-        {manualCount > 0 ? <button type="button" className="text-[11px] font-bold text-brand-700 underline" onClick={() => setSectionOverrides({})}>পৃথক শাখা পরিবর্তন রিসেট ({toBanglaNumber(manualCount)})</button> : null}
+        <div className="flex flex-wrap items-end gap-2">
+          <label><span className="label-base mb-0">উত্তরণের মাস</span><select className="input-base min-w-40 py-1.5 text-xs" value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)} aria-label="উত্তরণের মাস অনুযায়ী ফিল্টার"><option value="">সব মাস</option>{monthOptions.map((option) => <option key={option.key} value={option.key}>{option.label} ({toBanglaNumber(option.count)})</option>)}</select></label>
+          <label><span className="label-base mb-0">ক্রম</span><select className="input-base min-w-44 py-1.5 text-xs" value={sortOrder} onChange={(event) => setSortOrder(event.target.value)} aria-label="উত্তরণের ক্রম"><option value={PROMOTION_SORT.NEWEST}>{PROMOTION_SORT_LABELS[PROMOTION_SORT.NEWEST]}</option><option value={PROMOTION_SORT.OLDEST}>{PROMOTION_SORT_LABELS[PROMOTION_SORT.OLDEST]}</option></select></label>
+          {manualCount > 0 ? <button type="button" className="text-[11px] font-bold text-brand-700 underline" onClick={() => setSectionOverrides({})}>পৃথক শাখা পরিবর্তন রিসেট ({toBanglaNumber(manualCount)})</button> : null}
+        </div>
       </div>
       <div className="max-h-80 overflow-auto rounded-xl border border-slate-200">
-        <table className="table-base min-w-[720px]">
-          <thead><tr><th>মেধাক্রম</th><th>রোল / নাম</th><th>শাখা</th><th>ফলাফল</th><th>সিদ্ধান্ত</th><th>নতুন শাখা</th></tr></thead>
-          <tbody>{ranked.map((row, index) => {
+        <table className="table-base min-w-[980px]">
+          <thead><tr><th>মেধাক্রম</th><th>রোল / নাম</th><th>শাখা</th><th>উৎস</th><th>ফলাফল</th><th>সিদ্ধান্ত</th><th>নতুন শাখা</th></tr></thead>
+          <tbody>{visibleRows.map((row, index) => {
             const status = statusOf(row.student);
             const result = row.result;
+            // A pupil who came from another class is "নতুন উত্তীর্ণ"; one who was
+            // already in this class (including a retained pupil) is "এই শ্রেণিতেই ছিল".
+            const promoted = row.origin === PROMOTION_ORIGIN.PROMOTED;
             return <tr key={row.student.id}>
-              <td className="font-bold">{toBanglaOrdinal(index + 1)}</td>
-              <td>{toBanglaNumber(row.student.roll)} · {row.student.name}</td>
+              <td className="font-bold">{toBanglaOrdinal((row.meritIndex ?? index) + 1)}</td>
+              <td>
+                {/* The name opens the pupil's full profile popup. `stopPropagation`
+                    keeps the click away from the row, so no promotion decision and no
+                    select/checkbox is ever toggled by drilling into a pupil. */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="text-left hover:underline focus:outline-none focus-visible:underline"
+                    onClick={(event) => { event.stopPropagation(); setProfileTarget(row.student); }}
+                    aria-label={`${row.student.name} এর পূর্ণাঙ্গ তথ্য`}
+                  >{toBanglaNumber(row.student.roll)} · {row.student.name}</button>
+                  <PromotionBadge student={row.student} />
+                </div>
+              </td>
               <td><Badge tone="brand">{cleanSection(row.student.section)}</Badge></td>
-              <td>{result.hasAnyMark ? `${result.grade} · GPA ${result.gpa?.toFixed(2)}` : 'ফলাফল নেই'}</td>
+              <td><Badge tone={promoted ? 'sky' : 'slate'}>{PROMOTION_ORIGIN_LABELS[row.origin]}</Badge></td>
+              <td>
+                {/* The result summary opens the detailed result popup of THIS pupil. */}
+                <button
+                  type="button"
+                  className="text-left hover:underline focus:outline-none focus-visible:underline"
+                  onClick={(event) => { event.stopPropagation(); setResultTarget(row.student); }}
+                  aria-label={`${row.student.name} এর ফলাফল`}
+                >{result.hasAnyMark ? `${result.grade} · GPA ${result.gpa?.toFixed(2)}` : 'ফলাফল নেই'}</button>
+              </td>
               <td><select className="input-base min-w-40 py-1.5 text-xs" value={status} onChange={(event) => setOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}><option value={STATUS_PASS}>{isGraduating ? 'উত্তীর্ণ (আর্কাইভ)' : 'উত্তীর্ণ'}</option><option value={STATUS_FAIL}>এই ক্লাসেই থাকুক</option></select></td>
               <td><select className="input-base min-w-28 py-1.5 text-xs" value={sectionOf(row.student)} aria-label={`${row.student.name} এর নতুন শাখা`} onChange={(event) => setSectionOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}>{sectionOptionsFor(sectionOf(row.student)).map((option) => <option key={option} value={option}>{option}</option>)}</select></td>
             </tr>;
           })}</tbody>
         </table>
+        {!visibleRows.length && <p className="py-8 text-center text-sm text-slate-400">এই মাসে কোনো শিক্ষার্থী পাওয়া যায়নি।</p>}
       </div>
+      {monthFilter ? <p className="rounded-lg bg-amber-50 p-2.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">ফিল্টার শুধু তালিকা দেখার জন্য — “উত্তরণ কার্যকর” চাপলে শ্রেণির <b>সব {toBanglaNumber(ranked.length)} জন</b> শিক্ষার্থীর সিদ্ধান্তই মেধাক্রম অনুযায়ী সংরক্ষিত হবে।</p> : null}
 
-      <p className="text-xs text-slate-500"><b>মেধাক্রম</b> অনুযায়ী ১ম শিক্ষার্থী সবার উপরে; সব শাখার শিক্ষার্থীরা একসাথে দেখানো হয়েছে এবং প্রত্যেকের বর্তমান শাখা আলাদা কলামে লেখা আছে। ডিফল্টভাবে পাস করা শিক্ষার্থী <b>উত্তীর্ণ</b> ও ফেল করা শিক্ষার্থী <b>এই ক্লাসেই থাকুক</b> — যেকোনো শিক্ষার্থীর সিদ্ধান্ত বদলানো যাবে। “শিক্ষার্থী সংখ্যা / মেধাক্রম” ঘরে শুধু একটি সংখ্যা (যেমন <b>৩০</b>) দিলে প্রথম ততজন নির্বাচিত শাখায় যাবে; আর <b>১-৩০</b> বা <b>২০-৩০</b> এর মতো রেঞ্জ দিলে ঠিক ওই মেধাক্রমের শিক্ষার্থীরা নির্বাচিত শাখায় এবং বাকিরা অন্য শাখায় (<b>{otherSection}</b>) যাবে। ডান দিকের <b>নতুন শাখা</b> কলামে যেকোনো শিক্ষার্থীর শাখা আলাদাভাবে বদলানো যাবে এবং সেই পরিবর্তন বণ্টন নিয়মকে অগ্রাহ্য করে “উত্তরণ কার্যকর” এ সংরক্ষিত হবে। ৫ম শ্রেণির উত্তীর্ণরা বছরভিত্তিক <b>passedArchive</b>-এ যাবে।</p>
+      <p className="text-xs text-slate-500"><b>মেধাক্রম</b> অনুযায়ী ১ম শিক্ষার্থী সবার উপরে; সব শাখার শিক্ষার্থীরা একসাথে দেখানো হয়েছে এবং প্রত্যেকের বর্তমান শাখা আলাদা কলামে লেখা আছে। <b>উৎস</b> কলামে <b>নতুন উত্তীর্ণ</b> মানে শিক্ষার্থী আগের শ্রেণি থেকে এসেছে, আর <b>এই শ্রেণিতেই ছিল</b> মানে সে আগে থেকেই এই শ্রেণিতে ছিল (যেমন ২য় শ্রেণিতে আগের শিক্ষার্থীদের সঙ্গে ১ম থেকে উত্তীর্ণরা যোগ দিলে)। ডিফল্টভাবে পাস করা শিক্ষার্থী <b>উত্তীর্ণ</b> ও ফেল করা শিক্ষার্থী <b>এই ক্লাসেই থাকুক</b> — যেকোনো শিক্ষার্থীর সিদ্ধান্ত বদলানো যাবে। “শিক্ষার্থী সংখ্যা / মেধাক্রম” ঘরে শুধু একটি সংখ্যা (যেমন <b>৩০</b>) দিলে প্রথম ততজন নির্বাচিত শাখায় যাবে; আর <b>১-৩০</b> বা <b>২০-৩০</b> এর মতো রেঞ্জ দিলে ঠিক ওই মেধাক্রমের শিক্ষার্থীরা নির্বাচিত শাখায় এবং বাকিরা অন্য শাখায় (<b>{otherSection}</b>) যাবে। ডান দিকের <b>নতুন শাখা</b> কলামে যেকোনো শিক্ষার্থীর শাখা আলাদাভাবে বদলানো যাবে এবং সেই পরিবর্তন বণ্টন নিয়মকে অগ্রাহ্য করে “উত্তরণ কার্যকর” এ সংরক্ষিত হবে। <b>উত্তরণের মাস</b> ও <b>ক্রম</b> শুধু তালিকা দেখার জন্য — উত্তরণ ও রোল বণ্টন সর্বদা মেধাক্রম অনুযায়ী হয়। উত্তরণের ৩ মাস (৯০ দিন) পর্যন্ত শিক্ষার্থীর নামের পাশে <b>মাস ও বছর</b> ব্যাজ দেখা যায়, এরপর ব্যাজটি সম্পূর্ণভাবে সরে যায়। ৫ম শ্রেণির উত্তীর্ণরা বছরভিত্তিক <b>passedArchive</b>-এ যাবে।</p>
 
       <div className="flex justify-end gap-2">
         <button className="btn-secondary" onClick={onClose}>বাতিল</button>
         <button className="btn-primary" onClick={execute} disabled={!ranked.length}><ArrowUpRight size={15}/> উত্তরণ কার্যকর ({toBanglaNumber(ranked.length)} জন)</button>
       </div>
     </div>
-  </Modal>;
+    </Modal>
+    {/* Drill-down popups — inspection only, the promotion state underneath is untouched. */}
+    <StudentDetailsModal
+      open={Boolean(profileTarget)}
+      onClose={() => setProfileTarget(null)}
+      student={profileTarget
+        ? (allStudents.find((item) => item.id === profileTarget.id) ?? profileTarget)
+        : null}
+      marks={marks}
+      allStudents={allStudents.length ? allStudents : students}
+      getTermResult={getTermResult}
+      getStudentResult={getStudentResult}
+      getClassAnalytics={getClassAnalytics}
+    />
+    <StudentResultModal
+      open={Boolean(resultTarget)}
+      onClose={() => setResultTarget(null)}
+      student={resultTarget
+        ? (allStudents.find((item) => item.id === resultTarget.id) ?? resultTarget)
+        : null}
+      marks={marks}
+      getStudentResult={getStudentResult}
+      getTermResult={getTermResult}
+      getClassAnalytics={getClassAnalytics}
+    />
+  </>;
 }
 

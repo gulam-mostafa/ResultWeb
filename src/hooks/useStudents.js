@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CLASS_LEVELS, NEXT_CLASS_MAP, DEMO_SESSION } from '../utils/constants.js';
 import { DEFAULT_ACTIVE_YEAR, isCompleteSchoolRef } from '../context/AuthContext.jsx';
 import {
+  nextFreeRollInBucket,
+  planPromotionRolls,
+  resolveRollAssignment,
+} from '../utils/rollAssignment.js';
+import {
   createEmptyMarks,
   normalizeLocation,
   normalizeSessionYear,
@@ -12,6 +17,7 @@ import {
   resolveMasterId,
   buildStudentMasterRecord,
   buildEnrollmentRecord,
+  moveStudentClass,
   toDbClassId,
   toSectionId,
   DEFAULT_SECTION_ID,
@@ -25,6 +31,13 @@ import {
 const nowISO = () => new Date().toISOString();
 const makeId = (prefix) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * A class-wide promotion writes the roster, the passed archive and the permanent
+ * identity rows. That legitimately takes longer than a single mark cell, and the
+ * generic 3 s save timeout used to report it as a failed save.
+ */
+const PROMOTION_SAVE_TIMEOUT_MS = 20000;
 
 const asList = (value) => (Array.isArray(value) ? value.filter(Boolean) : []);
 const sortByRoll = (list) => asList(list).sort((a, b) => (a?.roll ?? 0) - (b?.roll ?? 0));
@@ -178,8 +191,14 @@ async function saveStudentPatch(reference, year, studentId, patch, previousClass
     ? patch.section
     : previousSectionId);
   const paths = {
-    [relativeKey(base, dbPaths.studentMasterEntry(reference, studentMasterId))]:
-      buildStudentMasterRecord(merged, { studentMasterId, year }),
+    [relativeKey(base, dbPaths.studentMasterEntry(reference, studentMasterId))]: {
+      ...buildStudentMasterRecord(merged, { studentMasterId, year }),
+      // The permanent identity records which class the pupil currently sits in, so a
+      // reader that only has the master node still knows the class (and a leaver
+      // stays marked as graduated).
+      overallStatus: nextClassId === 'archive' ? 'graduated' : 'active',
+      currentClassId: nextClassId === 'archive' ? 'archived' : toDbClassId(nextClassId),
+    },
     [relativeKey(base, enrollmentPath(reference, year, nextClassId, studentMasterId, nextSectionId))]:
       buildEnrollmentRecord(merged, {
         studentMasterId, year, classId: nextClassId, section: nextSectionId,
@@ -200,6 +219,64 @@ async function saveStudentPatch(reference, year, studentId, patch, previousClass
   return safeUpdate(base, paths);
 }
 
+/** Enrollment-level promotion keys, rewritten on every individual class move. */
+const PROMOTION_ROW_KEYS = Object.freeze([
+  'promotedAt', 'promotedFromClass', 'promotedFromYear', 'isNewPromotion', 'previousClassId',
+]);
+
+/**
+ * Individual class change (`উত্তরণ` / শাখা বদল) of ONE pupil.
+ *
+ * All of the RTDB bookkeeping — the destination enrollment row, removal of the old
+ * class/শাখা row, the `passedArchive` filing of a Class-5 leaver and the
+ * `studentMaster` update — lives in `studentService.moveStudentClass`, so the same
+ * tested writer serves the profile modal and any future caller.
+ *
+ * The tenant REFERENCE (`divisions/…/schools/{schoolId}`) is what `moveStudentClass`
+ * resolves its base path from; passing the base path itself used to demote the write
+ * to `schoolData/{slug}` so the move never reached the real node and the old
+ * class/শাখা came back on reload.
+ *
+ * A promotion block is only written when the caller actually decided the promotion:
+ * a শাখা-only move keeps the pupil's existing badge/origin metadata untouched.
+ *
+ * @param {object} previous the roster row as it is stored today
+ * @param {object} next     the row as it should be stored (classId/section/roll applied)
+ * @param {string} year     the active session year
+ */
+async function saveStudentClassChange(reference, year, previous = {}, next = {}) {
+  const base = tenantBasePath(reference);
+  if (!base) return { synced: false, reason: 'incomplete-school-ref' };
+  const studentId = String(next.id ?? previous.id ?? '').trim();
+  if (!studentId) return { synced: false };
+  const studentMasterId = previous.studentMasterId
+    || next.studentMasterId
+    || await resolveMasterId(reference, studentId);
+  if (!studentMasterId) return { synced: false };
+
+  return moveStudentClass(reference, {
+    year: normalizeSessionYear(year, DEFAULT_ACTIVE_YEAR),
+    studentMasterId,
+    legacyId: previous.legacyId ?? studentId,
+    prevClassId: previous.classId,
+    prevSectionId: previous.section,
+    nextClassId: next.classId ?? previous.classId,
+    nextSectionId: next.section ?? previous.section,
+    roll: Number(next.roll ?? previous.roll) || 0,
+    // Only the fields the caller explicitly decided are written (`null` clears them).
+    promotion: PROMOTION_ROW_KEYS.some((key) => Object.prototype.hasOwnProperty.call(next, key))
+      ? PROMOTION_ROW_KEYS.reduce((acc, key) => {
+        acc[key] = next[key] === undefined ? null : next[key];
+        return acc;
+      }, {})
+      : undefined,
+    // Permanent identity fields travel with the move, so a rename is never lost.
+    // `moveStudentClass` filters out every enrollment/year key itself.
+    personal: next,
+  });
+}
+
+
 /**
  * Student roster: read selectors plus every roster mutation.
  *
@@ -216,6 +293,7 @@ export function useStudents({
   activeYear = '',
   canWriteTenant,
   runCloudSave,
+  markSynced,
 }) {
   // Roster, marks and attendance are all addressed through the hierarchical
   // `…/schools/{schoolId}/sessions/{year}` reference — never a bare school id.
@@ -320,12 +398,23 @@ export function useStudents({
     (input) => {
       // A pupil always lands in a শাখা folder; `ক` is the school's default section.
       const section = toSectionId(input.section);
+      // A roll typed in the admission form is kept when it is still free in that
+      // class + শাখা; otherwise the next number AFTER the highest existing roll is
+      // used, so a new admission can never duplicate a roll.
+      const roster = datasetRef.current.students;
+      const typedRoll = Number(input.roll) || 0;
+      const roll = resolveRollAssignment(roster, {
+        classId: input.classId,
+        section,
+        roll: typedRoll,
+        placement: typedRoll ? 'preferred' : 'end',
+      });
       const student = {
         id: makeId('stu'),
         name: String(input.name ?? '').trim(),
         classId: input.classId,
         section,
-        roll: Number(input.roll) || (datasetRef.current.students.filter((item) => item.classId === input.classId).length + 1),
+        roll,
         gender: input.gender ?? 'male',
         admissionYear: String(input.admissionYear ?? input.admissionDate?.slice?.(0, 4) ?? new Date().getFullYear()),
         birthDate: input.birthDate ?? '',
@@ -372,13 +461,61 @@ export function useStudents({
   const updateStudent = useCallback(
     (studentId, patch) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
+      // A class change / শাখা change / archive move is a MOVE of the enrollment row,
+      // not an in-place edit — it goes through the single multi-path writer so the
+      // old folder is cleared, the new one written and `studentMaster` stays in step.
+      const nextClassId = patch?.classId ?? existing?.classId ?? '';
+      const classMoved = Boolean(existing) && Boolean(patch?.classId) && patch.classId !== existing.classId;
+      const sectionMoved = Boolean(existing)
+        && patch?.section !== undefined
+        && toSectionId(patch.section) !== toSectionId(existing.section);
+      const isMove = Boolean(existing) && (classMoved || sectionMoved);
+
+      /* ---- Zero duplicate rolls -----------------------------------------------
+       * A class/শাখা change always writes a roll that no other pupil of the target
+       * class + শাখা holds. The edit modal already resolved it; this is the safety
+       * net for any other caller (a শাখা rename, a bulk import, a script), so a move
+       * can never land on an occupied number. `এক শ্রেণি নিচে যাবে` is identified by
+       * the target class being BELOW the current one and always goes to the very end
+       * of the destination list.
+       * ----------------------------------------------------------------------- */
+      let effectivePatch = patch;
+      if (isMove && existing && nextClassId !== 'archive') {
+        const targetSection = toSectionId(patch.section ?? existing.section);
+        const demoting = Boolean(existing.classId)
+          && (CLASS_LEVELS.findIndex((item) => item.id === nextClassId) <
+            CLASS_LEVELS.findIndex((item) => item.id === existing.classId));
+        const roll = resolveRollAssignment(datasetRef.current.students, {
+          classId: nextClassId,
+          section: targetSection,
+          roll: patch.roll ?? existing.roll,
+          ignoreIds: [studentId],
+          placement: demoting ? 'end' : 'preferred',
+        });
+        effectivePatch = { ...patch, roll };
+      }
+
       if (canWriteCloud && canWriteTenant && existing) {
-        runCloudSave(() => saveStudentPatch(tenantRef, year, studentId, patch, existing.classId, existing));
-        // A section typed into the edit form is declared for the year too.
-        const touchedSection = Object.prototype.hasOwnProperty.call(patch ?? {}, 'section');
-        const nextClassId = patch?.classId ?? existing.classId;
+        if (isMove) {
+          runCloudSave(() => saveStudentClassChange(
+            tenantRef,
+            year,
+            existing,
+            {
+              ...existing,
+              ...effectivePatch,
+              classId: nextClassId,
+              section: toSectionId(effectivePatch.section ?? existing.section),
+            },
+          ));
+        } else {
+          runCloudSave(() => saveStudentPatch(tenantRef, year, studentId, effectivePatch, existing.classId, existing));
+        }
+        // A section typed into the edit form is declared for the year too, so the
+        // destination শাখা selector lists it immediately.
+        const touchedSection = Object.prototype.hasOwnProperty.call(effectivePatch ?? {}, 'section');
         if (touchedSection && nextClassId && nextClassId !== 'archive') {
-          runCloudSave(() => registerSectionCloud(tenantRef, year, nextClassId, patch.section));
+          runCloudSave(() => registerSectionCloud(tenantRef, year, nextClassId, effectivePatch.section));
         }
       }
       updateDataset(
@@ -386,16 +523,18 @@ export function useStudents({
           ...prev,
           students: prev.students.map((student) => {
             if (student.id !== studentId) return student;
-            const nextClassId = patch.classId ?? student.classId;
+            const targetClassId = effectivePatch.classId ?? student.classId;
+            const targetSection = toSectionId(effectivePatch.section ?? student.section);
+            const archived = targetClassId === 'archive';
             return {
               ...student,
-              ...patch,
-              classId: nextClassId,
-              section: toSectionId(patch.section ?? student.section),
-              status: nextClassId === 'archive' ? 'archived' : 'active',
-              previousClassId: nextClassId === 'archive'
+              ...effectivePatch,
+              classId: targetClassId,
+              section: targetSection,
+              status: archived ? 'archived' : 'active',
+              previousClassId: archived
                 ? (student.classId === 'archive' ? student.previousClassId : student.classId)
-                : null,
+                : (effectivePatch.previousClassId ?? student.previousClassId ?? null),
               id: student.id,
             };
           }),
@@ -438,9 +577,15 @@ export function useStudents({
     (studentId, classId) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
       if (!existing || existing.classId !== 'archive' || !CLASS_LEVELS.some((item) => item.id === classId)) return;
-      const roll = datasetRef.current.students.filter((student) => student.classId === classId).length + 1;
-      // The pupil returns to the শাখা they left (the default one when unknown).
-      const section = toSectionId(existing.section ?? existing.previousSectionId);
+      // The pupil returns to the শাখা they left (the default one when unknown) and is
+      // placed at the END of that class + শাখা list, so a restore never duplicates a
+      // roll that is already in use.
+      const section = toSectionId(existing.section ?? existing.previousSectionId ?? existing.previousSection);
+      const roll = nextFreeRollInBucket(datasetRef.current.students, {
+        classId,
+        section,
+        ignoreIds: [studentId],
+      });
       const restored = { ...existing, classId, roll, section, status: 'active', previousClassId: null };
       if (canWriteCloud && canWriteTenant) {
         runCloudSave(() => saveStudentPatch(
@@ -477,12 +622,24 @@ export function useStudents({
       if (!Number.isFinite(numeric) || numeric < 1) return;
       const rounded = Math.round(numeric);
       const student = datasetRef.current.students.find((item) => item.id === studentId);
+      // A hand-typed roll is only accepted when it is free in that class + শাখা;
+      // asking for an occupied number keeps the pupil at the end of the list instead
+      // of creating a duplicate.
+      const resolved = student && student.classId !== 'archive'
+        ? resolveRollAssignment(datasetRef.current.students, {
+          classId: student.classId,
+          section: student.section,
+          roll: rounded,
+          ignoreIds: [studentId],
+          placement: 'preferred',
+        })
+        : rounded;
       if (canWriteCloud && canWriteTenant && student) {
-        runCloudSave(() => saveStudentPatch(tenantRef, year, studentId, { roll: rounded }, student.classId, student));
+        runCloudSave(() => saveStudentPatch(tenantRef, year, studentId, { roll: resolved }, student.classId, student));
       }
       updateDataset((prev) => ({
         ...prev,
-        students: prev.students.map((item) => (item.id === studentId ? { ...item, roll: rounded } : item)),
+        students: prev.students.map((item) => (item.id === studentId ? { ...item, roll: resolved } : item)),
       }));
     },
     [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
@@ -580,6 +737,9 @@ export function useStudents({
    * @param {Array<{studentId:string, action:'promote'|'retain', section?:string}>} decisions
    *   `promote` ➔ উত্তীর্ণ (next class), `retain` ➔ এই ক্লাসেই থাকুক. `section` is the
    *   destination শাখা (any label); blank keeps the pupil's own শাখা.
+   * @returns {Promise<{synced:boolean, promoted:number, retained:number, archived:number}>}
+   *   `synced` reflects ONLY the primary roster write, so a failing non-critical
+   *   secondary/legacy write can never report the promotion as failed.
    */
   const executePromotion = useCallback(
     (decisions = [], options = {}) => {
@@ -588,126 +748,135 @@ export function useStudents({
         const raw = item?.section;
         return raw === undefined || raw === null || raw === '' ? fallback : toSectionId(raw);
       };
+      const sourceStudents = datasetRef.current.students;
+      const sourceById = new Map(sourceStudents.map((student) => [student.id, student]));
+      // The active partition is authoritative (it is the `sessions/{year}` node the
+      // cloud write targets); `meta.session` is only a display fallback.
+      const promotedAt = nowISO();
+      const yearKey = normalizeSessionYear(year, normalizeSessionYear(datasetRef.current.meta?.session, DEFAULT_ACTIVE_YEAR));
 
-      updateDataset(
-        (prev) => {
-          const archivedIds = [];
-
-          // Rolls are re-numbered per destination class AND শাখা, continuing after the
-          // pupils who are NOT part of this promotion, so no two pupils share a roll.
-          const baseline = new Map();
-          const tally = (classId, section) => {
-            const key = `${classId}::${toSectionId(section)}`;
-            baseline.set(key, (baseline.get(key) ?? 0) + 1);
-            return baseline.get(key);
-          };
-          const targetOf = new Map();
-          prev.students.forEach((student) => {
-            const decision = decisionMap.get(student.id);
-            if (decision && student.classId !== 'archive') {
-              // Where the pupil lands (own class when `এই ক্লাসেই থাকুক`). The roster
-              // offers exactly two decisions: `উত্তীর্ণ` and `এই ক্লাসেই থাকুক`.
-              const action = decision.action === 'retain' ? 'retain' : 'promote';
-              const nextClass = action === 'retain'
-                ? student.classId
-                : NEXT_CLASS_MAP[student.classId];
-              targetOf.set(student.id, {
-                action,
-                nextClass: nextClass || student.classId,
-                section: pickSection(decision, toSectionId(student.section)),
-              });
-              return;
-            }
-            // Untouched pupils keep their roll and reserve their own slot.
-            if (student.classId && student.classId !== 'archive') tally(student.classId, student.section);
-          });
-
-          // The decisions arrive in MERIT order (১ম at the top), so rolls are handed
-          // out in exactly that order — the same order the campus store writes.
-          const updatedById = new Map();
-          decisions.forEach((decision) => {
-            const student = prev.students.find((item) => item.id === decision.studentId);
-            const target = targetOf.get(decision.studentId);
-            if (!student || !target) return;
-            const roll = tally(target.nextClass, target.section);
-            const promoted = {
-              ...student,
-              classId: target.nextClass,
-              section: target.section,
-              roll,
-              status: target.nextClass === 'archive' ? 'archived' : 'active',
-              graduatedYear: target.nextClass === 'archive' ? prev.meta?.session ?? DEMO_SESSION : student.graduatedYear,
-              previousClassId: target.nextClass === 'archive'
-                ? student.classId
-                : (target.action === 'promote' ? student.classId : null),
-            };
-            if (target.nextClass === 'archive') archivedIds.push(student.id);
-            updatedById.set(student.id, promoted);
-          });
-          const resequenced = prev.students.map((student) => updatedById.get(student.id) ?? student);
-
-          // Annual promotion inside the SAME year node, delegated to the campus store:
-          // `sessions/{year}/students/{nextClassId}/{sectionId}/{id}` for every pupil
-          // that continues, `sessions/{year}/passedArchive/{id}` for Class-5 leavers,
-          // plus the `studentMaster` + `meta/sections` updates. A refresh therefore
-          // replays the promoted classes and every teacher sees the same roster live.
-          if (canWriteCloud && canWriteTenant) {
-            const sourceById = new Map(prev.students.map((student) => [student.id, student]));
-            // Choices are addressed by app id; the store needs the permanent master id,
-            // resolved from the row BEFORE the move (a leaver is still in class 5 here).
-            const cloudDecisions = decisions
-              .map((item) => {
-                const student = sourceById.get(item.studentId);
-                if (!student || student.classId === 'archive') return null;
-                return {
-                  studentId: item.studentId,
-                  studentMasterId: student.studentMasterId || student.id,
-                  action: item.action === 'retain' ? 'retain' : 'promote',
-                  section: item.section === undefined || item.section === null ? '' : toSectionId(item.section),
-                };
-              })
-              .filter(Boolean);
-            const fromClassIds = [...new Set(
-              cloudDecisions
-                .map((item) => sourceById.get(item.studentId)?.classId)
-                .filter((classId) => classId && classId !== 'archive'),
-            )];
-            fromClassIds.forEach((fromClassId) => {
-              const decidedIds = new Set(
-                cloudDecisions
-                  .filter((item) => sourceById.get(item.studentId)?.classId === fromClassId)
-                  .map((item) => item.studentId),
-              );
-              runCloudSave(() => promoteClassInYear(tenantRef, year, {
-                fromClassId,
-                decisions: cloudDecisions.filter((item) => decidedIds.has(item.studentId)),
-                // Only the pupils the teacher actually decided on are moved — an
-                // undecided class keeps its current roster unchanged.
-                students: prev.students.filter(
-                  (student) => decidedIds.has(student.id) && student.classId === fromClassId,
-                ),
-                targetSections: options?.targetSections ?? [],
-              }));
+      /** `studentId ➔ {action, nextClass, section, roll, archived}` computed locally. */
+      const moves = new Map();
+      const archivedIds = [];
+      /** `studentId ➔ roll` of every row this batch renumbers (batch + displaced residents). */
+      let assignments = new Map();
+      {
+        /* ---- Rolls ------------------------------------------------------------
+         * One plan for the whole batch (`planPromotionRolls`), the exact same function
+         * the campus store uses: pupils promoted in from a lower class get clean
+         * ১, ২, ৩… rolls in merit order, and pupils already sitting in the class
+         * (including `এই ক্লাসেই থাকুক`) are placed AFTER them — so a class receiving
+         * lower-class students can never end up with two pupils sharing a roll.
+         * `staying`/`incoming` follow the merit order the decisions arrive in.
+         * -------------------------------------------------------------------- */
+        const targetOf = new Map();
+        sourceStudents.forEach((student) => {
+          const decision = decisionMap.get(student.id);
+          if (decision && student.classId !== 'archive') {
+            // Where the pupil lands (own class when `এই ক্লাসেই থাকুক`). The roster
+            // offers exactly two decisions: `উত্তীর্ণ` and `এই ক্লাসেই থাকুক`.
+            const action = decision.action === 'retain' ? 'retain' : 'promote';
+            const nextClass = action === 'retain'
+              ? student.classId
+              : NEXT_CLASS_MAP[student.classId];
+            targetOf.set(student.id, {
+              action,
+              nextClass: nextClass || student.classId,
+              section: pickSection(decision, toSectionId(student.section)),
             });
           }
+        });
 
-          const promotedCount = decisions.filter((item) => item.action !== 'retain').length;
-          const promotionEntry = {
-            at: nowISO(),
-            session: prev.meta?.session ?? DEMO_SESSION,
-            promoted: archivedIds.length > 0 ? promotedCount - archivedIds.length : promotedCount,
-            archived: archivedIds.length,
-            retained: decisions.filter((item) => item.action === 'retain').length,
-            sections: options?.distribution ?? null,
-          };
+        const rollPlan = planPromotionRolls({
+          entries: decisions
+            .map((decision) => {
+              const target = targetOf.get(decision.studentId);
+              if (!target) return null;
+              return {
+                id: decision.studentId,
+                action: target.action,
+                targetClassId: target.nextClass,
+                section: target.section,
+              };
+            })
+            .filter(Boolean),
+          roster: sourceStudents,
+          movingIds: [...targetOf.keys()],
+        });
+        assignments = rollPlan;
+
+        decisions.forEach((decision) => {
+          const candidate = sourceById.get(decision.studentId);
+          const target = targetOf.get(decision.studentId);
+          if (!candidate || !target) return;
+          const archived = target.nextClass === 'archive';
+          // A graduate keeps their roll (the archive is not a numbered list); a
+          // continuing pupil always takes the roll the plan assigned.
+          const plannedRoll = rollPlan.get(candidate.id);
+          const roll = archived
+            ? (Number(candidate.roll) || 0)
+            : (plannedRoll ?? (Number(candidate.roll) || 0));
+          if (archived) archivedIds.push(candidate.id);
+          moves.set(candidate.id, { ...target, roll, archived });
+        });
+      }
+
+      // Local (optimistic) roster: the same reshuffle the campus store writes. The
+      // reducer stays PURE — no cloud call is made from inside it.
+      updateDataset(
+        (prev) => {
+          const resequenced = prev.students.map((student) => {
+            const move = moves.get(student.id);
+            // A pupil already sitting in a class that received lower-class students is
+            // renumbered after them, so the local list matches the stored one exactly.
+            const plannedRoll = assignments.get(student.id);
+            if (!move) {
+              return plannedRoll && plannedRoll !== Number(student.roll)
+                ? { ...student, roll: plannedRoll }
+                : student;
+            }
+            const archived = move.archived;
+            // Promotion metadata distinguishes "নতুন উত্তীর্ণ" (came from another
+            // class) from a repeating pupil kept in the same class.
+            const origin = archived || move.action === 'promote'
+              ? {
+                promotedAt,
+                promotedFromClass: student.classId,
+                promotedFromYear: yearKey,
+                isNewPromotion: true,
+              }
+              : {
+                promotedAt: null,
+                promotedFromClass: null,
+                promotedFromYear: null,
+                isNewPromotion: false,
+              };
+            return {
+              ...student,
+              classId: move.nextClass,
+              section: move.section,
+              roll: move.roll,
+              status: archived ? 'archived' : 'active',
+              graduatedYear: archived ? (prev.meta?.session ?? DEMO_SESSION) : student.graduatedYear,
+              previousClassId: archived || move.action === 'promote' ? student.classId : null,
+              ...origin,
+            };
+          });
 
           return {
             ...prev,
             students: resequenced,
             meta: {
               ...prev.meta,
-              lastPromotionAt: promotionEntry.at,
-              promotionLog: [promotionEntry, ...(prev.meta?.promotionLog ?? [])].slice(0, 20),
+              lastPromotionAt: promotedAt,
+              promotionLog: [{
+                at: promotedAt,
+                session: prev.meta?.session ?? DEMO_SESSION,
+                promoted: [...moves.values()].filter((move) => move.action === 'promote' && !move.archived).length,
+                archived: archivedIds.length,
+                retained: decisions.filter((item) => item.action === 'retain').length,
+                sections: options?.distribution ?? null,
+              }, ...(prev.meta?.promotionLog ?? [])].slice(0, 20),
             },
           };
         },
@@ -717,8 +886,122 @@ export function useStudents({
           actor: 'school_admin',
         },
       );
+
+      const summary = {
+        synced: true,
+        partial: false,
+        // Retained pupils stay where they are, so only continuing pupils count as
+        // promoted; Class-5 leavers are reported separately as `archived`.
+        promoted: [...moves.values()].filter((move) => move.action === 'promote' && !move.archived).length,
+        retained: decisions.filter((item) => item.action === 'retain').length,
+        archived: archivedIds.length,
+      };
+
+      /* ---- campus store write ------------------------------------------------
+       * Annual promotion inside the SAME year node:
+       * `sessions/{year}/students/{nextClassId}/{sectionId}/{id}` for every pupil
+       * that continues, `sessions/{year}/passedArchive/{id}` for Class-5 leavers,
+       * plus the `studentMaster` / `meta/sections` side writes. A refresh therefore
+       * replays the promoted classes and every teacher sees the same roster live.
+       *
+       * The save is scheduled OUTSIDE the reducer so React's double-invoked state
+       * updater can never issue the same RTDB write twice — and its verdict is what
+       * the caller receives, so the promotion can report an accurate save result.
+       * --------------------------------------------------------------------- */
+      if (!moves.size || !canWriteCloud || !canWriteTenant) return Promise.resolve(summary);
+
+      // Choices are addressed by app id; the store needs the permanent master id,
+      // resolved from the row BEFORE the move (a leaver is still in class 5 here).
+      const cloudDecisions = decisions
+        .map((item) => {
+          const student = sourceById.get(item.studentId);
+          if (!student || student.classId === 'archive') return null;
+          return {
+            studentId: item.studentId,
+            studentMasterId: student.studentMasterId || student.id,
+            action: item.action === 'retain' ? 'retain' : 'promote',
+            section: item.section === undefined || item.section === null ? '' : toSectionId(item.section),
+          };
+        })
+        .filter(Boolean);
+
+      const fromClassIds = [...new Set(
+        cloudDecisions
+          .map((item) => sourceById.get(item.studentId)?.classId)
+          .filter((classId) => classId && classId !== 'archive'),
+      )];
+      if (!fromClassIds.length) return Promise.resolve(summary);
+
+      // Sequential on purpose: each class's roll plan is computed against the stored
+      // roster, so two batches must never renumber the same class at the same time.
+      const saves = fromClassIds.reduce((chain, fromClassId) => chain.then(async (results) => {
+        const decidedIds = new Set(
+          cloudDecisions
+            .filter((item) => sourceById.get(item.studentId)?.classId === fromClassId)
+            .map((item) => item.studentId),
+        );
+        // A class-wide promotion is a multi-node write; 3s is too tight for it and a
+        // timeout used to be reported as a failed save.
+        const result = await runCloudSave(() => promoteClassInYear(tenantRef, year, {
+          fromClassId,
+          decisions: cloudDecisions.filter((item) => decidedIds.has(item.studentId)),
+          // Only the pupils the teacher actually decided on are moved — an
+          // undecided class keeps its current roster unchanged.
+          students: sourceStudents.filter(
+            (student) => decidedIds.has(student.id) && student.classId === fromClassId,
+          ),
+          targetSections: options?.targetSections ?? [],
+          // Shared batch timestamp so the stored `promotedAt` matches the local rows.
+          promotedAt,
+        }), { timeoutMs: PROMOTION_SAVE_TIMEOUT_MS });
+        return [...results, result];
+      }), Promise.resolve([]));
+
+      return saves.then((results) => {
+        const synced = results.length > 0 && results.every((entry) => entry?.synced !== false);
+        /* ---- Mirror the authoritative rolls ---------------------------------
+         * The store returns `{ studentMasterId: roll }` for every row it wrote —
+         * including the pupils it pushed to the end of a class that received
+         * lower-class students. Applying it locally keeps the on-screen roll list
+         * identical to the persisted one (no duplicate after a reload).
+         * ------------------------------------------------------------------- */
+        const written = results.reduce((acc, entry) => ({ ...acc, ...(entry?.assignment ?? {}) }), {});
+        if (Object.keys(written).length) {
+          const byMasterId = new Map(sourceStudents.map((student) => [
+            String(student.studentMasterId || student.id),
+            student.id,
+          ]));
+          const resolved = new Map();
+          Object.entries(written).forEach(([masterId, roll]) => {
+            const appId = byMasterId.get(String(masterId)) ?? String(masterId);
+            const numeric = Number(roll);
+            if (Number.isFinite(numeric) && numeric > 0) resolved.set(appId, numeric);
+          });
+          if (resolved.size) {
+            updateDataset((previous) => ({
+              ...previous,
+              students: previous.students.map((student) => {
+                const roll = resolved.get(student.id);
+                return roll && roll !== Number(student.roll) ? { ...student, roll } : student;
+              }),
+            }));
+          }
+        }
+        // The PRIMARY roster write succeeded ➔ the promotion is saved. Any stale
+        // failed/partial badge state is cleared here, so a non-critical secondary
+        // write (identity row, শাখা registry, audit log) can never leave the topbar
+        // stuck on "সেভ ব্যর্থ হয়েছে".
+        if (synced) markSynced?.();
+        return {
+          ...summary,
+          // PRIMARY roster writes decide the verdict — a secondary-only failure is
+          // still a successful promotion (`partial`), never "সেভ ব্যর্থ হয়েছে".
+          synced,
+          partial: results.some((entry) => entry?.partial === true),
+        };
+      });
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, markSynced],
   );
 
   return {

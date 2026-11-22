@@ -3,6 +3,8 @@ import { GraduationCap, Pencil } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 import { CLASS_LEVELS, SUBJECTS, TERMS } from '../../utils/constants.js';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
+import PromotionBadge from './PromotionBadge.jsx';
+import { promotionMonthLabel, promotionOriginOf, PROMOTION_ORIGIN_LABELS } from '../../utils/promotionMeta.js';
 
 const value = (item) => item || '—';
 const Info = ({ label, value: content }) => <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 break-words text-sm font-semibold">{value(content)}</p></div>;
@@ -31,11 +33,14 @@ export default function StudentDetailsModal({ open, onClose, student, marks = {}
   return <Modal open={open} onClose={onClose} title="শিক্ষার্থীর পূর্ণাঙ্গ তথ্য" subtitle={student?.name ?? ''} icon={GraduationCap} size="xl">
     {student && <div className="space-y-5">
       <section><h3 className="mb-2 text-sm font-bold">ব্যক্তিগত ও ভর্তি তথ্য</h3><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        <Info label="নাম" value={student.name} /><Info label="রোল" value={toBanglaNumber(student.roll)} /><Info label="শ্রেণি" value={CLASS_LEVELS.find((item) => item.id === student.classId)?.name ?? (student.classId === 'archive' ? 'আর্কাইভ' : '—')} />
+        <Info label="নাম" value={<span className="inline-flex flex-wrap items-center gap-1.5">{student.name}<PromotionBadge student={student} /></span>} /><Info label="রোল" value={toBanglaNumber(student.roll)} /><Info label="শ্রেণি" value={CLASS_LEVELS.find((item) => item.id === student.classId)?.name ?? (student.classId === 'archive' ? 'আর্কাইভ' : '—')} />
         <Info label="ভর্তির সাল" value={toBanglaNumber(student.admissionYear || student.admissionDate?.slice?.(0, 4))} /><Info label="লিঙ্গ" value={student.gender === 'female' ? 'ছাত্রী' : 'ছাত্র'} /><Info label="জন্ম তারিখ" value={student.birthDate} />
         <Info label="জন্ম নিবন্ধন নম্বর" value={student.birthCertificateNo} /><Info label="পিতার নাম" value={student.fatherName} /><Info label="পিতার মোবাইল" value={student.fatherPhone || student.guardianPhone} />
         <Info label="মাতার নাম" value={student.motherName} /><Info label="মাতার মোবাইল" value={student.motherPhone} /><Info label="অভিভাবকের ভোটার আইডি" value={student.guardianNid} />
         <Info label="ঠিকানা" value={student.address} />
+        <Info label="উৎস" value={PROMOTION_ORIGIN_LABELS[promotionOriginOf(student, student.classId)]} />
+        <Info label="উত্তরণের মাস" value={promotionMonthLabel(student.promotedAt)} />
+        <Info label="পূর্ববর্তী শ্রেণি" value={CLASS_LEVELS.find((item) => item.id === student.promotedFromClass)?.name ?? (student.promotedFromClass || '')} />
       </div></section>
       <section>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="text-sm font-bold">প্রান্তিক ও বার্ষিক ফলাফল</h3><label className="flex items-center gap-2 text-xs font-semibold">শ্রেণি <select className="input-base py-1.5" value={currentClassId} onChange={(event) => setClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>

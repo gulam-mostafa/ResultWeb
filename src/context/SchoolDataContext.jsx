@@ -240,8 +240,9 @@ export function SchoolDataProvider({ children }) {
   }, []);
 
   // Only explicitly-invoked mutations enter the Saving state. The timeout keeps
-  // a stalled Firebase request from leaving the badge spinning indefinitely.
-  const runCloudSave = useCallback(async (operation) => {
+  // a stalled Firebase request from leaving the badge spinning indefinitely; a
+  // caller with a bigger payload (a whole class promotion) may pass a longer one.
+  const runCloudSave = useCallback(async (operation, { timeoutMs = 3000 } = {}) => {
     const id = ++saveSequence.current;
     let timeoutId;
     const timedOut = new Promise((resolve) => {
@@ -249,7 +250,7 @@ export function SchoolDataProvider({ children }) {
         activeSaveTimers.current.delete(id);
         setSyncState(activeSaveTimers.current.size ? 'saving' : (isOnline ? 'synced' : 'offline'));
         resolve({ synced: false, timedOut: true });
-      }, 3000);
+      }, Math.max(1000, Number(timeoutMs) || 3000));
     });
     activeSaveTimers.current.set(id, timeoutId);
     setSyncState('saving');
@@ -264,10 +265,28 @@ export function SchoolDataProvider({ children }) {
       clearTimeout(activeSaveTimers.current.get(id));
       activeSaveTimers.current.delete(id);
       if (activeSaveTimers.current.size === 0) {
-        setSyncState(result?.synced === false && !result?.timedOut && isOnline ? 'error' : (isOnline ? 'synced' : 'offline'));
+        // A timed-out request is a slow network, not a rejected write: it must never
+        // leave the badge stuck on the red "সেভ ব্যর্থ হয়েছে" state. The same holds
+        // for a save whose PRIMARY write succeeded while a non-critical secondary
+        // write (`partial: true`) failed — the data the teacher saved is safe.
+        const failed = result?.synced === false && !result?.timedOut && result?.partial !== true;
+        setSyncState(failed && isOnline ? 'error' : (isOnline ? 'synced' : 'offline'));
       }
     }
   }, [isOnline]);
+
+  /**
+   * Explicitly clears a stale failed/saving state.
+   *
+   * The promotion flow uses this once its PRIMARY write has succeeded: a
+   * non-critical secondary/legacy write (permanent identity, শাখা registry, audit
+   * log, legacy mirror) must never leave the topbar showing "সেভ ব্যর্থ হয়েছে".
+   */
+  const markSynced = useCallback(() => {
+    if (activeSaveTimers.current.size > 0) return;
+    setSyncState(typeof navigator === 'undefined' || navigator.onLine ? 'synced' : 'offline');
+  }, []);
+
 
   const saveProfile = useCallback(async (patch) => {
     if (!schoolId || !canWriteTenant) return { synced: false };
@@ -315,6 +334,7 @@ export function SchoolDataProvider({ children }) {
     activeYear,
     canWriteTenant,
     runCloudSave,
+    markSynced,
   });
 
   const {
@@ -408,6 +428,7 @@ export function SchoolDataProvider({ children }) {
       // sync status
       syncState,
       isOnline,
+      markSynced,
       // selectors
       studentsByClass,
       sectionCounts,
@@ -451,6 +472,7 @@ export function SchoolDataProvider({ children }) {
       canWriteTenant,
       syncState,
       isOnline,
+      markSynced,
       studentsByClass,
       sectionCounts,
       sectionRegistry,
