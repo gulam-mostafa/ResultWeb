@@ -16,7 +16,7 @@ import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 
 export default function StudentsPage() {
-  const { students, studentsByClass, sectionCounts, marks, addStudent, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
+  const { students, studentsByClass, sectionCounts, marks, addStudent, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
   const { canManageStudents } = useAuth();
   const [tab, setTab] = useState('pre');
   const [section, setSection] = useState(DEFAULT_SECTION_ID);
@@ -94,7 +94,7 @@ export default function StudentsPage() {
     <AddStudentModal open={adding} onClose={() => setAdding(false)} onSave={saveStudent} defaultClass={tab === 'archive' ? 'pre' : tab} sectionOptions={sectioned ? sections : []} roster={students} />
     <AddStudentModal open={Boolean(editing)} onClose={() => setEditing(null)} onSave={saveStudent} student={editing} defaultClass={editing?.classId === 'archive' ? (editing?.previousClassId || 'pre') : (editing?.classId || tab)} onArchive={confirmArchive} sectionOptions={editing ? getSectionsOfClass(editing.classId === 'archive' ? (editing.previousClassId || 'pre') : editing.classId) : []} roster={students} getSectionsOfClass={getSectionsOfClass} />
     <StudentDetailsModal open={Boolean(selected)} onClose={() => setSelected(null)} student={selected ? (students.find((item) => item.id === selected.id) ?? selected) : null}
-      marks={marks} allStudents={students} getTermResult={getTermResult} getStudentResult={getStudentResult} getClassAnalytics={getClassAnalytics}
+      marks={marks} allStudents={students} getTermResult={getTermResult} getStudentResult={getStudentResult} getClassAnalytics={getClassAnalytics} getResultConfig={getResultConfig}
       onEdit={canManageStudents ? (student) => { setSelected(null); setEditing(student); } : null} />
     <StudentResultModal open={Boolean(resultTarget)} onClose={() => setResultTarget(null)}
       student={resultTarget ? (students.find((item) => item.id === resultTarget.id) ?? resultTarget) : null}
@@ -117,6 +117,7 @@ export default function StudentsPage() {
       getStudentClassRank={getStudentClassRank}
       getClassRankMap={getClassRankMap}
       getSectionsOfClass={getSectionsOfClass}
+      getResultConfig={getResultConfig}
       onExecute={executePromotion}
     />
   </>;

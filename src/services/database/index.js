@@ -5,6 +5,7 @@ export * from './schoolProfileService.js';
 export * from './memberService.js';
 export * from './studentService.js';
 export * from './resultService.js';
+export * from './resultConfigService.js';
 export * from './attendanceService.js';
 export * from './userAndVisitorService.js';
 export * from './datasetService.js';

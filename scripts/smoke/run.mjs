@@ -13,7 +13,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const stub = (file) => path.join(here, file).replaceAll('\\', '/');
 
 /** Smoke entry points run in order; each keeps its own assertions. */
-const ENTRIES = ['promotion.smoke.mjs', 'rolls.smoke.mjs', 'render.smoke.mjs'];
+const ENTRIES = ['promotion.smoke.mjs', 'rolls.smoke.mjs', 'render.smoke.mjs', 'results.smoke.mjs'];
 
 // The bundle must live INSIDE the project so `react` / `react-dom` resolve from the
 // workspace `node_modules` when Node imports the (externalised) modules.

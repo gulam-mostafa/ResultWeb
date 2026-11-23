@@ -192,6 +192,24 @@ function flatten(tree = {}, aliasOf = (id) => id) {
     marks[appId] = marks[appId] ?? {};
     marks[appId][subjectId] = marks[appId][subjectId] ?? {};
     marks[appId][subjectId][term] = mark.total;
+    // গাঠনিক / সামষ্টিক components travel alongside the subject total so a class
+    // configuration with a custom split can re-derive the total exactly.
+    //  • A legacy aggregate row stores the SAME value in both components (that is how
+    //    a pre-split mark was persisted) — expanding it would double the total, so it
+    //    is skipped.
+    //  • A real component row always satisfies `formative + summative = total`.
+    const legacyAggregate = mark.formative !== null
+      && mark.summative !== null
+      && mark.formative === mark.total
+      && mark.summative === mark.total;
+    const explicitComponents = !legacyAggregate
+      && (mark.formative !== null || mark.summative !== null)
+      && Math.round(((mark.formative ?? 0) + (mark.summative ?? 0)) * 100) / 100 === Math.round(mark.total * 100) / 100;
+    if (!explicitComponents) return;
+    marks[appId][`${subjectId}:formative`] = marks[appId][`${subjectId}:formative`] ?? {};
+    marks[appId][`${subjectId}:formative`][term] = mark.formative ?? 0;
+    marks[appId][`${subjectId}:summative`] = marks[appId][`${subjectId}:summative`] ?? {};
+    marks[appId][`${subjectId}:summative`][term] = mark.summative ?? 0;
   };
 
   const visit = (classId, term, studentId, row) => {
@@ -381,9 +399,12 @@ export async function saveMark(schoolId, termId, classId, studentId, subjectId, 
   const previous = await readResultRow(schoolId, yearKey, classId, term, studentMasterId);
   const priorSubjects = normalizeResultRow(previous).subjects ?? {};
   const current = priorSubjects[subjectId] ?? {};
+  // A component edit keeps the other component; a single-score edit replaces both
+  // components with the one typed value (`summative: null` keeps `total` = value, so a
+  // non-split subject is never double counted).
   const nextInput = component === 'formative' || component === 'summative'
     ? { ...current, [component]: value }
-    : { formative: value, summative: value };
+    : { formative: value, summative: null };
   const next = normalizeSubjectMark(nextInput);
   const subjects = { ...priorSubjects, [subjectId]: next };
   // `total` is derived, so it is written last: a component edit must never leave
@@ -395,6 +416,61 @@ export async function saveMark(schoolId, termId, classId, studentId, subjectId, 
       [subjectId]: { formative: next.formative, summative: next.summative },
     },
   }, { subjects });
+}
+
+/**
+ * Bulk Excel save: writes many pupils' marks of ONE term in a single multi-path update.
+ *
+ * `entries` shape — `{ [studentId]: { [fieldKey]: { component, value } } }` where
+ * `fieldKey` is `subjectId` or `subjectId:formative|summative`. Every path is written
+ * under the ACTIVE school's own year partition, so nothing can leak between schools.
+ * A split subject's `total` is written as the sum of its two components.
+ */
+export async function saveTermMarksBulk(reference, year, classId, termId, entries = {}, config = null) {
+  const yearKey = normalizeSessionYear(year);
+  if (!yearKey || !classId) return { synced: false };
+  const { byId } = await readStudentMasterIndex(reference);
+  const term = termKey(termId);
+  const patch = {};
+  const now = nowISO();
+
+  Object.entries(asRecord(entries)).forEach(([studentId, fields]) => {
+    if (!studentId || !isObject(fields)) return;
+    const studentMasterId = byId.get(studentId) || studentId;
+    const key = rowRelativeKey(reference, yearKey, classId, term, studentMasterId);
+    const perSubject = {};
+    Object.entries(fields).forEach(([fieldKey, payload]) => {
+      const [subjectId, component = 'total'] = String(fieldKey).split(':');
+      if (!subjectId) return;
+      perSubject[subjectId] = perSubject[subjectId] ?? {};
+      perSubject[subjectId][component] = numberOrNull(payload?.value ?? payload);
+    });
+    Object.entries(perSubject).forEach(([subjectId, parts]) => {
+      const subject = config?.subjects?.find((item) => item.id === subjectId) ?? null;
+      if (subject?.split || parts.formative !== undefined || parts.summative !== undefined) {
+        const formative = parts.formative ?? null;
+        const summative = parts.summative ?? null;
+        const total = formative === null && summative === null ? null : subjectTotal(formative, summative);
+        patch[`${key}/subjects/${subjectId}/formative`] = formative;
+        patch[`${key}/subjects/${subjectId}/summative`] = summative;
+        patch[`${key}/subjects/${subjectId}/total`] = total;
+        return;
+      }
+      const total = parts.total ?? null;
+      patch[`${key}/subjects/${subjectId}/formative`] = total;
+      patch[`${key}/subjects/${subjectId}/summative`] = null;
+      patch[`${key}/subjects/${subjectId}/total`] = total;
+    });
+    patch[`${key}/studentMasterId`] = studentMasterId;
+    patch[`${key}/legacyId`] = studentId;
+    patch[`${key}/classId`] = toDbClassId(classId);
+    patch[`${key}/term`] = term;
+    patch[`${key}/updatedAt`] = now;
+  });
+
+  if (Object.keys(patch).length === 0) return { synced: true };
+  await ensureSchoolYear(reference, yearKey);
+  return safeUpdate(rowBasePath(reference, yearKey, classId, term), patch);
 }
 
 /** Saves a whole term's subject map at once (paste / import). */
@@ -727,6 +803,7 @@ export default {
   readSessionResults,
   saveMark,
   saveStudentTermMarks,
+  saveTermMarksBulk,
   saveRemark,
   saveRankings,
   saveTermResults,

@@ -70,7 +70,7 @@ export function round(value, decimals = 2) {
 }
 
 /* ------------------------------------------------------------------ *
- * 3. Weighted subject total (২০% + ২০% + ৬০%)
+ * 3. Weighted subject total (১৫% + ১৫% + ৭০%, the default annual weighting)
  * ------------------------------------------------------------------ */
 
 /**

@@ -18,6 +18,7 @@ const GLOBALS = new Set([
   'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'RegExp', 'Error', 'TypeError',
   'Intl', 'undefined', 'NaN', 'Infinity', 'globalThis', 'fetch', 'URL', 'URLSearchParams',
   'FormData', 'Blob', 'File', 'FileReader', 'crypto', 'performance', 'structuredClone',
+  'Uint8Array', 'ArrayBuffer', 'DataView', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Float64Array',
   'HTMLElement', 'Node', 'Event', 'CustomEvent', 'alert', 'confirm', 'print', 'location',
   'history', 'process', 'module', 'require', 'exports', 'AbortController', 'TextEncoder',
   'TextDecoder', 'ResizeObserver', 'IntersectionObserver', 'MutationObserver', 'Image',

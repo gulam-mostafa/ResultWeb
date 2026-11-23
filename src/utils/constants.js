@@ -219,9 +219,9 @@ export const getEvaluationStructure = () => EVALUATION_COMPONENTS;
  * name, so `final` and `annual` address the same term (see `resolveTermKey`).
  */
 export const TERMS = Object.freeze([
-  { id: 'term1', key: 'term1', name: '১ম প্রান্তিক', shortName: '১ম', weight: 0.2, weightLabel: '২০%', fullMarks: 100 },
-  { id: 'term2', key: 'term2', name: '২য় প্রান্তিক', shortName: '২য়', weight: 0.2, weightLabel: '২০%', fullMarks: 100 },
-  { id: 'annual', key: 'final', name: 'বার্ষিক মূল্যায়ন', shortName: 'বার্ষিক', weight: 0.6, weightLabel: '৬০%', fullMarks: 100 },
+  { id: 'term1', key: 'term1', name: '১ম প্রান্তিক', shortName: '১ম', weight: 0.15, weightLabel: '১৫%', fullMarks: 100 },
+  { id: 'term2', key: 'term2', name: '২য় প্রান্তিক', shortName: '২য়', weight: 0.15, weightLabel: '১৫%', fullMarks: 100 },
+  { id: 'annual', key: 'final', name: 'বার্ষিক মূল্যায়ন', shortName: 'বার্ষিক', weight: 0.7, weightLabel: '৭০%', fullMarks: 100 },
 ]);
 
 export const TERM_IDS = Object.freeze(TERMS.map((term) => term.id));

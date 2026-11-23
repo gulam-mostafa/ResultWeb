@@ -2,27 +2,29 @@ import { Link } from 'react-router-dom';
 import { Bar } from 'react-chartjs-2';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { SUBJECTS } from '../utils/constants.js';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import { academicYearOf, addressLine, schoolDisplayName } from '../utils/schoolProfile.js';
 import { Card, CardHeader, StatCard, Badge } from '../components/ui/Primitives.jsx';
 import { Users, School, GraduationCap, FileText, ArrowRight } from 'lucide-react';
 
 export default function Dashboard() {
-  const { summary, getClassAnalytics, schoolProfile } = useSchoolData();
+  const { summary, getClassAnalytics, getResultConfig, schoolProfile } = useSchoolData();
   const { user } = useAuth();
   const analytics = getClassAnalytics('c5');
+  // Subject labels/colours come from this school's own class configuration, so a
+  // customised subject list is reflected on the dashboard too.
+  const subjects = getResultConfig?.('c5')?.subjects ?? [];
   const chart = {
-    labels: SUBJECTS.map((subject) => subject.name),
+    labels: subjects.map((subject) => subject.name),
     datasets: [{
       label: 'গড় নম্বর',
-      data: SUBJECTS.map((subject) => {
+      data: subjects.map((subject) => {
         const values = analytics.rows
           .map((row) => row.result.subjects.find((item) => item.id === subject.id)?.total)
           .filter(Number.isFinite);
         return values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
       }),
-      backgroundColor: SUBJECTS.map((subject) => subject.color),
+      backgroundColor: subjects.map((subject) => subject.color || '#64748b'),
       borderRadius: 6,
     }],
   };

@@ -144,6 +144,7 @@ export default function AutoPromotionModal({
   marks = {},
   getTermResult,
   getClassAnalytics,
+  getResultConfig,
 }) {
   const [classId, setClassId] = useState('c5');
   const [overrides, setOverrides] = useState({});     // {studentId: 'promote' | 'retain'}
@@ -499,6 +500,7 @@ export default function AutoPromotionModal({
       getTermResult={getTermResult}
       getStudentResult={getStudentResult}
       getClassAnalytics={getClassAnalytics}
+      getResultConfig={getResultConfig}
     />
     <StudentResultModal
       open={Boolean(resultTarget)}
@@ -510,6 +512,7 @@ export default function AutoPromotionModal({
       getStudentResult={getStudentResult}
       getTermResult={getTermResult}
       getClassAnalytics={getClassAnalytics}
+      getResultConfig={getResultConfig}
     />
   </>;
 }

@@ -1,6 +1,6 @@
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, Crown } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
-import { CLASS_LEVELS, SUBJECTS, TERMS } from '../../utils/constants.js';
+import { CLASS_LEVELS, TERMS } from '../../utils/constants.js';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import { promotionMonthLabel } from '../../utils/promotionMeta.js';
 
@@ -32,16 +32,22 @@ export default function StudentResultModal({
   getStudentResult,
   getTermResult,
   getClassAnalytics,
+  tab = null,
   term = null,
 }) {
+  const activeTabId = tab ?? term ?? null;
   const annual = getStudentResult?.(student?.id) ?? { hasAnyMark: false, subjects: [], grade: '—', gpa: null, totalMarks: 0 };
   const studentMarks = marks?.[student?.id] ?? {};
   const classId = student?.classId && student.classId !== 'archive' ? student.classId : student?.previousClassId;
   const classRows = (getClassAnalytics?.(classId)?.rows ?? []).filter((row) => row.hasAnyMark);
   const position = classRows.findIndex((row) => row.studentId === student?.id);
-  const activeTerm = TERMS.find((item) => item.id === term) ?? null;
+  const activeTerm = TERMS.find((item) => item.id === activeTabId) ?? null;
   const termResult = activeTerm ? (getTermResult?.(student?.id, activeTerm.id) ?? {}) : null;
   const promotedMonth = promotionMonthLabel(student?.promotedAt);
+  // Subject rows of the CONSOLIDATED result — these are the school's own subjects, so a
+  // customised list (renamed / added / removed) is reflected here automatically.
+  const subjects = annual.subjects ?? [];
+  const termColumns = TERMS.map((item) => item.id);
 
   return <Modal
     open={open}
@@ -55,7 +61,7 @@ export default function StudentResultModal({
       <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <Info label="বার্ষিক মোট" value={toBanglaNumber(annual.totalMarks ?? 0)} />
         <Info label="বার্ষিক GPA" value={annual.gpa == null ? '—' : Number(annual.gpa).toFixed(2)} />
-        <Info label="বার্ষিক গ্রেড" value={annual.grade ?? '—'} />
+        <Info label="বার্ষিক গ্রেড" value={<span className="inline-flex flex-wrap items-center gap-1.5">{annual.grade ?? '—'}{annual.isGolden ? <span className="badge bg-amber-100 text-amber-800"><Crown size={10} strokeWidth={2.6} aria-hidden="true" /> গোল্ডেন ব্যাজ</span> : null}</span>} />
         <Info label="বার্ষিক মেধাক্রম" value={position >= 0 ? `${toBanglaNumber(position + 1)} / ${toBanglaNumber(classRows.length)}` : '—'} />
         {promotedMonth ? <Info label="উত্তরণের মাস" value={promotedMonth} /> : null}
       </section>
@@ -79,15 +85,16 @@ export default function StudentResultModal({
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
           <table className="table-base min-w-[560px]">
             <thead><tr><th>বিষয়</th>{TERMS.map((item) => <th key={item.id}>{item.name}</th>)}<th>বার্ষিক মোট</th><th>গ্রেড</th></tr></thead>
-            <tbody>{SUBJECTS.map((subject) => {
-              const subjectMarks = studentMarks?.[subject.id] ?? {};
-              const annualSubject = annual.subjects?.find((item) => item.id === subject.id);
-              const grade = annualSubject?.grade ?? '—';
+            <tbody>{subjects.map((subject) => {
+              const inputKey = subject.split ? subject.id : subject.id;
               return <tr key={subject.id}>
                 <td>{subject.name}</td>
-                {TERMS.map((item) => <td key={item.id}>{subjectMarks[item.id] == null ? '—' : toBanglaNumber(subjectMarks[item.id])}</td>)}
-                <td className="font-bold">{annualSubject?.total == null ? '—' : toBanglaNumber(annualSubject.total)}</td>
-                <td><span className={`badge ${TONE_BY_GRADE[grade] ?? 'bg-slate-100 text-slate-700'}`}>{grade}</span></td>
+                {termColumns.map((termId) => {
+                  const value = studentMarks?.[inputKey]?.[termId];
+                  return <td key={termId}>{value == null ? '—' : toBanglaNumber(value)}</td>;
+                })}
+                <td className="font-bold">{subject.total == null ? '—' : toBanglaNumber(subject.total)}</td>
+                <td><span className={`badge ${TONE_BY_GRADE[subject.grade] ?? 'bg-slate-100 text-slate-700'}`}>{subject.grade}</span></td>
               </tr>;
             })}</tbody>
           </table>

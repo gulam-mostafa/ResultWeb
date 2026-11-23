@@ -20,9 +20,13 @@ import {
   subscribeStudents,
   subscribeResults,
   subscribeSchoolProfile,
+  subscribeAllResultConfigs,
+  saveClassResultConfig,
+  resetClassResultConfig,
   saveSchoolProfile,
   syncSchoolProfileRegistry,
 } from '../services/database/index.js';
+import { normalizeResultConfig, defaultResultConfig } from '../utils/resultConfig.js';
 import { useStudents } from '../hooks/useStudents.js';
 import { useResults } from '../hooks/useResults.js';
 
@@ -81,6 +85,13 @@ export function SchoolDataProvider({ children }) {
     [schoolProfile],
   );
   const [dataset, setDataset] = useState(() => emptyDataset(schoolId));
+  /**
+   * Per-class Results configuration (subjects / full marks / গাঠনিক+সামষ্টিক split /
+   * pass mark / annual weights), keyed by class id. It lives inside THIS school's own
+   * year partition (`sessions/{year}/meta/resultConfig`), so no other school can read
+   * or overwrite it. Defaults apply until the teacher saves a customisation.
+   */
+  const [resultConfigs, setResultConfigs] = useState({});
   const [syncState, setSyncState] = useState(() => (typeof navigator === 'undefined' || navigator.onLine ? 'synced' : 'offline'));
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   const saveTimer = useRef(null);
@@ -116,6 +127,9 @@ export function SchoolDataProvider({ children }) {
       persistedMutationVersion.current = 0;
       setSyncState(typeof navigator === 'undefined' || navigator.onLine ? 'synced' : 'offline');
       setDataset(emptyDataset(schoolId));
+      // A class configuration belongs to ONE year of ONE school: switching either must
+      // never leave the previous partition's subjects/pass mark on screen.
+      setResultConfigs({});
     }
     if (activeSchoolRef.current !== schoolRefKey) {
       activeSchoolRef.current = schoolRefKey;
@@ -162,11 +176,17 @@ export function SchoolDataProvider({ children }) {
         return next;
       });
     });
+    // The class-wise Results configuration is a per-school node; a change saved on one
+    // device is picked up live here (and purged when the year/school partition flips).
+    const unsubConfigs = subscribeAllResultConfigs(schoolRef, activeYear, (configs) => {
+      setResultConfigs(configs && typeof configs === 'object' ? configs : {});
+    });
     hydratedRef.current.add(subscriptionKey);
     return () => {
       unsubStudents();
       unsubResults();
       unsubProfile();
+      unsubConfigs();
       hydratedRef.current.delete(subscriptionKey);
     };
   }, [schoolId, schoolRef, schoolRefKey, activeYear, canWriteTenant]);
@@ -338,14 +358,20 @@ export function SchoolDataProvider({ children }) {
   });
 
   const {
+    getResultConfig,
     getStudentResult,
     getTermResult,
+    getTabResult,
     getRemark,
+    getClassRows,
     getClassAnalytics,
     getStudentClassRank,
     getClassRankMap,
+    getSubjectEntry,
     setMark,
     setStudentMarks,
+    applyTermMarks,
+    applyImportedMarks,
     setRemark,
   } = useResults({
     dataset,
@@ -357,7 +383,45 @@ export function SchoolDataProvider({ children }) {
     canWriteTenant,
     runCloudSave,
     getStudentsOfClass,
+    resultConfigs,
   });
+
+  /* ---------------------------------------------------------------- *
+   * Results configuration (per school / year / class)
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Saves ONE class's Results configuration inside the active school's own
+   * namespace. The local state is updated optimistically so the grid re-calculates
+   * instantly; the cloud result decides whether the sync badge shows a failure.
+   */
+  const saveResultConfig = useCallback(
+    async (classId, config) => {
+      const normalized = normalizeResultConfig(config, classId);
+      if (!classId || !canWriteTenant || !schoolRef) return { synced: false };
+      setResultConfigs((previous) => ({ ...previous, [classId]: normalized }));
+      return runCloudSave(
+        () => saveClassResultConfig(schoolRef, activeYear, classId, normalized),
+        { timeoutMs: 8000 },
+      );
+    },
+    [canWriteTenant, schoolRef, activeYear, runCloudSave],
+  );
+
+  /** Restores a class to the factory configuration (subjects + split + pass mark). */
+  const resetResultConfig = useCallback(
+    async (classId) => {
+      if (!classId) return { synced: false };
+      const fallback = defaultResultConfig(classId);
+      setResultConfigs((previous) => ({ ...previous, [classId]: fallback }));
+      if (!canWriteTenant || !schoolRef) return { synced: false };
+      return runCloudSave(
+        () => resetClassResultConfig(schoolRef, activeYear, classId),
+        { timeoutMs: 8000 },
+      );
+    },
+    [canWriteTenant, schoolRef, activeYear, runCloudSave],
+  );
 
 
   /* ---------------------------------------------------------------- *
@@ -438,12 +502,19 @@ export function SchoolDataProvider({ children }) {
       getStudentsOfSection,
       getStudentsOfClass,
       getStudentById,
+      getResultConfig,
       getStudentResult,
       getTermResult,
+      getTabResult,
+      getClassRows,
       getClassAnalytics,
       getStudentClassRank,
       getClassRankMap,
+      getSubjectEntry,
       getRemark,
+      resultConfigs,
+      saveResultConfig,
+      resetResultConfig,
       // mutations
       addStudent,
       updateStudent,
@@ -456,6 +527,7 @@ export function SchoolDataProvider({ children }) {
       removeSection,
       setMark,
       setStudentMarks,
+      applyImportedMarks,
       setRemark,
       executePromotion,
       addNotice,
@@ -481,12 +553,19 @@ export function SchoolDataProvider({ children }) {
       getStudentsOfSection,
       getStudentsOfClass,
       getStudentById,
+      getResultConfig,
       getStudentResult,
       getTermResult,
+      getTabResult,
+      getClassRows,
       getClassAnalytics,
       getStudentClassRank,
       getClassRankMap,
+      getSubjectEntry,
       getRemark,
+      resultConfigs,
+      saveResultConfig,
+      resetResultConfig,
       addStudent,
       updateStudent,
       removeStudent,
@@ -498,6 +577,7 @@ export function SchoolDataProvider({ children }) {
       removeSection,
       setMark,
       setStudentMarks,
+      applyImportedMarks,
       setRemark,
       executePromotion,
       addNotice,

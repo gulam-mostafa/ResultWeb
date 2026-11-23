@@ -1,20 +1,28 @@
 import { Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js';
 import { QRCodeSVG } from 'qrcode.react';
-import { CLASS_LABEL_MAP, SUBJECTS } from '../../utils/constants.js';
+import { CLASS_LABEL_MAP } from '../../utils/constants.js';
 import { toBanglaNumber, formatBanglaDecimal } from '../../utils/banglaNumberFormatter.js';
 import SchoolDocumentHeader from './SchoolDocumentHeader.jsx';
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
-/** Single-term marksheet (১ম / ২য় প্রান্তিক / বার্ষিক) – raw 100-mark evaluation. */
+/**
+ * একক প্রান্তিকের প্রগতিপত্র (১ম / ২য় প্রান্তিক / বার্ষিক মূল্যায়ন).
+ *
+ * Every subject row, its full marks, its গাঠনিক/সামষ্টিক components and its grade come
+ * from the SCHOOL's own class configuration, so a customised subject list prints
+ * exactly as it is calculated on screen.
+ */
 export default function TermMarksheetA4({ student, result, term, remark, position, schoolProfile }) {
   if (!student || !result) return null;
+  const subjects = result.subjects ?? [];
+  const hasSplit = subjects.some((subject) => subject.split);
   const chart = {
-    labels: SUBJECTS.map((subject) => subject.name),
+    labels: subjects.map((subject) => subject.name),
     datasets: [{
       label: `${term?.name ?? ''} নম্বর`,
-      data: result.subjects.map((subject) => subject.mark ?? 0),
-      backgroundColor: SUBJECTS.map((subject) => subject.color),
+      data: subjects.map((subject) => subject.percent ?? subject.mark ?? 0),
+      backgroundColor: subjects.map((subject) => subject.color || '#64748b'),
       borderRadius: 5,
     }],
   };
@@ -23,7 +31,7 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
     <article className="print-sheet rounded-lg shadow-lg">
       <SchoolDocumentHeader schoolProfile={schoolProfile} />
 
-      <h2 className="doc-title">{term?.name} মূল্যায়ন প্রগতিপত্র</h2>
+      <h2 className="doc-title">{term?.name} প্রগতিপত্র</h2>
 
       <div className="mb-3 grid grid-cols-2 gap-x-5 gap-y-1 text-[10pt] sm:grid-cols-3">
         <p>শিক্ষার্থীর নাম: <b>{student.name}</b></p>
@@ -39,6 +47,7 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
           <tr>
             <th>বিষয়</th>
             <th>পূর্ণমান</th>
+            {hasSplit ? <><th>গাঠনিক</th><th>সামষ্টিক</th></> : null}
             <th>প্রাপ্ত নম্বর</th>
             <th>গ্রেড</th>
             <th>গ্রেড পয়েন্ট</th>
@@ -46,14 +55,22 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
           </tr>
         </thead>
         <tbody>
-          {result.subjects.map((subject) => (
+          {subjects.map((subject) => (
             <tr key={subject.id}>
               <td className="doc-table__subject">{subject.name}</td>
-              <td>{toBanglaNumber(100)}</td>
-              <td>{subject.mark === null ? '—' : toBanglaNumber(subject.mark)}</td>
+              <td>{toBanglaNumber(subject.fullMarks ?? 100)}</td>
+              {hasSplit ? (
+                subject.split ? (
+                  <>
+                    <td>{subject.formative == null ? '—' : toBanglaNumber(subject.formative)}</td>
+                    <td>{subject.summative == null ? '—' : toBanglaNumber(subject.summative)}</td>
+                  </>
+                ) : <><td>—</td><td>—</td></>
+              ) : null}
+              <td>{subject.mark == null ? '—' : toBanglaNumber(subject.mark)}</td>
               <td>{subject.grade}</td>
               <td>{formatBanglaDecimal(subject.point, 2)}</td>
-              <td>{subject.mark === null ? '—' : subject.isPass ? 'উত্তীর্ণ' : 'অনুত্তীর্ণ'}</td>
+              <td>{subject.mark == null ? '—' : subject.isPass ? 'উত্তীর্ণ' : 'অনুত্তীর্ণ'}</td>
             </tr>
           ))}
         </tbody>
@@ -61,6 +78,7 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
           <tr>
             <th>সর্বমোট</th>
             <td>{toBanglaNumber(result.totalFullMarks)}</td>
+            {hasSplit ? <td colSpan={2} /> : null}
             <th>{toBanglaNumber(result.totalMarks)}</th>
             <th>{result.grade}</th>
             <th>{formatBanglaDecimal(result.gpa ?? 0, 2)}</th>
