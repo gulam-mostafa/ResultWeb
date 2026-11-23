@@ -158,6 +158,18 @@ assert.equal(emptyResult.hasAnyMark, false);
 assert.equal(emptyResult.grade, '—');
 assert.equal(emptyResult.gpa, null);
 
+// The consolidated view does NOT punish an un-evaluated term: only subjects that have at
+// least one entered term are counted, and the percentage is scaled by the weighting that
+// has actually been entered, so a mid-year year-end figure stays fair.
+const midYear = computeConsolidatedResult({ bangla: { term1: 90 }, math: { term1: 80 } }, c1);
+const banglaMid = midYear.subjects.find((subject) => subject.id === 'bangla');
+assert.equal(banglaMid.percent, 13.5, '৯০ × ১৫% = ১৩.৫ when only the ১st term exists');
+assert.equal(banglaMid.scoredPercent, 90, 'the subject is graded on its own available weight');
+assert.equal(midYear.totalFullMarks, 30, 'only the ১৫% that has been entered is counted');
+assert.equal(midYear.percentage, 85, 'মোট শতকরা ৮৫% (৯০ ও ৮০ এর গড়)');
+assert.equal(midYear.isPass, true, 'an un-evaluated subject does not fail the annual result');
+assert.equal(midYear.evaluatedWeight, 15);
+
 /* ------------------------------------------------------------------ *
  * 3. Consolidated বার্ষিক ফলাফল weighting
  * ------------------------------------------------------------------ */

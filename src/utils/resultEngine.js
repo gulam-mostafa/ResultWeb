@@ -94,20 +94,31 @@ export function subjectTermEntry(subject, studentMarks, termId, passMark = PASS_
   };
 }
 
-/** Aggregates subject entries into a whole-student result (GPA + grade + totals). */
-function assembleStudentResult({ subjects, term, goldenMark = 80 }) {
-  // "Any blank / empty mark input counts as 0": as soon as ONE mark exists for a pupil,
-  // EVERY subject of the class counts — a blank subject contributes 0 marks, 0 full marks
-  // are never skipped, and it therefore fails the pass check exactly like a typed 0.
+/**
+ * Aggregates subject entries into a whole-student result (GPA + grade + totals).
+ *
+ * `blankCountsAsZero` (the default, used by every single-term tab) implements the rule
+ * that a blank/empty mark input counts as `0`: as soon as ONE mark exists for a pupil,
+ * EVERY subject of the class counts and a blank subject fails the pass check.
+ *
+ * The consolidated বার্ষিক ফলাফল passes `false`: a term that has not been evaluated yet
+ * must not drag a pupil down mid-year, so only subjects with at least one entered term
+ * are counted there (blank terms still contribute 0 to the weighted percentage).
+ */
+function assembleStudentResult({ subjects, term, goldenMark = 80, blankCountsAsZero = true, fullMarksFactor = 1 }) {
   const hasAnyMark = subjects.some((subject) => subject.hasAnyMark);
-  const totalMarks = subjects.reduce((sum, subject) => sum + (Number(subject.total) || 0), 0);
-  const totalFullMarks = subjects.reduce((sum, subject) => sum + (Number(subject.fullMarks) || 0), 0);
-  const failed = hasAnyMark ? subjects.filter((subject) => !subject.isPass) : [];
+  const counted = blankCountsAsZero ? subjects : subjects.filter((subject) => subject.hasAnyMark);
+  const totalMarks = counted.reduce((sum, subject) => sum + (Number(subject.total) || 0), 0);
+  // A half-evaluated year is scaled to the weighting that has actually been entered, so
+  // the reported percentage (and therefore pass/fail) is never penalised by a missing term.
+  const totalFullMarks = counted.reduce((sum, subject) => sum + (Number(subject.fullMarks) || 0), 0)
+    * (Number(fullMarksFactor) > 0 ? Number(fullMarksFactor) : 1);
+  const failed = hasAnyMark ? counted.filter((subject) => !subject.isPass) : [];
   const percentage = totalFullMarks > 0 ? round2((totalMarks / totalFullMarks) * 100) : 0;
   // Board rule: a single failed subject ⇒ GPA ০.০০ and grade F; the total marks
   // stay EXACTLY as summed (never zeroed).
-  const rawGpa = subjects.length
-    ? subjects.reduce((sum, subject) => sum + (Number(subject.point) || 0), 0) / subjects.length
+  const rawGpa = counted.length
+    ? counted.reduce((sum, subject) => sum + (Number(subject.point) || 0), 0) / counted.length
     : 0;
   const gradeInfo = failed.length
     ? { grade: 'F', point: 0, label: 'অকৃতকার্য' }
@@ -123,7 +134,7 @@ function assembleStudentResult({ subjects, term, goldenMark = 80 }) {
     gradeLabel: hasAnyMark ? gradeInfo.label : 'মূল্যায়ন হয়নি',
     failedSubjects: failed.map((subject) => subject.name),
     failCount: failed.length,
-    passedSubjectCount: subjects.length - failed.length,
+    passedSubjectCount: counted.length - failed.length,
     enteredSubjectCount: subjects.filter((subject) => subject.hasAnyMark).length,
     subjectCount: subjects.length,
     hasAnyMark,
@@ -194,9 +205,16 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
       0,
     );
     const percent = hasAnyMark ? round2(weightedPercent) : 0;
+    // Only the terms that actually hold marks are used for the grade / pass decision, so
+    // a year that is still being filled in is never graded against the missing weight.
+    const availableWeight = contributions.reduce(
+      (sum, item) => sum + (item.entry.hasAnyMark ? item.weight : 0),
+      0,
+    );
+    const scoredPercent = availableWeight > 0 ? round2((weightedPercent / availableWeight) * 100) : 0;
     const fullMarks = subject.fullMarks;
     const total = hasAnyMark ? round2((percent / 100) * fullMarks) : 0;
-    const gradeInfo = gradeOfPercent(hasAnyMark ? percent : null);
+    const gradeInfo = gradeOfPercent(hasAnyMark ? scoredPercent : null);
     return {
       id: subject.id,
       name: subject.name,
@@ -209,13 +227,15 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
       mark: hasAnyMark ? total : null,
       total: hasAnyMark ? total : null,
       percent,
+      scoredPercent,
+      availableWeight,
       grade: hasAnyMark ? gradeInfo.grade : '—',
       point: hasAnyMark ? gradeInfo.point : 0,
       gradeLabel: gradeInfo.label,
-      isPass: hasAnyMark && percent >= passMark,
+      isPass: hasAnyMark && scoredPercent >= passMark,
       hasAnyMark,
       isEnteredFully: contributions.every((item) => item.entry.hasAnyMark),
-      isGolden: hasAnyMark && percent >= safeConfig.goldenMark,
+      isGolden: hasAnyMark && scoredPercent >= safeConfig.goldenMark,
       marks: Object.fromEntries(contributions.map((item) => [
         item.termId,
         item.entry.hasAnyMark ? item.entry.total : null,
@@ -230,11 +250,22 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
     };
   });
 
+  // How much of the annual weighting the school has actually entered (e.g. ১৫% after only
+  // the ১st term). The overall percentage is scaled by it so a half-finished year is not
+  // reported as a failure.
+  const evaluatedWeight = subjects.reduce((max, subject) => Math.max(max, subject.availableWeight), 0);
   return {
-    ...assembleStudentResult({ subjects, term: 'consolidated', goldenMark: safeConfig.goldenMark }),
+    ...assembleStudentResult({
+      subjects,
+      term: 'consolidated',
+      goldenMark: safeConfig.goldenMark,
+      blankCountsAsZero: false,
+      fullMarksFactor: evaluatedWeight > 0 ? evaluatedWeight / 100 : 1,
+    }),
     weights,
     passMark,
     goldenMark: safeConfig.goldenMark,
+    evaluatedWeight: round2(evaluatedWeight),
     goldenCount: subjects.filter((subject) => subject.isGolden).length,
   };
 }
