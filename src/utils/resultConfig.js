@@ -250,42 +250,52 @@ export const entryFieldKey = (subjectId, component = 'total') => (
   component === 'total' ? subjectId : `${subjectId}:${component}`
 );
 
-/** Every mark input of a configuration, in subject order (formative ➔ summative). */
+/**
+ * Every mark input of a configuration, GROUPED by evaluation type:
+ * all গাঠনিক columns first, then all সামষ্টিক columns, then single-score subjects.
+ *
+ * The on-screen grid, the Excel template, the upload preview and the validator all read
+ * this one list, so the three surfaces always show the same columns in the same order.
+ */
 export function configEntryFields(config) {
-  return (config?.subjects ?? []).flatMap((subject) => (
-    subject.split
-      ? [
-        {
-          key: entryFieldKey(subject.id, 'formative'),
-          subjectId: subject.id,
-          subjectName: subject.name,
-          component: 'formative',
-          label: `${subject.name} (গাঠনিক)`,
-          shortLabel: 'গাঠনিক',
-          max: subject.formativeFull,
-        },
-        {
-          key: entryFieldKey(subject.id, 'summative'),
-          subjectId: subject.id,
-          subjectName: subject.name,
-          component: 'summative',
-          label: `${subject.name} (সামষ্টিক)`,
-          shortLabel: 'সামষ্টিক',
-          max: subject.summativeFull,
-        },
-      ]
-      : [
-        {
-          key: entryFieldKey(subject.id, 'total'),
-          subjectId: subject.id,
-          subjectName: subject.name,
-          component: 'total',
-          label: subject.name,
-          shortLabel: subject.name,
-          max: subject.fullMarks,
-        },
-      ]
-  ));
+  const subjects = config?.subjects ?? [];
+  const formative = [];
+  const summative = [];
+  const single = [];
+  subjects.forEach((subject) => {
+    if (!subject?.id) return;
+    if (subject.split) {
+      formative.push({
+        key: entryFieldKey(subject.id, 'formative'),
+        subjectId: subject.id,
+        subjectName: subject.name,
+        component: 'formative',
+        label: `${subject.name} (গাঠনিক)`,
+        shortLabel: 'গাঠনিক',
+        max: subject.formativeFull,
+      });
+      summative.push({
+        key: entryFieldKey(subject.id, 'summative'),
+        subjectId: subject.id,
+        subjectName: subject.name,
+        component: 'summative',
+        label: `${subject.name} (সামষ্টিক)`,
+        shortLabel: 'সামষ্টিক',
+        max: subject.summativeFull,
+      });
+      return;
+    }
+    single.push({
+      key: entryFieldKey(subject.id, 'total'),
+      subjectId: subject.id,
+      subjectName: subject.name,
+      component: 'total',
+      label: subject.name,
+      shortLabel: subject.name,
+      max: subject.fullMarks,
+    });
+  });
+  return [...formative, ...summative, ...single];
 }
 
 /** Class label used by the Excel template and the headers. */

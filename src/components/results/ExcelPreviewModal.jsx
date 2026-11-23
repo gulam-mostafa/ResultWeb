@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileSpreadsheet, Save } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
+import Spinner from '../ui/Spinner.jsx';
 import { Badge } from '../ui/Primitives.jsx';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import { configEntryFields } from '../../utils/resultConfig.js';
 import { computeConsolidatedResult, computeTermResultForConfig, rankClassRows } from '../../utils/resultEngine.js';
+
 
 /**
  * Screen preview (আগে স্ক্রিন প্রিভিউ) of a parsed Excel upload.
@@ -29,6 +31,37 @@ export default function ExcelPreviewModal({
   const [error, setError] = useState('');
   const fields = useMemo(() => configEntryFields(config), [config]);
   const isConsolidated = tabId === 'consolidated';
+
+  /**
+   * Same grouping as the on-screen grid: every গাঠনিক column first, then every সামষ্টিক
+   * column, then the single-score subjects — so the preview reads exactly like the grid.
+   */
+  const groups = useMemo(() => {
+    const buckets = { formative: [], summative: [], single: [] };
+    (config?.subjects ?? []).forEach((subject) => {
+      if (!subject?.id) return;
+      fields
+        .filter((field) => field.subjectId === subject.id)
+        .forEach((field) => {
+          const bucket = field.component === 'formative'
+            ? 'formative'
+            : field.component === 'summative' ? 'summative' : 'single';
+          buckets[bucket].push({ ...field, subject });
+        });
+    });
+    return {
+      ...buckets,
+      ordered: ['formative', 'summative', 'single'].flatMap((key) => buckets[key]),
+      active: ['formative', 'summative', 'single'].filter((key) => buckets[key].length > 0),
+    };
+  }, [config, fields]);
+
+  const GROUP_LABEL = {
+    formative: { label: 'গাঠনিক মূল্যায়ন', head: 'mark-group-head-formative', cell: 'mark-group-cell-formative' },
+    summative: { label: 'সামষ্টিক মূল্যায়ন', head: 'mark-group-head-summative', cell: 'mark-group-cell-summative' },
+    single: { label: 'একক নম্বর', head: 'mark-group-head-single', cell: 'mark-group-cell-single' },
+  };
+
 
   /** Merged marks: the parsed values win, everything else keeps the website value. */
   const mergedMarks = useMemo(() => {
@@ -110,7 +143,9 @@ export default function ExcelPreviewModal({
       <div className="flex items-center gap-2">
         <button type="button" className="btn-secondary" onClick={onClose}>বাতিল</button>
         <button type="button" className="btn-primary" onClick={save} disabled={saving}>
-          <Save size={15} /> {saving ? 'সংরক্ষণ হচ্ছে…' : 'সংরক্ষণ'}
+          {saving
+            ? <><Spinner size="xs" tone="white" label="সংরক্ষণ হচ্ছে…" /> সংরক্ষণ হচ্ছে…</>
+            : <><Save size={15} /> সংরক্ষণ</>}
         </button>
       </div>
     </div>}
@@ -126,15 +161,29 @@ export default function ExcelPreviewModal({
         <table className="table-base min-w-[900px]">
           <thead>
             <tr>
-              <th className="sticky left-0 z-20">শিক্ষার্থী</th>
-              {(config?.subjects ?? []).map((subject) => (
-                <th key={subject.id} colSpan={subject.split ? 2 : 1} className="text-center">{subject.name}</th>
+              <th rowSpan={2} className="sticky left-0 z-20">শিক্ষার্থী</th>
+              {groups.active.map((groupKey) => (
+                <th
+                  key={`grp-${groupKey}`}
+                  colSpan={groups[groupKey].length}
+                  className={`text-center ${GROUP_LABEL[groupKey].head}`}
+                >
+                  {GROUP_LABEL[groupKey].label}
+                </th>
               ))}
-              <th>মোট</th>
-              <th>GPA</th>
-              <th>গ্রেড</th>
-              <th>মেধাক্রম</th>
-              {isConsolidated ? <th>নতুন রোল</th> : null}
+              <th rowSpan={2}>মোট</th>
+              <th rowSpan={2}>GPA</th>
+              <th rowSpan={2}>গ্রেড</th>
+              <th rowSpan={2}>মেধাক্রম</th>
+              {isConsolidated ? <th rowSpan={2}>নতুন রোল</th> : null}
+            </tr>
+            <tr>
+              {groups.active.flatMap((groupKey) => groups[groupKey].map((field) => (
+                <th key={`pv-${field.key}`} className={`text-center ${GROUP_LABEL[groupKey].cell}`}>
+                  <span className="block max-w-24 truncate">{field.subject?.name ?? field.subjectName}</span>
+                  <span className="block text-[10px] font-normal opacity-70">({toBanglaNumber(field.max)})</span>
+                </th>
+              )))}
             </tr>
           </thead>
           <tbody>
@@ -144,18 +193,19 @@ export default function ExcelPreviewModal({
                   <span className="font-bold">{student.name}</span>
                   <span className="block text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</span>
                 </td>
-                {(config?.subjects ?? []).map((subject) => fields
-                  .filter((field) => field.subjectId === subject.id)
-                  .map((field) => {
-                    const value = rows?.[student.id]?.[field.key];
-                    const previous = marks?.[student.id]?.[field.key]?.[tabId] ?? null;
-                    const changed = (value ?? null) !== (previous ?? null);
-                    return (
-                      <td key={cellKey(student.id, field.key)} className={`text-center ${changed ? 'bg-brand-50 font-bold text-brand-800 dark:bg-brand-900/30 dark:text-brand-200' : ''}`}>
-                        {value === null || value === undefined ? '—' : toBanglaNumber(value)}
-                      </td>
-                    );
-                  }))}
+                {groups.active.flatMap((groupKey) => groups[groupKey].map((field) => {
+                  const value = rows?.[student.id]?.[field.key];
+                  const previous = marks?.[student.id]?.[field.key]?.[tabId] ?? null;
+                  const changed = (value ?? null) !== (previous ?? null);
+                  return (
+                    <td
+                      key={cellKey(student.id, field.key)}
+                      className={`text-center ${GROUP_LABEL[groupKey].cell} ${changed ? 'bg-brand-50 font-bold text-brand-800 dark:bg-brand-900/30 dark:text-brand-200' : ''}`}
+                    >
+                      {value === null || value === undefined ? '—' : toBanglaNumber(value)}
+                    </td>
+                  );
+                }))}
                 <td className="font-bold">{toBanglaNumber(result.totalMarks)}</td>
                 <td>{result.gpa == null ? '—' : Number(result.gpa).toFixed(2)}</td>
                 <td><span className={`badge ${result.isPass ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{result.grade}</span></td>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, RotateCcw, Save, Settings2, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
+import Spinner from '../ui/Spinner.jsx';
 import { Badge } from '../ui/Primitives.jsx';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import {
@@ -118,7 +119,9 @@ export default function ResultConfigModal({ open, onClose, classId, config, onSa
       <div className="flex items-center gap-2">
         <button type="button" className="btn-secondary" onClick={onClose}>বাতিল</button>
         <button type="button" className="btn-primary" onClick={submit} disabled={!canEdit || busy}>
-          <Save size={15} /> {busy ? 'সংরক্ষণ হচ্ছে…' : 'সংরক্ষণ'}
+          {busy
+            ? <><Spinner size="xs" tone="white" label="সংরক্ষণ হচ্ছে…" /> সংরক্ষণ হচ্ছে…</>
+            : <><Save size={15} /> সংরক্ষণ</>}
         </button>
       </div>
     </div>}

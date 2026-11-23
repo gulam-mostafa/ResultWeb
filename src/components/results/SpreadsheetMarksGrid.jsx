@@ -1,27 +1,50 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownUp, Crown, Star } from 'lucide-react';
+import { ArrowDownUp, Crown, Info, Star } from 'lucide-react';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import { configEntryFields } from '../../utils/resultConfig.js';
 import { rankClassRows, subjectTermEntry } from '../../utils/resultEngine.js';
 import { clsx } from '../../utils/clsx.js';
+import Spinner from '../ui/Spinner.jsx';
 
 /**
  * Excel-like marks grid (one evaluation tab).
  *
- * • Keyboard navigation: arrows move one cell/row, `Tab`/`Shift+Tab` follow the natural
- *   order, `Enter` jumps to the same subject of the next pupil (fast numeric entry).
- * • Cells highlight softly: light red below the school's pass mark, light green at or
- *   above the golden mark.
- * • A pupil with the golden mark in EVERY subject carries a golden badge (গোল্ডেন ব্যাজ).
- * • Sorting follows `বর্তমান রোল` or `মেধাক্রম` (display only — the stored order never
- *   changes).
+ * Column order is GROUPED, not per-subject interleaved:
+ *   শিক্ষার্থী │ গাঠনিক মূল্যায়ন (সব বিষয়) │ সামষ্টিক মূল্যায়ন (সব বিষয়) │
+ *   একক নম্বর │ মোট │ GPA │ গ্রেড │ মেধাক্রম │ নতুন রোল
  *
- * The whole table is derived from the ACTIVE SCHOOL's class configuration, so subject
- * names, full marks and the গাঠনিক/সামষ্টিক split are always that school's own.
+ * Each group carries its own header tint and cell tint (sky = গাঠনিক, violet = সামষ্টিক,
+ * slate = একক) so a teacher can tell the groups apart at a glance.
+ *
+ * • Keyboard: arrows move one cell/row, `Tab`/`Shift+Tab` walk the natural order,
+ *   `Enter` jumps to the same subject of the next pupil.
+ * • Cells highlight softly: light red below the pass mark, light green at/above golden.
+ * • A pupil at/above the golden mark in EVERY subject carries the golden badge.
+ *
+ * Every typed value is committed WITH its term id — `setMark(studentId, fieldKey,
+ * termId, value)` — so moving to another cell can never wipe a previously entered
+ * cell. A committed value stays pinned locally until the store echoes it back, so the
+ * input never flickers to a stale blank while the write is in flight.
  */
 const cellKey = (studentId, fieldKey) => `${studentId}:${fieldKey}`;
 
 const fieldLimit = (field) => (Number(field?.max) > 0 ? Number(field.max) : 100);
+
+/** Value as shown inside an input (blank stays blank — never `undefined`). */
+const displayValue = (value) => (value === null || value === undefined ? '' : String(value));
+
+/** Loose numeric comparison so `"45"`, `45` and `45.00` are the same committed cell. */
+const sameValue = (a, b) => {
+  const left = displayValue(a).trim();
+  const right = displayValue(b).trim();
+  if (left === right) return true;
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+};
+
+/** A committed value waits at most this long for the store to confirm it. */
+const PENDING_TTL_MS = 8000;
 
 /** Soft highlight of one entered cell, based on its own percentage. */
 function cellTone(entry, passMark, goldenMark) {
@@ -30,6 +53,38 @@ function cellTone(entry, passMark, goldenMark) {
   if (entry.percent >= goldenMark) return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200';
   return '';
 }
+
+/** Visual class of one group (header / cell background / input tint). */
+const GROUP_STYLE = {
+  formative: {
+    head: 'mark-group-head-formative',
+    cell: 'mark-group-cell-formative',
+    input: 'mark-cell-formative',
+    edge: 'border-l-2 border-l-sky-400 dark:border-l-sky-600',
+    label: 'গাঠনিক মূল্যায়ন',
+    hint: 'শ্রেণিকাজ · উপস্থিতি · কার্যক্রম',
+  },
+  summative: {
+    head: 'mark-group-head-summative',
+    cell: 'mark-group-cell-summative',
+    input: 'mark-cell-summative',
+    edge: 'border-l-2 border-l-violet-400 dark:border-l-violet-600',
+    label: 'সামষ্টিক মূল্যায়ন',
+    hint: 'প্রান্তিক পরীক্ষা',
+  },
+  single: {
+    head: 'mark-group-head-single',
+    cell: 'mark-group-cell-single',
+    input: 'mark-cell-single',
+    edge: 'border-l-2 border-l-slate-300 dark:border-l-slate-600',
+    label: 'একক নম্বর',
+    hint: 'বিভাজন ছাড়া বিষয়',
+  },
+};
+
+/** The three renderable groups, in display order. */
+const GROUP_ORDER = ['formative', 'summative', 'single'];
+
 
 export default function SpreadsheetMarksGrid({
   students = [],
@@ -44,6 +99,7 @@ export default function SpreadsheetMarksGrid({
   onShowResult,
   sortMode = 'roll',
   onSortModeChange,
+  saving = false,
   /** `{studentId: newRoll}` from the CONSOLIDATED result — `{}` until it is calculated. */
   newRollMap = null,
 }) {
@@ -51,11 +107,22 @@ export default function SpreadsheetMarksGrid({
   const passMark = Number(config?.passMark) || 33;
   const goldenMark = Number(config?.goldenMark) || 80;
   const isConsolidated = tabId === 'consolidated';
+  /** Term id used by every write of this tab (the consolidated tab is read-only). */
+  const termForTab = tabId || 'term1';
+  /** Term the per-subject entry highlighting is computed from. */
+  const entryTerm = isConsolidated ? 'annual' : termForTab;
   // নতুন রোল only exists once the combined বার্ষিক ফলাফল has been calculated. The
   // caller passes the consolidated map, so a per-term tab shows মেধাক্রম only until then.
   const showNewRoll = Boolean(newRollMap) || isConsolidated;
+  const safeStudents = useMemo(
+    () => (Array.isArray(students) ? students.filter((student) => student && student.id) : []),
+    [students],
+  );
+  const disabled = !canEdit || isConsolidated;
+
   const [drafts, setDrafts] = useState({});
   const draftsRef = useRef(drafts);
+  const pendingRef = useRef({});
   const editingKey = useRef(null);
   const gridRef = useRef(null);
 
@@ -69,33 +136,132 @@ export default function SpreadsheetMarksGrid({
     draftsRef.current = drafts;
   }, [drafts]);
 
-  // Remote updates refresh untouched cells, but never replace the value being typed.
+  /**
+   * A draft/pinned value belongs to ONE term. Switching the evaluation tab must drop
+   * them, otherwise the previous term's typed value could be re-pinned into the new one.
+   */
+  const previousTermRef = useRef(termForTab);
   useEffect(() => {
+    if (previousTermRef.current === termForTab) return;
+    previousTermRef.current = termForTab;
+    draftsRef.current = {};
+    pendingRef.current = {};
+    editingKey.current = null;
+    setDrafts({});
+  }, [termForTab]);
+
+  /**
+   * Columns grouped by evaluation type — ALL গাঠনিক columns first, then ALL সামষ্টিক
+   * columns, then the single-score subjects. `ordered` drives rendering AND keyboard
+   * navigation, so Tab / arrows always walk the grid left-to-right, top-to-bottom.
+   */
+  const columnGroups = useMemo(() => {
+    const subjects = Array.isArray(config?.subjects) ? config.subjects : [];
+    const groups = { formative: [], summative: [], single: [] };
+    subjects.forEach((subject) => {
+      if (!subject?.id) return;
+      fields
+        .filter((field) => field.subjectId === subject.id)
+        .forEach((field) => {
+          const bucket = field.component === 'formative'
+            ? 'formative'
+            : field.component === 'summative' ? 'summative' : 'single';
+          groups[bucket].push({ ...field, subject });
+        });
+    });
+    return {
+      ...groups,
+      ordered: GROUP_ORDER.flatMap((groupKey) => groups[groupKey]),
+    };
+  }, [config, fields]);
+
+  const ordered = columnGroups.ordered;
+
+  /**
+   * Commits one typed cell WITH the active term id — this is the fix for previously
+   * entered cells being wiped when the teacher moves to another cell.
+   */
+  const writeCell = useCallback((studentId, fieldKey, value) => {
+    if (typeof setMark === 'function') {
+      setMark(studentId, fieldKey, termForTab, value);
+      return;
+    }
+    onEntry?.(studentId, fieldKey, termForTab, value);
+  }, [setMark, onEntry, termForTab]);
+
+  const commitCell = useCallback((studentId, fieldKey, inputValue) => {
+    const key = cellKey(studentId, fieldKey);
+    const hasDraft = Object.prototype.hasOwnProperty.call(draftsRef.current, key);
+    const raw = hasDraft ? draftsRef.current[key] : inputValue;
+    editingKey.current = null;
+    if (raw === undefined || raw === null) return;
+    const value = String(raw);
+    // Pin the committed value until the store echoes it back (no flicker / no wipe).
+    pendingRef.current[key] = { value, at: Date.now() };
+    writeCell(studentId, fieldKey, value);
+  }, [writeCell]);
+
+  // Store → local sync. A focused cell is never touched; a committed cell keeps its
+  // typed value until the store confirms it, then the draft is released.
+  useEffect(() => {
+    if (!safeStudents.length || !ordered.length) return;
+    const focusedKey = document.activeElement?.closest?.('input[data-grid]')
+      ?.getAttribute?.('data-grid-key') ?? null;
+    const now = Date.now();
     setDrafts((previous) => {
       let changed = false;
       const next = { ...previous };
-      students.forEach((student) => fields.forEach((field) => {
-        const key = cellKey(student.id, field.key);
-        const focusedInput = document.activeElement?.closest?.('input[data-grid]');
-        const focusedKey = focusedInput?.getAttribute?.('data-grid-key');
-        if (editingKey.current === key || focusedKey === key) return;
-        const remote = marks?.[student.id]?.[field.key]?.[tabId] ?? '';
-        if (Object.prototype.hasOwnProperty.call(next, key) && next[key] !== remote) {
-          next[key] = remote;
-          changed = true;
-        }
-      }));
+      safeStudents.forEach((student) => {
+        ordered.forEach((column) => {
+          const key = cellKey(student.id, column.key);
+          const remote = displayValue(marks?.[student?.id]?.[column.key]?.[termForTab]);
+          if (editingKey.current === key || focusedKey === key) {
+            if (!Object.prototype.hasOwnProperty.call(next, key) && remote !== '') {
+              next[key] = remote;
+              changed = true;
+            }
+            return;
+          }
+          const pending = pendingRef.current[key];
+          if (pending) {
+            if (sameValue(pending.value, remote) || now - pending.at > PENDING_TTL_MS) {
+              delete pendingRef.current[key];
+              if (Object.prototype.hasOwnProperty.call(next, key)) {
+                delete next[key];
+                changed = true;
+              }
+              return;
+            }
+            if (next[key] !== pending.value) {
+              next[key] = pending.value;
+              changed = true;
+            }
+            return;
+          }
+          if (Object.prototype.hasOwnProperty.call(next, key) && next[key] !== remote) {
+            next[key] = remote;
+            changed = true;
+          }
+        });
+      });
       return changed ? next : previous;
     });
-  }, [students, marks, fields, tabId]);
+  }, [safeStudents, ordered, marks, termForTab]);
 
   const rows = useMemo(() => {
-    const computed = students.map((student) => ({
+    const computed = safeStudents.map((student) => ({
       student,
       result: getResult?.(student.id) ?? { hasAnyMark: false, totalMarks: 0, subjects: [] },
     }));
     return rankClassRows(computed, { assignNewRoll: isConsolidated });
-  }, [students, getResult, isConsolidated]);
+  }, [safeStudents, getResult, isConsolidated]);
+
+  /** `studentId ➔ ranked row` — O(1) lookup instead of a `find` per pupil. */
+  const rankMap = useMemo(() => {
+    const map = new Map();
+    rows.forEach((row) => map.set(row.studentId, row));
+    return map;
+  }, [rows]);
 
   /** Presentation order: current roll, or merit position (both ascending). */
   const visibleRows = useMemo(() => {
@@ -105,28 +271,14 @@ export default function SpreadsheetMarksGrid({
       - (Number(b.student?.roll) || Number.MAX_SAFE_INTEGER));
   }, [rows, sortMode]);
 
-  const commitCell = (studentId, fieldKey, inputValue) => {
-    const key = cellKey(studentId, fieldKey);
-    const hasDraft = Object.prototype.hasOwnProperty.call(draftsRef.current, key);
-    const value = hasDraft ? draftsRef.current[key] : inputValue;
-    editingKey.current = null;
-    if (hasDraft) {
-      const next = { ...draftsRef.current };
-      delete next[key];
-      draftsRef.current = next;
-      setDrafts(next);
-    }
-    if (value !== undefined) onEntry?.(studentId, fieldKey, value);
-  };
-
   /** Arrow/Tab/Enter navigation over the whole grid (row-major, Excel-like). */
-  const move = (event) => {
+  const move = useCallback((event) => {
     const { key } = event;
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Tab'].includes(key)) return;
     const inputs = [...(gridRef.current?.querySelectorAll('input[data-grid]') ?? [])];
     const index = inputs.indexOf(event.currentTarget);
     if (index < 0) return;
-    const width = Math.max(1, fields.length);
+    const width = Math.max(1, ordered.length);
     let delta = 0;
     if (key === 'ArrowDown') delta = width;
     else if (key === 'ArrowUp') delta = -width;
@@ -138,57 +290,63 @@ export default function SpreadsheetMarksGrid({
     const target = inputs[Math.max(0, Math.min(inputs.length - 1, index + delta))];
     target?.focus?.();
     target?.select?.();
-  };
-
+  }, [ordered.length]);
 
   /** `{ [studentId]: { [subjectId]: {formative, summative, total} } }` of this tab. */
   const entries = useMemo(() => {
     const map = {};
-    students.forEach((student) => {
+    const subjects = Array.isArray(config?.subjects) ? config.subjects : [];
+    safeStudents.forEach((student) => {
       map[student.id] = {};
-      (config?.subjects ?? []).forEach((subject) => {
+      subjects.forEach((subject) => {
+        if (!subject?.id) return;
         map[student.id][subject.id] = subjectTermEntry(
-          subject, marks?.[student.id] ?? {}, isConsolidated ? 'annual' : tabId, passMark,
+          subject, marks?.[student.id] ?? {}, entryTerm, passMark,
         );
       });
     });
     return map;
-  }, [students, config, marks, tabId, passMark, isConsolidated]);
+  }, [safeStudents, config, marks, entryTerm, passMark]);
 
   const goldenOf = (studentId) => {
-    const subjects = config?.subjects ?? [];
+    const subjects = Array.isArray(config?.subjects) ? config.subjects : [];
     if (!subjects.length) return false;
-    const row = entries[studentId] ?? {};
-    return subjects.every((subject) => row[subject.id]?.hasAnyMark && row[subject.id]?.percent >= goldenMark);
+    const row = entries?.[studentId] ?? {};
+    return subjects.every((subject) => {
+      const entry = row?.[subject?.id];
+      return Boolean(entry?.hasAnyMark) && Number(entry?.percent) >= goldenMark;
+    });
   };
 
-  const valueOf = (studentId, field) => {
-    const key = cellKey(studentId, field.key);
+  const valueOf = (student, field) => {
+    const key = cellKey(student.id, field.key);
     if (Object.prototype.hasOwnProperty.call(drafts, key)) return drafts[key];
-    return marks?.[studentId]?.[field.key]?.[tabId] ?? '';
+    return displayValue(marks?.[student.id]?.[field.key]?.[termForTab]);
   };
 
   const renderInput = (student, field) => {
     const key = cellKey(student.id, field.key);
-    const entry = entries[student.id]?.[field.subjectId];
-    const value = valueOf(student.id, field);
+    const entry = entries?.[student.id]?.[field.subjectId];
+    const value = valueOf(student, field);
     const blank = value === '' || value === null || value === undefined;
     const numeric = blank ? null : Number(value);
-    const invalid = numeric !== null && (numeric < 0 || numeric > fieldLimit(field));
-    // The consolidated tab is derived from the three terms, so it is read-only.
-    const disabled = !canEdit || isConsolidated;
+    const invalid = numeric !== null
+      && (!Number.isFinite(numeric) || numeric < 0 || numeric > fieldLimit(field));
     const tone = disabled ? '' : cellTone(entry, passMark, goldenMark);
+    const groupStyle = GROUP_STYLE[field.component] ?? GROUP_STYLE.single;
     return (
       <input
         data-grid="true"
         data-grid-key={key}
+        data-group={field.component === 'formative' || field.component === 'summative' ? field.component : 'single'}
         aria-label={`${student.name}, ${field.label}`}
         disabled={disabled}
         type="number"
         min="0"
         max={fieldLimit(field)}
+        step="any"
         inputMode="decimal"
-        className={clsx('mark-cell', tone, invalid && 'mark-cell-invalid')}
+        className={clsx('mark-cell', groupStyle.input, tone, invalid && 'mark-cell-invalid')}
         value={value}
         onFocus={(event) => {
           editingKey.current = key;
@@ -203,7 +361,7 @@ export default function SpreadsheetMarksGrid({
     );
   };
 
-  const rankOf = (studentId) => rows.find((row) => row.studentId === studentId) ?? null;
+  const rankOf = (studentId) => rankMap.get(studentId) ?? null;
 
   /**
    * নতুন রোল of one pupil: the consolidated map wins; the consolidated tab falls back to
@@ -217,13 +375,24 @@ export default function SpreadsheetMarksGrid({
     return rankOf(studentId)?.newRoll ?? null;
   };
 
+  /** The group buckets that actually carry columns, in display order. */
+  const activeGroups = useMemo(
+    () => GROUP_ORDER.filter((groupKey) => columnGroups[groupKey].length > 0),
+    [columnGroups],
+  );
 
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700">
       {onSortModeChange ? (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 dark:border-slate-800">
-          <p className="text-[11px] font-semibold text-slate-500">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-slate-500">
+            <Info size={12} aria-hidden="true" />
             তীরচিহ্ন / Tab / Enter দিয়ে ঘর বদলান · খালি ঘর ০ হিসেবে গণ্য হবে
+            {saving ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2 py-0.5 font-bold text-brand-700 dark:bg-brand-900/40 dark:text-brand-200">
+                <Spinner size="xs" tone="brand" label="নম্বর সংরক্ষণ হচ্ছে…" /> সংরক্ষণ হচ্ছে…
+              </span>
+            ) : null}
           </p>
           <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
             <ArrowDownUp size={13} aria-hidden="true" /> ক্রম
@@ -240,39 +409,53 @@ export default function SpreadsheetMarksGrid({
         </div>
       ) : null}
 
+      {/* Group legend: which tint belongs to which evaluation group. */}
+      {activeGroups.length ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2 dark:border-slate-800">
+          {activeGroups.map((groupKey) => (
+            <span key={groupKey} className={clsx('badge border', GROUP_STYLE[groupKey].head)}>
+              {GROUP_STYLE[groupKey].label}
+              <span className="font-normal opacity-80">· {toBanglaNumber(columnGroups[groupKey].length)} কলাম</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {/* Desktop / tablet: one spreadsheet row per pupil. */}
       <div className="hidden overflow-auto md:block">
         <table className="table-base min-w-[980px]">
           <thead>
             <tr>
-              <th className="sticky left-0 z-20">শিক্ষার্থী</th>
-              {(config?.subjects ?? []).map((subject) => (
-                <th key={subject.id} colSpan={subject.split ? 2 : 1} className="text-center">
-                  {subject.name}
-                  <span className="ml-1 font-normal text-slate-400">({toBanglaNumber(subject.fullMarks)})</span>
+              <th rowSpan={2} className="sticky left-0 top-0 z-20">শিক্ষার্থী / রোল</th>
+              {activeGroups.map((groupKey) => (
+                <th
+                  key={`group-${groupKey}`}
+                  colSpan={columnGroups[groupKey].length}
+                  className={clsx('top-0 z-20 text-center', GROUP_STYLE[groupKey].head, GROUP_STYLE[groupKey].edge)}
+                >
+                  {GROUP_STYLE[groupKey].label}
+                  <span className="ml-1 block text-[10px] font-normal opacity-80">
+                    {GROUP_STYLE[groupKey].hint}
+                  </span>
                 </th>
               ))}
-              <th>মোট</th>
-              <th>GPA</th>
-              <th>গ্রেড</th>
-              <th>মেধাক্রম</th>
-              {showNewRoll ? <th>নতুন রোল</th> : null}
+              <th rowSpan={2} className="top-0">মোট</th>
+              <th rowSpan={2} className="top-0">GPA</th>
+              <th rowSpan={2} className="top-0">গ্রেড</th>
+              <th rowSpan={2} className="top-0">মেধাক্রম</th>
+              {showNewRoll ? <th rowSpan={2} className="top-0">নতুন রোল</th> : null}
             </tr>
             <tr>
-              <th className="sticky left-0 z-20">রোল</th>
-              {(config?.subjects ?? []).flatMap((subject) => (
-                subject.split
-                  ? [
-                    <th key={`${subject.id}-f`} className="text-center">গাঠনিক</th>,
-                    <th key={`${subject.id}-s`} className="text-center">সামষ্টিক</th>,
-                  ]
-                  : [<th key={subject.id} className="text-center">নম্বর</th>]
-              ))}
-              <th>{toBanglaNumber(config?.subjects?.reduce((sum, subject) => sum + subject.fullMarks, 0) ?? 0)}</th>
-              <th>৫.০০</th>
-              <th>—</th>
-              <th>—</th>
-              {showNewRoll ? <th>—</th> : null}
+              {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
+                <th
+                  key={`head-${field.key}`}
+                  className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE[groupKey].cell, GROUP_STYLE[groupKey].edge)}
+                  title={`${field.subject?.name ?? field.subjectName} · ${field.label}`}
+                >
+                  <span className="block max-w-24 truncate">{field.subject?.name ?? field.subjectName}</span>
+                  <span className="block text-[10px] font-normal opacity-70">({toBanglaNumber(fieldLimit(field))})</span>
+                </th>
+              )))}
             </tr>
           </thead>
           <tbody ref={gridRef}>
@@ -299,11 +482,14 @@ export default function SpreadsheetMarksGrid({
                     </button>
                     <div className="text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</div>
                   </td>
-                  {(config?.subjects ?? []).map((subject) => fields
-                    .filter((field) => field.subjectId === subject.id)
-                    .map((field) => (
-                      <td key={field.key} className="min-w-16 p-1">{renderInput(student, field)}</td>
-                    )))}
+                  {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
+                    <td
+                      key={field.key}
+                      className={clsx('min-w-16 p-1', GROUP_STYLE[groupKey].cell, GROUP_STYLE[groupKey].edge)}
+                    >
+                      {renderInput(student, field)}
+                    </td>
+                  )))}
                   <td className="font-bold">{toBanglaNumber(result?.totalMarks ?? 0)}</td>
                   <td>{result?.gpa == null ? '—' : Number(result.gpa).toFixed(2)}</td>
                   <td>
@@ -330,7 +516,7 @@ export default function SpreadsheetMarksGrid({
         </table>
       </div>
 
-      {/* Mobile: each pupil is a card; গাঠনিক / সামষ্টিক stack vertically. */}
+      {/* Mobile: each pupil is a card; গাঠনিক and সামষ্টিক stay in their own tinted areas. */}
       <div className="divide-y divide-slate-100 md:hidden dark:divide-slate-800">
         {visibleRows.map(({ student, result }) => {
           const golden = goldenOf(student.id);
@@ -359,16 +545,22 @@ export default function SpreadsheetMarksGrid({
                 </button>
               </div>
               <div className="space-y-1.5">
-                {(config?.subjects ?? []).map((subject) => (
-                  <div key={subject.id} className="rounded-lg bg-slate-50 p-1.5 dark:bg-slate-800">
-                    <p className="mb-1 text-[11px] font-bold text-slate-500">
-                      {subject.name} · পূর্ণমান {toBanglaNumber(subject.fullMarks)}
+                {activeGroups.map((groupKey) => (
+                  <div
+                    key={`${student.id}-${groupKey}`}
+                    className={clsx('rounded-lg p-1.5', GROUP_STYLE[groupKey].cell, GROUP_STYLE[groupKey].edge)}
+                  >
+                    <p className="mb-1 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                      {GROUP_STYLE[groupKey].label}
                     </p>
                     <div className="grid gap-1.5 sm:grid-cols-2">
-                      {fields.filter((field) => field.subjectId === subject.id).map((field) => (
+                      {columnGroups[groupKey].map((field) => (
                         <label key={field.key} className="flex items-center gap-1.5">
-                          <span className="w-16 shrink-0 text-[10px] font-semibold text-slate-500">
-                            {field.component === 'formative' ? 'গাঠনিক' : field.component === 'summative' ? 'সামষ্টিক' : 'নম্বর'}
+                          <span className="w-20 shrink-0 truncate text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+                            {field.subject?.name ?? field.subjectName}
+                            <span className="block text-[9px] font-normal text-slate-400">
+                              ({toBanglaNumber(fieldLimit(field))})
+                            </span>
                           </span>
                           {renderInput(student, field)}
                         </label>
@@ -399,4 +591,5 @@ export default function SpreadsheetMarksGrid({
     </div>
   );
 }
+
 

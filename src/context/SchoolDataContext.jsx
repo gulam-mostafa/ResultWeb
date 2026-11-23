@@ -94,6 +94,14 @@ export function SchoolDataProvider({ children }) {
   const [resultConfigs, setResultConfigs] = useState({});
   const [syncState, setSyncState] = useState(() => (typeof navigator === 'undefined' || navigator.onLine ? 'synced' : 'offline'));
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  /**
+   * `true` while the ACTIVE school/year partition is still being read from the database
+   * (first snapshot). A hard timeout guarantees it can never hang the UI, and a school
+   * with no cloud reference is never left in the loading state.
+   */
+  const [hydrating, setHydrating] = useState(false);
+  const hydrationTimer = useRef(null);
+
   const saveTimer = useRef(null);
   const lastSavedAt = useRef(null);
   const dirtyRef = useRef(new Set());
@@ -135,15 +143,30 @@ export function SchoolDataProvider({ children }) {
       activeSchoolRef.current = schoolRefKey;
       setSchoolProfile(normalizeSchoolProfile(user?.school || null));
     }
-    if (!schoolRef || !schoolId || !canWriteTenant) return undefined;
+    if (!schoolRef || !schoolId || !canWriteTenant) {
+      setHydrating(false);
+      return undefined;
+    }
     // Register the reference so every service helper (subtrees, profile, legacy
     // readers) resolves the same hierarchical base for this school.
     rememberSchoolLocation(schoolRef);
     const subscriptionKey = schoolRefKey;
     let studentsInitialized = false;
     let resultsInitialized = false;
+    // Surface the first read as a real loading state, and never let a stalled listener
+    // leave the screen spinning forever.
+    setHydrating(true);
+    if (hydrationTimer.current) clearTimeout(hydrationTimer.current);
+    hydrationTimer.current = setTimeout(() => setHydrating(false), 6000);
+    const markHydrated = () => {
+      if (hydrationTimer.current) clearTimeout(hydrationTimer.current);
+      hydrationTimer.current = null;
+      setHydrating(false);
+    };
     const unsubStudents = subscribeStudents(schoolRef, (snapshot) => {
       isRemoteUpdate.current = true;
+      if (!studentsInitialized) markHydrated();
+
       const incoming = [...asList(snapshot?.students), ...asList(snapshot?.archive).map((student) => ({ ...student, classId: 'archive', status: 'archived' }))];
       setDataset((previous) => {
         const remote = incoming.length ? incoming : (!studentsInitialized ? previous.students : []);
@@ -155,6 +178,8 @@ export function SchoolDataProvider({ children }) {
     const unsubResults = subscribeResults(schoolRef, (results) => {
       if (!results) return;
       isRemoteUpdate.current = true;
+      if (!resultsInitialized) markHydrated();
+
       setDataset((previous) => {
         const marks = asRecord(results.marks);
         const remarks = asRecord(results.remarks);
@@ -187,6 +212,8 @@ export function SchoolDataProvider({ children }) {
       unsubResults();
       unsubProfile();
       unsubConfigs();
+      if (hydrationTimer.current) clearTimeout(hydrationTimer.current);
+      hydrationTimer.current = null;
       hydratedRef.current.delete(subscriptionKey);
     };
   }, [schoolId, schoolRef, schoolRefKey, activeYear, canWriteTenant]);
@@ -492,6 +519,7 @@ export function SchoolDataProvider({ children }) {
       // sync status
       syncState,
       isOnline,
+      isHydrating: hydrating,
       markSynced,
       // selectors
       studentsByClass,
@@ -544,6 +572,7 @@ export function SchoolDataProvider({ children }) {
       canWriteTenant,
       syncState,
       isOnline,
+      hydrating,
       markSynced,
       studentsByClass,
       sectionCounts,

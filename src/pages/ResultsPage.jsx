@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, ArrowUpRight, Download, FileSpreadsheet, Printer, Settings2, Sparkles, Upload,
 } from 'lucide-react';
+
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { CLASS_LEVELS, CLASS_LABEL_MAP } from '../utils/constants.js';
@@ -18,7 +19,9 @@ import { Card, CardHeader, Badge } from '../components/ui/Primitives.jsx';
 import SpreadsheetMarksGrid from '../components/results/SpreadsheetMarksGrid.jsx';
 import ResultConfigModal from '../components/results/ResultConfigModal.jsx';
 import ExcelPreviewModal from '../components/results/ExcelPreviewModal.jsx';
+import ExcelDownloadWarningModal from '../components/results/ExcelDownloadWarningModal.jsx';
 import AIRemarkModal from '../components/results/AIRemarkModal.jsx';
+import Spinner from '../components/ui/Spinner.jsx';
 import TermMarksheetA4 from '../components/documents/TermMarksheetA4.jsx';
 import MarksheetA4 from '../components/documents/MarksheetA4.jsx';
 import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
@@ -58,6 +61,8 @@ export default function ResultsPage() {
     executePromotion,
     saveResultConfig,
     resetResultConfig,
+    syncState,
+    isHydrating,
   } = useSchoolData();
   const { canManageStudents } = useAuth();
 
@@ -76,7 +81,15 @@ export default function ResultsPage() {
   const [uploadInfo, setUploadInfo] = useState('');
   const [preview, setPreview] = useState(null);
   const [savingPreview, setSavingPreview] = useState(false);
+  /** Excel warning popup — the `.xlsx` download only starts after its confirm button. */
+  const [downloadWarningOpen, setDownloadWarningOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [parsingUpload, setParsingUpload] = useState(false);
+  /** Short-lived overlay while a class/শাখা/tab switch recalculates the grid. */
+  const [switching, setSwitching] = useState(false);
   const fileInputRef = useRef(null);
+  const switchTimer = useRef(null);
+
 
   // The sidebar's "বার্ষিক শ্রেণি উত্তরণ" entry deep-links to `/results?promote=1`.
   const [searchParams, setSearchParams] = useSearchParams();
@@ -100,6 +113,21 @@ export default function ResultsPage() {
   useEffect(() => {
     if (!sections.includes(sectionFilter)) setSectionFilter(sections[0] ?? DEFAULT_SECTION_ID);
   }, [sections, sectionFilter]);
+
+  /** Shows the "recalculating" spinner briefly so a filter switch never looks frozen. */
+  const flashSwitching = useCallback(() => {
+    setSwitching(true);
+    if (switchTimer.current) clearTimeout(switchTimer.current);
+    switchTimer.current = setTimeout(() => setSwitching(false), 600);
+  }, []);
+  useEffect(() => () => {
+    if (switchTimer.current) clearTimeout(switchTimer.current);
+  }, []);
+  // Switching a class / শাখা / tab recalculates every row — surface it.
+  useEffect(() => {
+    flashSwitching();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId, tabId, sectionFilter]);
 
   const students = useMemo(() => {
     const list = studentsByClass?.[classId] ?? [];
@@ -159,7 +187,18 @@ export default function ResultsPage() {
     students,
   }), [schoolProfile, classId, activeYear, tabId, config, students]);
 
+  /** Opens the mandatory warning popup — NO file is generated at this point. */
+  const requestDownload = () => {
+    setUploadError('');
+    setUploadInfo('');
+    setDownloadNotice('');
+    setDownloadWarningOpen(true);
+  };
+
+  /** Runs only after the teacher confirms inside the warning popup. */
   const handleDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
     setUploadError('');
     setUploadInfo('');
     try {
@@ -168,9 +207,13 @@ export default function ResultsPage() {
       );
       const { name } = await downloadResultExcel({ spec: excelSpec, marks, computed });
       setDownloadNotice(`ফাইল ডাউনলোড হয়েছে: ${name}`);
+      setDownloadWarningOpen(false);
     } catch {
       setDownloadNotice('');
       setUploadError('এক্সেল ফাইল তৈরি করা যায়নি। আবার চেষ্টা করুন।');
+      setDownloadWarningOpen(false);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -182,21 +225,29 @@ export default function ResultsPage() {
     setUploadInfo('');
     setDownloadNotice('');
     setPreview(null);
-    let buffer;
+    setParsingUpload(true);
     try {
-      buffer = await file.arrayBuffer();
+      let buffer;
+      try {
+        buffer = await file.arrayBuffer();
+      } catch {
+        setUploadError('ফাইলটি পড়া যায়নি।');
+        return;
+      }
+      const parsed = await parseResultWorkbook(new Uint8Array(buffer), excelSpec);
+      if (!parsed?.ok) {
+        setUploadError(parsed?.message ?? 'ফাইলটি যাচাই করা যায়নি।');
+        return;
+      }
+      setPreview({ rows: parsed.rows ?? {}, spec: excelSpec });
+      setUploadInfo('ফাইল যাচাই সম্পন্ন — স্ক্রিন প্রিভিউ থেকে সংরক্ষণ করুন।');
     } catch {
-      setUploadError('ফাইলটি পড়া যায়নি।');
-      return;
+      setUploadError('ফাইল প্রক্রিয়া করা যায়নি। আবার চেষ্টা করুন।');
+    } finally {
+      setParsingUpload(false);
     }
-    const parsed = await parseResultWorkbook(new Uint8Array(buffer), excelSpec);
-    if (!parsed.ok) {
-      setUploadError(parsed.message);
-      return;
-    }
-    setPreview({ rows: parsed.rows, spec: excelSpec });
-    setUploadInfo('ফাইল যাচাই সম্পন্ন — স্ক্রিন প্রিভিউ থেকে সংরক্ষণ করুন।');
   };
+
 
   /**
    * Saves the previewed sheet in ONE multi-path database write (per class + term), so a
@@ -256,7 +307,14 @@ export default function ResultsPage() {
         <div className="flex flex-wrap items-end gap-3">
           <label>
             <span className="label-base">শ্রেণি নির্বাচন</span>
-            <select className="input-base w-44" value={classId} onChange={(event) => { setClassId(event.target.value); setPrintTargetId(''); setPreview(null); }}>
+            <select className="input-base w-44" value={classId} onChange={(event) => {
+              setClassId(event.target.value);
+              setPrintTargetId('');
+              setPreview(null);
+              setUploadError('');
+              setUploadInfo('');
+              setDownloadNotice('');
+            }}>
               {CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
@@ -290,11 +348,20 @@ export default function ResultsPage() {
         subtitle={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name} · ${activeYear} শিক্ষাবর্ষ`}
         icon={FileSpreadsheet}
         action={<div className="flex flex-wrap items-center gap-2">
-          <button type="button" className="btn-secondary btn-sm" onClick={handleDownload}>
-            <Download size={13} /> এক্সেল ডাউনলোড
+          <button type="button" className="btn-secondary btn-sm" onClick={requestDownload} disabled={downloading || parsingUpload}>
+            {downloading
+              ? <><Spinner size="xs" tone="brand" label="এক্সেল তৈরি হচ্ছে…" /> তৈরি হচ্ছে…</>
+              : <><Download size={13} /> এক্সেল ডাউনলোড</>}
           </button>
-          <button type="button" className="btn-primary btn-sm" onClick={() => fileInputRef.current?.click()} disabled={isConsolidated}>
-            <Upload size={13} /> এক্সেল আপলোড
+          <button
+            type="button"
+            className="btn-primary btn-sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isConsolidated || parsingUpload}
+          >
+            {parsingUpload
+              ? <><Spinner size="xs" tone="white" label="ফাইল যাচাই হচ্ছে…" /> যাচাই হচ্ছে…</>
+              : <><Upload size={13} /> এক্সেল আপলোড</>}
           </button>
           <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden" onChange={handleUpload} aria-label="এক্সেল ফাইল আপলোড" />
         </div>}
@@ -304,19 +371,35 @@ export default function ResultsPage() {
         <b>সতর্কতা:</b> ডাউনলোড করা ফাইলের ফরম্যাট, শিটের নাম, বিষয়ের নাম, কলাম ও সারির কাঠামো <b>পরিবর্তন করবেন না</b> — শুধু নম্বরের ঘর পূরণ করুন। ওয়েবে ইতিমধ্যে দেওয়া নম্বরও ফাইলে থাকবে, তাই অর্ধেক ওয়েবে ও বাকিটা এক্সেলে পূরণ করে পুনরায় আপলোড করা যাবে। কাঠামো বদলালে আপলোড <b>কারণসহ বাতিল</b> হবে এবং নম্বর আগে <b>স্ক্রিন প্রিভিউ</b>তে দেখানো হবে — <b>সংরক্ষণ</b> চাপলেই কেবল এই বিদ্যালয়ের ডেটাবেজে যাবে।
         {isConsolidated ? ' বার্ষিক ফলাফল ট্যাব স্বয়ংক্রিয়ভাবে হিসাব হয়, তাই এখানে আপলোড নেই — অন্য তিনটি ট্যাবে নম্বর দিন।' : ''}
       </div>
+      {parsingUpload ? (
+        <p role="status" className="mt-2 flex items-center gap-2 rounded-lg bg-sky-50 p-2.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          <Spinner size="xs" tone="brand" label="এক্সেল ফাইল যাচাই হচ্ছে…" />
+          এক্সেল ফাইল পড়া ও যাচাই করা হচ্ছে… অপেক্ষা করুন।
+        </p>
+      ) : null}
       {downloadNotice ? <p role="status" className="mt-2 rounded-lg bg-brand-50 p-2.5 text-[11px] font-semibold text-brand-800 dark:bg-brand-900/30 dark:text-brand-200">{downloadNotice}</p> : null}
+
       {uploadInfo ? <p role="status" className="mt-2 rounded-lg bg-emerald-50 p-2.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">{uploadInfo}</p> : null}
       {uploadError ? <p role="alert" className="mt-2 rounded-lg bg-rose-50 p-2.5 text-[11px] font-semibold text-rose-800 dark:bg-rose-950/40 dark:text-rose-200"><b>আপলোড বাতিল:</b> {uploadError}</p> : null}
     </Card>
 
     <Card padded={false} className="no-print">
-      <div className="p-4">
+      <div className="relative p-4">
         <CardHeader
           title={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name}`}
           subtitle={isConsolidated
             ? `১ম (${toBanglaNumber(weights.term1)}%) + ২য় (${toBanglaNumber(weights.term2)}%) + বার্ষিক (${toBanglaNumber(weights.annual)}%) অনুযায়ী চূড়ান্ত ফলাফল · মেধাক্রম ও নতুন রোল`
             : `প্রতি বিষয়ে পূর্ণমান ${toBanglaNumber(config.subjects.reduce((sum, subject) => sum + subject.fullMarks, 0))} · পাস নম্বর ${toBanglaNumber(config.passMark)} · এই প্রান্তিকের পৃথক মেধাক্রম`}
         />
+        {switching || isHydrating ? (
+          <p
+            role="status"
+            className="mb-2 inline-flex items-center gap-2 rounded-lg bg-brand-50 px-2.5 py-1.5 text-[11px] font-bold text-brand-800 dark:bg-brand-900/40 dark:text-brand-200"
+          >
+            <Spinner size="xs" tone={isHydrating ? 'rainbow' : 'brand'} label={isHydrating ? 'ডেটা লোড হচ্ছে…' : 'ফলাফল হিসাব হচ্ছে…'} />
+            {isHydrating ? 'ডেটা লোড হচ্ছে…' : 'ফলাফল হিসাব হচ্ছে…'}
+          </p>
+        ) : null}
         <SpreadsheetMarksGrid
           students={students}
           marks={marks}
@@ -331,8 +414,10 @@ export default function ResultsPage() {
           sortMode={sortMode}
           onSortModeChange={setSortMode}
           newRollMap={newRollMap}
+          saving={syncState === 'saving'}
         />
       </div>
+
       <div className="flex flex-wrap items-end justify-between gap-3 border-t border-slate-100 p-4 dark:border-slate-800">
         <div className="flex flex-wrap gap-2">
           {students.slice(0, 4).map((student) => (
@@ -387,6 +472,17 @@ export default function ResultsPage() {
       canEdit={canManageStudents || Boolean(saveResultConfig)}
       onSave={saveResultConfig}
       onReset={resetResultConfig}
+    />
+
+    <ExcelDownloadWarningModal
+      open={downloadWarningOpen}
+      onClose={() => {
+        if (downloading) return;
+        setDownloadWarningOpen(false);
+      }}
+      onConfirm={handleDownload}
+      downloading={downloading}
+      subtitle={`${CLASS_LABEL_MAP[classId] ?? ''} · ${activeTab.name} · ${activeYear} শিক্ষাবর্ষ`}
     />
 
     <ExcelPreviewModal

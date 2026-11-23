@@ -384,4 +384,90 @@ assert.ok(weightsAreClean(edited.weights));
 
 console.log('PASS — settings modal helpers (rename / split / add) round-trip');
 
+
+/* ------------------------------------------------------------------ *
+ * 9. Grouped columns (গাঠনিক first, then সামষ্টিক) + tinted groups
+ * ------------------------------------------------------------------ */
+// The header must list EVERY গাঠনিক column before the first সামষ্টিক column, and the
+// group bands must be present so the two areas are visually distinct.
+const firstFormativeAt = gridHtml.indexOf('গাঠনিক মূল্যায়ন');
+const firstSummativeAt = gridHtml.indexOf('সামষ্টিক মূল্যায়ন');
+assert.ok(firstFormativeAt > -1 && firstSummativeAt > -1, 'both evaluation groups render as labelled bands');
+assert.ok(firstFormativeAt < firstSummativeAt, 'গাঠনিক group is rendered before the সামষ্টিক group');
+assert.ok(gridHtml.includes('mark-group-head-formative'), 'গাঠনিক headers carry their own tint class');
+assert.ok(gridHtml.includes('mark-group-head-summative'), 'সামষ্টিক headers carry their own tint class');
+assert.ok(gridHtml.includes('mark-cell-formative'), 'গাঠনিক inputs carry their own tint class');
+assert.ok(gridHtml.includes('mark-cell-summative'), 'সামষ্টিক inputs carry their own tint class');
+
+// Within the header row, no সামষ্টিক input tint may appear before the last গাঠনিক one.
+const headerEnd = gridHtml.indexOf('</thead>');
+const headerHtml = gridHtml.slice(0, headerEnd);
+assert.ok(
+  headerHtml.lastIndexOf('mark-group-cell-formative') < headerHtml.indexOf('mark-group-cell-summative'),
+  'every গাঠনিক subject column is grouped before the first সামষ্টিক column',
+);
+
+/* ------------------------------------------------------------------ *
+ * 10. Mark entry carries the term id (the “cells wiped on blur” regression)
+ * ------------------------------------------------------------------ */
+// `SpreadsheetMarksGrid` must forward the ACTIVE TERM to `setMark`; passing only three
+// arguments silently dropped every typed value.
+const { readFile: readSourceFile } = await import('node:fs/promises');
+const pathModule = await import('node:path');
+const gridSource = await readSourceFile(
+  pathModule.join(process.cwd(), 'src/components/results/SpreadsheetMarksGrid.jsx'),
+  'utf8',
+);
+assert.ok(
+  gridSource.includes('setMark(studentId, fieldKey, termForTab, value)'),
+  'a committed cell is written with its term id',
+);
+assert.ok(
+  !gridSource.includes('onEntry?.(studentId, fieldKey, value)'),
+  'the term-less (value-losing) call shape is gone',
+);
+assert.ok(gridSource.includes('pendingRef'), 'committed values are pinned until the store confirms them');
+
+/* ------------------------------------------------------------------ *
+ * 11. Excel download is gated behind the warning popup
+ * ------------------------------------------------------------------ */
+const warningSource = await readSourceFile(
+  pathModule.join(process.cwd(), 'src/components/results/ExcelDownloadWarningModal.jsx'),
+  'utf8',
+);
+assert.ok(warningSource.includes('বুঝেছি ও ডাউনলোড করুন'), 'the popup exposes the confirm/proceed button');
+assert.ok(warningSource.includes('বাতিল'), 'the popup exposes a cancel button');
+const pageSource = await readSourceFile(
+  pathModule.join(process.cwd(), 'src/pages/ResultsPage.jsx'),
+  'utf8',
+);
+assert.ok(pageSource.includes('setDownloadWarningOpen(true)'), 'the download button only opens the warning first');
+assert.ok(
+  pageSource.includes('onConfirm={handleDownload}'),
+  'the download handler is reached only through the popup confirm',
+);
+console.log('PASS — grouped গাঠনিক/সামষ্টিক columns, term-carrying writes, gated Excel download');
+
+/* ------------------------------------------------------------------ *
+ * 12. Single-score (pre-primary) grid + saving spinner markup
+ * ------------------------------------------------------------------ */
+const preHtml = renderToStaticMarkup(React.createElement(SpreadsheetMarksGrid, {
+  students: [{ id: 'p1', name: 'টিয়া', roll: 1 }],
+  marks: { p1: { bangla: { term1: 88 } } },
+  config: preConfig,
+  tabId: 'term1',
+  getResult: (studentId) => computeTermResultForConfig(
+    { p1: { bangla: { term1: 88 } } }[studentId] ?? {}, preConfig, 'term1',
+  ),
+  onEntry: () => {},
+  canEdit: true,
+  onSortModeChange: () => {},
+  saving: true,
+}));
+assert.ok(preHtml.includes('একক নম্বর'), 'a non-split class renders the একক নম্বর group');
+assert.ok(!preHtml.includes('গাঠনিক মূল্যায়ন'), 'a non-split class has no গাঠনিক group');
+assert.ok(preHtml.includes('সংরক্ষণ হচ্ছে'), 'the grid surfaces a saving indicator');
+assert.ok(preHtml.includes('value="88"'), 'an entered mark is rendered in its cell');
+
+
 console.log('PASS — rendered grid (highlights, golden badge, sort control, per-term columns)');
