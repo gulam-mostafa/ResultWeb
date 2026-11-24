@@ -20,6 +20,8 @@ import Spinner from '../ui/Spinner.jsx';
  *   `Enter` jumps to the same subject of the next pupil.
  * • Cells highlight softly: light red below the pass mark, light green at/above golden.
  * • A pupil at/above the golden mark in EVERY subject carries the golden badge.
+ * • Clicking a pupil's NAME opens the remark editor (`onShowRemark`); the small info
+ *   button beside it opens the full pupil record (`onShowStudent`).
  *
  * Every typed value is committed WITH its term id — `setMark(studentId, fieldKey,
  * termId, value)` — so moving to another cell can never wipe a previously entered
@@ -96,6 +98,8 @@ export default function SpreadsheetMarksGrid({
   setMark,
   canEdit = false,
   onShowStudent,
+  /** Click on a pupil's NAME → the editable remark modal. */
+  onShowRemark,
   onShowResult,
   sortMode = 'roll',
   onSortModeChange,
@@ -465,21 +469,35 @@ export default function SpreadsheetMarksGrid({
               return (
                 <tr key={student.id}>
                   <td className="sticky left-0 bg-white dark:bg-slate-900">
-                    <button
-                      type="button"
-                      className="text-left"
-                      onClick={() => onShowStudent?.(student)}
-                      aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য`}
-                    >
-                      <span className="inline-flex flex-wrap items-center gap-1 font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">
-                        {student.name}
-                        {golden ? (
-                          <span className="badge bg-amber-100 text-amber-800" title="সব বিষয়ে ৮০+ — গোল্ডেন ব্যাজ">
-                            <Crown size={11} strokeWidth={2.6} aria-hidden="true" /> গোল্ডেন
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
+                    <div className="flex items-start gap-1.5">
+                      <button
+                        type="button"
+                        className="text-left"
+                        onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                        title="মন্তব্য দেখুন ও সম্পাদনা করুন"
+                        aria-label={`${student.name} এর মন্তব্য`}
+                      >
+                        <span className="inline-flex flex-wrap items-center gap-1 font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">
+                          {student.name}
+                          {golden ? (
+                            <span className="badge bg-amber-100 text-amber-800" title="সব বিষয়ে ৮০+ — গোল্ডেন ব্যাজ">
+                              <Crown size={11} strokeWidth={2.6} aria-hidden="true" /> গোল্ডেন
+                            </span>
+                          ) : null}
+                        </span>
+                      </button>
+                      {onShowStudent ? (
+                        <button
+                          type="button"
+                          onClick={() => onShowStudent(student)}
+                          className="mt-0.5 shrink-0 rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-brand-700 dark:hover:bg-slate-800"
+                          title="পূর্ণাঙ্গ তথ্য"
+                          aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য`}
+                        >
+                          <Info size={12} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                    </div>
                     <div className="text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</div>
                   </td>
                   {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
@@ -524,17 +542,35 @@ export default function SpreadsheetMarksGrid({
           return (
             <div key={student.id} className="p-3">
               <div className="mb-2 flex items-start justify-between gap-2">
-                <button type="button" className="text-left" onClick={() => onShowStudent?.(student)}>
-                  <span className="inline-flex flex-wrap items-center gap-1 text-sm font-bold text-brand-800 dark:text-brand-200">
-                    {student.name}
-                    {golden ? (
-                      <span className="badge bg-amber-100 text-amber-800">
-                        <Crown size={10} strokeWidth={2.6} aria-hidden="true" /> গোল্ডেন
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="block text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</span>
-                </button>
+                <div className="flex items-start gap-1.5">
+                  <button
+                    type="button"
+                    className="text-left"
+                    onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                    title="মন্তব্য দেখুন ও সম্পাদনা করুন"
+                  >
+                    <span className="inline-flex flex-wrap items-center gap-1 text-sm font-bold text-brand-800 dark:text-brand-200">
+                      {student.name}
+                      {golden ? (
+                        <span className="badge bg-amber-100 text-amber-800">
+                          <Crown size={10} strokeWidth={2.6} aria-hidden="true" /> গোল্ডেন
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="block text-[10px] text-slate-400">রোল {toBanglaNumber(student.roll)}</span>
+                  </button>
+                  {onShowStudent ? (
+                    <button
+                      type="button"
+                      onClick={() => onShowStudent(student)}
+                      className="mt-0.5 shrink-0 rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-brand-700 dark:hover:bg-slate-800"
+                      title="পূর্ণাঙ্গ তথ্য"
+                      aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য`}
+                    >
+                      <Info size={12} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
                 <button
                   type="button"
                   onClick={() => onShowResult?.(student)}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Download, FileSpreadsheet, Printer, Settings2, Sparkles, Upload,
+  AlertTriangle, ArrowUpRight, Download, FileSpreadsheet, FileText, Printer, Settings2, Sparkles, Upload,
 } from 'lucide-react';
 
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
@@ -17,18 +17,25 @@ import {
 } from '../utils/resultConfig.js';
 import { Card, CardHeader, Badge } from '../components/ui/Primitives.jsx';
 import SpreadsheetMarksGrid from '../components/results/SpreadsheetMarksGrid.jsx';
+import ConsolidatedAnnualTable from '../components/results/ConsolidatedAnnualTable.jsx';
 import ResultConfigModal from '../components/results/ResultConfigModal.jsx';
 import ExcelPreviewModal from '../components/results/ExcelPreviewModal.jsx';
 import ExcelDownloadWarningModal from '../components/results/ExcelDownloadWarningModal.jsx';
 import AIRemarkModal from '../components/results/AIRemarkModal.jsx';
 import Spinner from '../components/ui/Spinner.jsx';
-import TermMarksheetA4 from '../components/documents/TermMarksheetA4.jsx';
-import MarksheetA4 from '../components/documents/MarksheetA4.jsx';
+import ResultMarksheetA4 from '../components/documents/ResultMarksheetA4.jsx';
 import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 import { downloadResultExcel, parseResultWorkbook, templateSpec } from '../services/excel/resultExcel.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
+
+/** The two A4 page layouts of the marksheet print / PDF flow. */
+const PAGE_LAYOUTS = [
+  { id: 'single', name: '১টি A4 পেজে ১ জনের মার্কশিট', hint: 'প্রতি পেজে একজন শিক্ষার্থী' },
+  { id: 'pair', name: '১টি A4 পেজে ২ জনের মার্কশিট', hint: 'উপর-নিচে অর্ধেক-অর্ধেক করে' },
+];
+
 
 /**
  * ডিজিটাল রেজাল্ট (/results)
@@ -72,6 +79,10 @@ export default function ResultsPage() {
   const [sortMode, setSortMode] = useState('roll');
   const [remarkTarget, setRemarkTarget] = useState(null);
   const [printTargetId, setPrintTargetId] = useState('');
+  /** `'single'` (1 marksheet per A4) | `'pair'` (2 marksheets per A4, top & bottom). */
+  const [pageLayout, setPageLayout] = useState('single');
+  /** `false` = the single-pupil preview, `true` = the whole class in the print-root. */
+  const [bulkPrint, setBulkPrint] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [resultTarget, setResultTarget] = useState(null);
@@ -159,11 +170,8 @@ export default function ResultsPage() {
     }, {});
   }, [consolidatedRows]);
   const printTarget = students.find((student) => student.id === printTargetId) ?? students[0];
-  const printResult = printTarget ? getRowResult(printTarget.id) : null;
-  const printPosition = printTarget
-    ? (classRows.find((row) => row.studentId === printTarget.id)?.position ?? undefined)
-    : undefined;
   const remarkResult = remarkTarget ? getRowResult(remarkTarget.id) : null;
+  const remarkMarks = marks ?? {};
   const weights = normalizedWeightPercent(config.weights);
   const goldenCount = useMemo(
     () => classRows.filter((row) => row.result?.isGolden).length,
@@ -173,6 +181,46 @@ export default function ResultsPage() {
     () => classRows.filter((row) => row.result?.isPass).length,
     [classRows],
   );
+
+  /** Absolute origin so the printed QR code always resolves when scanned. */
+  const verifyOrigin = typeof window === 'undefined' ? '' : window.location.origin;
+
+  /**
+   * Every marksheet of the active class/শাখা/tab, in the current sort order.
+   * The single-pupil preview and the bulk PDF render from this ONE list, so both
+   * layouts always contain identical data.
+   */
+  const marksheetRows = useMemo(() => {
+    const positionOf = new Map(
+      (isConsolidated ? consolidatedRows : classRows).map((row) => [row.studentId, row.position]),
+    );
+    const list = students
+      .map((student) => ({
+        student,
+        result: getRowResult(student.id),
+        position: positionOf.get(student.id),
+      }))
+      .filter((row) => Boolean(row.result));
+    if (sortMode === 'merit') {
+      return [...list].sort((a, b) => (
+        (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
+      ));
+    }
+    return [...list].sort((a, b) => (
+      (Number(a.student?.roll) || Number.MAX_SAFE_INTEGER) - (Number(b.student?.roll) || Number.MAX_SAFE_INTEGER)
+    ));
+  }, [students, getRowResult, isConsolidated, consolidatedRows, classRows, sortMode]);
+
+  /** Single-pupil / class-wide print: mount the sheet(s), print, then restore the UI. */
+  const printSheets = () => {
+    const cleanup = () => {
+      setBulkPrint(false);
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    // Give React one frame to mount the sheet(s) before the print dialog opens.
+    setTimeout(() => window.print(), 80);
+  };
 
   /* ---------------------------------------------------------------- *
    * Excel: download (with the format warning) / upload (strict) / save
@@ -400,22 +448,36 @@ export default function ResultsPage() {
             {isHydrating ? 'ডেটা লোড হচ্ছে…' : 'ফলাফল হিসাব হচ্ছে…'}
           </p>
         ) : null}
-        <SpreadsheetMarksGrid
-          students={students}
-          marks={marks}
-          config={config}
-          tabId={tabId}
-          getResult={getRowResult}
-          onEntry={setMark}
-          setMark={setMark}
-          canEdit={!isConsolidated}
-          onShowStudent={setProfileTarget}
-          onShowResult={setResultTarget}
-          sortMode={sortMode}
-          onSortModeChange={setSortMode}
-          newRollMap={newRollMap}
-          saving={syncState === 'saving'}
-        />
+        {isConsolidated ? (
+          <ConsolidatedAnnualTable
+            rows={classRows}
+            weights={weights}
+            sortMode={sortMode}
+            onSortModeChange={setSortMode}
+            onShowStudent={setRemarkTarget}
+            onShowResult={setResultTarget}
+            switching={switching}
+            isHydrating={isHydrating}
+          />
+        ) : (
+          <SpreadsheetMarksGrid
+            students={students}
+            marks={marks}
+            config={config}
+            tabId={tabId}
+            getResult={getRowResult}
+            onEntry={setMark}
+            setMark={setMark}
+            canEdit={!isConsolidated}
+            onShowStudent={setProfileTarget}
+            onShowRemark={setRemarkTarget}
+            onShowResult={setResultTarget}
+            sortMode={sortMode}
+            onSortModeChange={setSortMode}
+            newRollMap={newRollMap}
+            saving={syncState === 'saving'}
+          />
+        )}
       </div>
 
       <div className="flex flex-wrap items-end justify-between gap-3 border-t border-slate-100 p-4 dark:border-slate-800">
@@ -426,31 +488,121 @@ export default function ResultsPage() {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <label>
-            <span className="label-base">প্রিন্টের শিক্ষার্থী</span>
-            <select className="input-base min-w-44" value={printTargetId || students[0]?.id || ''} onChange={(event) => setPrintTargetId(event.target.value)}>
-              {students.map((student) => <option key={student.id} value={student.id}>{student.name} · রোল {student.roll}</option>)}
-            </select>
-          </label>
-          <button type="button" className="btn-primary" onClick={() => window.print()} disabled={!printTarget}>
-            <Printer size={15} /> {activeTab.name} প্রিন্ট
-          </button>
-        </div>
+        <p className="text-[11px] font-semibold text-slate-500">
+          শিক্ষার্থীর নাম ক্লিক করলেই মন্তব্য দেখে সম্পাদনা ও সংরক্ষণ করা যাবে।
+        </p>
       </div>
     </Card>
 
-    <div className="print-root">
-      {printTarget && printResult && (isConsolidated
-        ? <MarksheetA4 student={printTarget} result={printResult} remark={getRemark(printTarget.id)} schoolProfile={schoolProfile} />
-        : <TermMarksheetA4
-          student={printTarget}
-          result={printResult}
-          term={{ id: tabId, name: activeTab.name }}
-          remark={getRemark(printTarget.id)}
-          position={printPosition}
+    {/* মার্কশিট প্রিন্ট / PDF — single pupil + whole class, two A4 layouts */}
+    <Card className="mt-4 no-print">
+      <CardHeader
+        title="মার্কশিট প্রিন্ট ও PDF ডাউনলোড"
+        subtitle={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name} · ${toBanglaNumber(marksheetRows.length)} জনের মার্কশিট প্রস্তুত`}
+        icon={FileText}
+      />
+
+      <div className="mb-3">
+        <p className="label-base">পেজ লেআউট</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {PAGE_LAYOUTS.map((layout) => {
+            const active = pageLayout === layout.id;
+            return (
+              <button
+                key={layout.id}
+                type="button"
+                onClick={() => setPageLayout(layout.id)}
+                aria-pressed={active}
+                className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition ${
+                  active
+                    ? 'border-brand-600 bg-brand-50 text-brand-900 dark:border-brand-400 dark:bg-brand-900/30 dark:text-brand-100'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                }`}
+              >
+                <span
+                  className={`mt-0.5 flex h-8 w-6 shrink-0 flex-col overflow-hidden rounded border ${
+                    active ? 'border-brand-500' : 'border-slate-300 dark:border-slate-600'
+                  }`}
+                  aria-hidden="true"
+                >
+                  <span className={`h-full w-full ${active ? 'bg-brand-200' : 'bg-slate-100 dark:bg-slate-700'}`} />
+                  {layout.id === 'pair' ? (
+                    <span className={`h-full w-full border-t ${active ? 'border-brand-500 bg-brand-100' : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800'}`} />
+                  ) : null}
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-bold">{layout.name}</span>
+                  <span className="block text-[11px] opacity-75">{layout.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-wrap items-end gap-2">
+          <label>
+            <span className="label-base">প্রিন্টের শিক্ষার্থী</span>
+            <select
+              className="input-base min-w-44"
+              value={printTargetId || students[0]?.id || ''}
+              onChange={(event) => setPrintTargetId(event.target.value)}
+            >
+              {students.map((student) => (
+                <option key={student.id} value={student.id}>{student.name} · রোল {student.roll}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => {
+              setBulkPrint(false);
+              printSheets();
+            }}
+            disabled={!printTarget}
+          >
+            <Printer size={15} /> একক শিক্ষার্থীর প্রিন্ট
+          </button>
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <button
+            type="button"
+            className="btn-emerald"
+            onClick={() => {
+              setBulkPrint(true);
+              printSheets();
+            }}
+            disabled={!marksheetRows.length}
+          >
+            <Download size={15} /> সব শিক্ষার্থীর একসাথে PDF ডাউনলোড
+          </button>
+        </div>
+      </div>
+
+      <p className="mt-2 rounded-xl bg-slate-50 p-2.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+        প্রিন্ট ডায়ালগে <b>Save as PDF</b> নির্বাচন করলেই PDF ডাউনলোড হবে। নির্বাচিত লেআউট:{' '}
+        <b>{PAGE_LAYOUTS.find((layout) => layout.id === pageLayout)?.name}</b>
+        {pageLayout === 'pair' ? ' — দুই মার্কশিট এক পেজে উপর-নিচে অর্ধেক-অর্ধেক করে বসবে।' : ' — প্রতিটি মার্কশিট আলাদা পেজে যাবে।'}
+      </p>
+    </Card>
+
+    <div className={pageLayout === 'pair' ? 'print-root print-pair' : 'print-root print-single'}>
+      {(bulkPrint ? marksheetRows : marksheetRows.filter((row) => row.student.id === printTarget?.id)).map((row) => (
+        <ResultMarksheetA4
+          key={row.student.id}
+          student={row.student}
+          result={row.result}
+          remark={getRemark(row.student.id)}
           schoolProfile={schoolProfile}
-        />)}
+          tabId={tabId}
+          tabName={activeTab.name}
+          position={row.position}
+          layout={pageLayout}
+          verifyOrigin={verifyOrigin}
+        />
+      ))}
     </div>
 
     {remarkTarget && (
@@ -459,6 +611,8 @@ export default function ResultsPage() {
         onClose={() => setRemarkTarget(null)}
         student={remarkTarget}
         result={remarkResult}
+        marks={remarkMarks}
+        config={config}
         initialRemark={getRemark(remarkTarget.id)}
         onSave={(text) => setRemark(remarkTarget.id, text)}
       />

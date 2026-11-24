@@ -271,3 +271,362 @@
     widows: 3;
   }
 }
+
+/* ================================================================== *
+ * Result marksheet (`.rsheet`) — Results page print / PDF flow
+ * ================================================================== *
+ * Appended rules only: nothing above is modified, so every existing
+ * certificate / marksheet / document keeps its current appearance.
+ * ================================================================== */
+
+.rsheet {
+  font-size: 10.5pt;
+}
+
+.rsheet__heading {
+  text-align: center;
+}
+
+.rsheet .doc-title {
+  margin: 6px 0 2px;
+  font-size: 13pt;
+}
+
+.rsheet__weights {
+  margin: 0 0 8px;
+  font-size: 8.5pt;
+  color: #374151;
+}
+
+.rsheet__info {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 14px;
+  margin-bottom: 8px;
+  font-size: 9.5pt;
+}
+
+.rsheet__info p {
+  margin: 0;
+}
+
+/* The subject column is generous so long Bangla names never wrap the row. */
+.rsheet__table {
+  font-size: 9.5pt;
+}
+
+.rsheet__subject-col {
+  width: 26%;
+}
+
+.rsheet__subject {
+  display: block;
+}
+
+.rsheet__head-note {
+  display: block;
+  font-size: 7.5pt;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.rsheet__total-cell {
+  font-weight: 700;
+}
+
+/* Pure-CSS score bar — prints exactly as previewed, never clipped by a page break. */
+.rsheet-bar {
+  display: block;
+  height: 3.5px;
+  margin-top: 2.5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.rsheet-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #1d4ed8;
+}
+
+.rsheet-bar__fill--rose {
+  background: #e11d48;
+}
+
+.rsheet-chip {
+  display: inline-block;
+  min-width: 26px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 8.5pt;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.rsheet-chip--aplus,
+.rsheet-chip--a {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.rsheet-chip--aminus,
+.rsheet-chip--b {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.rsheet-chip--c {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.rsheet-chip--d {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.rsheet-chip--f {
+  background: #ffe4e6;
+  color: #9f1239;
+}
+
+.rsheet__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 16px;
+  margin-top: 8px;
+  font-size: 9.5pt;
+}
+
+.rsheet__pass {
+  color: #047857;
+}
+
+.rsheet__fail {
+  color: #be123c;
+}
+
+.rsheet__golden {
+  font-weight: 700;
+  color: #b45309;
+}
+
+.rsheet__remark {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid #111827;
+  border-radius: 4px;
+  font-size: 9pt;
+  line-height: 1.5;
+}
+
+.rsheet__foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/**
+ * The QR code keeps a REAL, scannable paper size in both layouts.
+ * Name + roll + GPA + school name resolve to QR version 12 at error correction L, i.e.
+ * 65 modules + the 4-module quiet zone each side = 73 cells. At 32mm wide each cell is
+ * ≈0.44mm — well above the ISO/IEC 18004 practical floor (~0.33mm) — so an ordinary
+ * phone camera locks on. CSS (not the `size` prop) governs the printed size, so the
+ * module density is identical on screen and on paper.
+ */
+.rsheet__qr {
+  display: block;
+  width: 32mm;
+  height: 32mm;
+  margin: 0 auto;
+  shape-rendering: crispEdges;
+}
+
+/* Printed QR of the Documents-page certificates / marksheets (`.doc-qr`).
+   73 cells (65 modules + 4-module quiet zone each side) across 32mm ≈ 0.44mm per cell,
+   which any phone camera resolves. */
+.doc-qr {
+  display: block;
+  width: 32mm;
+  height: 32mm;
+  margin: 0 auto;
+  shape-rendering: crispEdges;
+}
+
+/* ------------------------------------------------------------------ *
+ * Screen preview of the pair layout: two sheets share one A4 page.
+ * ------------------------------------------------------------------ */
+.rsheet--compact {
+  min-height: 0;
+  padding: 7mm 9mm;
+  font-size: 8pt;
+  line-height: 1.35;
+}
+
+.rsheet--compact .doc-header {
+  padding-bottom: 4px;
+  margin-bottom: 5px;
+}
+
+.rsheet--compact .doc-header__logo {
+  width: 32px;
+  height: 32px;
+  font-size: 11pt;
+  margin-bottom: 2px;
+}
+
+.rsheet--compact .doc-header__school {
+  font-size: 11.5pt;
+}
+
+.rsheet--compact .doc-header__address,
+.rsheet--compact .doc-header__meta {
+  font-size: 7pt;
+  margin-top: 1px;
+}
+
+.rsheet--compact .doc-title {
+  font-size: 10pt;
+  margin: 3px 0 2px;
+  text-underline-offset: 2px;
+}
+
+.rsheet--compact .rsheet__weights {
+  font-size: 6.5pt;
+  margin-bottom: 4px;
+}
+
+.rsheet--compact .rsheet__info {
+  gap: 1px 8px;
+  margin-bottom: 4px;
+  font-size: 7pt;
+}
+
+.rsheet--compact .rsheet__table {
+  font-size: 7pt;
+}
+
+.rsheet--compact .doc-table th,
+.rsheet--compact .doc-table td {
+  padding: 1px 3px;
+}
+
+.rsheet--compact .doc-table th {
+  font-size: 7pt;
+}
+
+.rsheet--compact .rsheet-chip {
+  font-size: 7pt;
+  min-width: 20px;
+  padding: 0 3px;
+}
+
+.rsheet--compact .rsheet__summary {
+  gap: 2px 10px;
+  margin-top: 4px;
+  font-size: 7.5pt;
+}
+
+.rsheet--compact .rsheet__remark {
+  margin-top: 4px;
+  padding: 3px 6px;
+  font-size: 7pt;
+  line-height: 1.4;
+}
+
+.rsheet--compact .rsheet__foot {
+  margin-top: 5px;
+}
+
+/* Half-page layout: the measured sheet budget is ~101mm inside the 121mm usable area
+   (135mm box − 7mm padding top/bottom), so a 30mm QR still leaves ~16mm of headroom.
+   30mm / 73 cells ≈ 0.41mm per cell — comfortably scannable — and a pair can never
+   spill onto a third page. */
+.rsheet--compact .rsheet__qr {
+  width: 30mm;
+  height: 30mm;
+}
+
+.rsheet--compact .signature {
+  min-width: 110px;
+  font-size: 7pt;
+}
+
+.rsheet--compact .signature__role,
+.rsheet--compact .qr-block {
+  font-size: 6pt;
+}
+
+/* ------------------------------------------------------------------ *
+ * Print: one marksheet per page (1 per A4) or two halves per page.
+ * ------------------------------------------------------------------ */
+@media print {
+  /* A pair sheet is exactly half a page. NOTE: `page-break-after` is deliberately NOT
+     `!important` here — the odd/even pair rules below must be able to set it, otherwise
+     no page break would ever be emitted and 40 sheets would stack onto a single page. */
+  .print-sheet--compact {
+    min-height: 0 !important;
+    /* 271mm of printable height (297 − 12 − 14) splits into two 135mm halves. */
+    height: 135mm !important;
+    max-height: 135mm !important;
+    padding: 0 !important;
+    page-break-after: auto;
+    break-after: auto;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* A long remark is already trimmed at a sentence boundary for the half-page layout
+     (see `compactRemark` in ResultMarksheetA4.jsx); this is only a last-resort guard
+     against overflow, so a pair can never spill onto a third page. */
+  .print-sheet--compact .rsheet__remark {
+    max-height: 14mm;
+    overflow: hidden;
+  }
+
+  /* Every ODD pair-member stays on the current page, the EVEN one closes it, so exactly
+     two marksheets land on each A4 sheet (top half + bottom half). */
+  .print-pair > .print-sheet--compact:nth-of-type(odd) {
+    page-break-before: auto;
+    break-before: auto;
+    page-break-after: auto;
+    break-after: auto;
+    border-bottom: 1px dashed #94a3b8;
+    padding-bottom: 4mm !important;
+  }
+
+  .print-pair > .print-sheet--compact:nth-of-type(even) {
+    page-break-after: always !important;
+    break-after: page !important;
+    padding-top: 4mm !important;
+  }
+
+  /* The last pair never leaves a blank trailing page behind. */
+  .print-pair > .print-sheet--compact:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  /* A single-layout marksheet always occupies exactly one page — both for the
+     single-pupil preview AND for the whole-class bulk PDF (otherwise 40 sheets would
+     flow together onto one page and clip each other). */
+  .print-single > .print-sheet {
+    page-break-after: always;
+    break-after: page;
+    page-break-before: auto;
+    break-before: auto;
+  }
+
+  /* The final sheet never leaves a blank trailing page behind. */
+  .print-single > .print-sheet:last-of-type {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}
+
+

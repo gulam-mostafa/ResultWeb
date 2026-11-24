@@ -44,10 +44,13 @@ import SchoolsPage from './pages/SchoolsPage.jsx';
 import PendingApprovalPage from './pages/PendingApprovalPage.jsx';
 import SchoolProfilePage from './pages/SchoolProfilePage.jsx';
 import TeacherManagementPage from './pages/TeacherManagementPage.jsx';
+import VerifyResultPage from './pages/VerifyResultPage.jsx';
 
 export default function App() {
   return <Routes>
     <Route path="/" element={<AuthHome />} />
+    {/* Public, zero-login marksheet verification reached by scanning a QR code. */}
+    <Route path="/verify" element={<VerifyResultPage />} />
     <Route path="/pending-approval" element={<ProtectedRoute><PendingApprovalPage /></ProtectedRoute>} />
     <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
       <Route path="/dashboard" element={<ProtectedRoute allowedRoles={['super_admin', 'school_admin']}><Dashboard /></ProtectedRoute>} />

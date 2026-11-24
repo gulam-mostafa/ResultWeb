@@ -3,8 +3,13 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Lege
 import { QRCodeSVG } from 'qrcode.react';
 import { CLASS_LABEL_MAP } from '../../utils/constants.js';
 import { toBanglaNumber, formatBanglaDecimal } from '../../utils/banglaNumberFormatter.js';
+import { buildVerificationRecord, buildVerificationUrl } from '../../utils/verification.js';
 import SchoolDocumentHeader from './SchoolDocumentHeader.jsx';
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
+
+/** Absolute base of the app, so the printed QR always resolves when scanned. */
+const verifyOrigin = () => (typeof window === 'undefined' ? '' : window.location.origin);
+
 
 /**
  * একক প্রান্তিকের প্রগতিপত্র (১ম / ২য় প্রান্তিক / বার্ষিক মূল্যায়ন).
@@ -101,8 +106,24 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
           <div className="signature__role">তারিখ: ______________</div>
         </div>
         <div className="qr-block">
-          <QRCodeSVG value={`school=${schoolProfile?.id || ''};student=${student.id};term=${term?.id};roll=${student.roll}`} size={76} />
-          <div>ডিজিটাল যাচাই কোড</div>
+          <QRCodeSVG
+            className="doc-qr"
+            value={buildVerificationUrl(
+              buildVerificationRecord({
+                student,
+                result,
+                schoolProfile,
+                className: CLASS_LABEL_MAP[student.classId] ?? '',
+                resultLabel: term?.name ?? '',
+              }),
+              verifyOrigin(),
+            )}
+            size={160}
+            level="L"
+            marginSize={4}
+            title={`${student.name} — ফলাফল যাচাই`}
+          />
+          <div>লগইন ছাড়াই ডিজিটাল যাচাই</div>
         </div>
         <div className="signature">
           <div className="signature__line">{schoolProfile?.headTeacher || ''}</div>
