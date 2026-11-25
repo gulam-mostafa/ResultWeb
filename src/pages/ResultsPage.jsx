@@ -535,7 +535,7 @@ export default function ResultsPage() {
             weights={weights}
             sortMode={sortMode}
             onSortModeChange={setSortMode}
-            onShowStudent={setRemarkTarget}
+            onShowStudent={setProfileTarget}
             onShowResult={setResultTarget}
             switching={switching}
             isHydrating={isHydrating}
@@ -571,7 +571,7 @@ export default function ResultsPage() {
           ))}
         </div>
         <p className="text-[11px] font-semibold text-slate-500">
-          শিক্ষার্থীর নাম ক্লিক করলেই মন্তব্য দেখে সম্পাদনা ও সংরক্ষণ করা যাবে।
+          শিক্ষার্থীর নাম ক্লিক করলেই পূর্ণাঙ্গ তথ্য ও ফলাফল দেখা যাবে; মন্তব্য দেখে সম্পাদনা ও সংরক্ষণ করতে <b>মন্তব্য</b> কলাম/বাটনে ক্লিক করুন।
         </p>
       </div>
     </Card>

@@ -153,7 +153,7 @@ export default function ConsolidatedAnnualTable({
                       type="button"
                       className="text-left"
                       onClick={() => onShowStudent?.(student)}
-                      aria-label={`${student.name} এর মন্তব্য ও তথ্য`}
+                      aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য ও ফলাফল`}
                     >
                       <span className="inline-flex flex-wrap items-center gap-1 font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">
                         {student.name}

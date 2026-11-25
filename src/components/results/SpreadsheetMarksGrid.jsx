@@ -20,8 +20,10 @@ import Spinner from '../ui/Spinner.jsx';
  *   `Enter` jumps to the same subject of the next pupil.
  * • Cells highlight softly: light red below the pass mark, light green at/above golden.
  * • A pupil at/above the golden mark in EVERY subject carries the golden badge.
- * • Clicking a pupil's NAME opens the remark editor (`onShowRemark`); the small info
- *   button beside it opens the full pupil record (`onShowStudent`).
+ * • Clicking a pupil's NAME opens the pupil's profile & result details (`onShowStudent`);
+ *   the small info button beside it opens the same full record.
+ * • Remarks are opened ONLY from the dedicated মন্তব্য column / remark button
+ *   (`onShowRemark`) — a name click never hijacks remark editing.
  *
  * Every typed value is committed WITH its term id — `setMark(studentId, fieldKey,
  * termId, value)` — so moving to another cell can never wipe a previously entered
@@ -106,8 +108,9 @@ export default function SpreadsheetMarksGrid({
   onEntry,
   setMark,
   canEdit = false,
+  /** Click on a pupil's NAME → the profile & result-details modal. */
   onShowStudent,
-  /** Click on a pupil's NAME → the editable remark modal. */
+  /** Click on the মন্তব্য cell → the editable remark modal. */
   onShowRemark,
   onShowResult,
   /** `(studentId) => string` — the saved remark of the ACTIVE term (preview column). */
@@ -491,9 +494,9 @@ export default function SpreadsheetMarksGrid({
                       <button
                         type="button"
                         className="text-left"
-                        onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
-                        title="মন্তব্য দেখুন ও সম্পাদনা করুন"
-                        aria-label={`${student.name} এর মন্তব্য`}
+                        onClick={() => onShowStudent?.(student)}
+                        title="পূর্ণাঙ্গ তথ্য ও ফলাফল দেখুন"
+                        aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য ও ফলাফল`}
                       >
                         <span className="inline-flex flex-wrap items-center gap-1 font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">
                           {student.name}
@@ -546,7 +549,7 @@ export default function SpreadsheetMarksGrid({
                     </td>
                   ) : null}
                   <td className="min-w-32 align-top">
-                    {/* মন্তব্য — clicking the cell (or the name) opens the editable modal. */}
+                    {/* মন্তব্য — the ONLY place a remark modal opens (name clicks open the profile). */}
                     <button
                       type="button"
                       onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
@@ -578,8 +581,9 @@ export default function SpreadsheetMarksGrid({
                   <button
                     type="button"
                     className="text-left"
-                    onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
-                    title="মন্তব্য দেখুন ও সম্পাদনা করুন"
+                    onClick={() => onShowStudent?.(student)}
+                    title="পূর্ণাঙ্গ তথ্য ও ফলাফল দেখুন"
+                    aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য ও ফলাফল`}
                   >
                     <span className="inline-flex flex-wrap items-center gap-1 text-sm font-bold text-brand-800 dark:text-brand-200">
                       {student.name}
