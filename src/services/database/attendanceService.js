@@ -15,6 +15,28 @@ import { resolveClassKey } from '../../utils/constants.js';
  * Rows are keyed by the permanent `studentMasterId`, so a pupil's attendance follows
  * them across class changes and years. Legacy flat records
  * (`…/attendance/{date}/{studentId}`) stay readable through the same API.
+ *
+ * ---------------------------------------------------------------------------
+ * DESIGN NOTE — exception-only attendance (intentionally NOT rebuilt here)
+ * ---------------------------------------------------------------------------
+ * A school day is a full roster by default; only EXCEPTIONS are worth a row. This module
+ * therefore supports the three exception codes the monthly summary is built from:
+ *
+ *   `A` → absent   (অনুপস্থিত)
+ *   `L` → late     (বিলম্বে উপস্থিত)
+ *   `E` → excused  (ছুটি / অনুমোদিত অনুপস্থিতি)
+ *
+ * A pupil with NO row for a date is implicitly PRESENT — no `present` row is ever
+ * written, so a 300-pupil school stores a handful of rows per day instead of 300.
+ * A month's summary is then
+ * `workingDays − count(A) − count(E)` present-days per pupil (L counts as present but
+ * is reported separately), which the attendance page can read straight from
+ * `…/attendance/{yyyy-mm-*}` without a second aggregation node.
+ *
+ * The service below keeps the full status vocabulary (`present` included) because the
+ * existing attendance UI writes explicit rows; the exception-only contract is the
+ * forward-compatible shape and must not be mixed with a half-built UI rewrite.
+ * ---------------------------------------------------------------------------
  */
 
 const asRecord = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});

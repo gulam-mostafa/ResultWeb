@@ -163,10 +163,17 @@ export default function Sidebar({ mobileOpen = false, onNavigate }) {
                 {schoolProfile?.emisCode || '—'}
               </p>
             </div>
-            <span className="badge bg-emerald-100 text-emerald-800">
-              <ShieldCheck size={11} strokeWidth={2.5} aria-hidden="true" />
-              যাচাইকৃত
-            </span>
+            {schoolProfile?.verified === true ? (
+              <span className="badge bg-emerald-100 text-emerald-800">
+                <ShieldCheck size={11} strokeWidth={2.5} aria-hidden="true" />
+                যাচাইকৃত
+              </span>
+            ) : (
+              <span className="badge bg-amber-100 text-amber-800" title="প্রতিষ্ঠান এখনো যাচাই হয়নি">
+                <ShieldCheck size={11} strokeWidth={2.5} aria-hidden="true" />
+                যাচাই বাকি
+              </span>
+            )}
           </div>
           <p className="mt-1.5 border-t border-brand-100 pt-1.5 text-[10px] font-semibold text-brand-800">
             শিক্ষাবর্ষ: {academicYearOf(schoolProfile)}

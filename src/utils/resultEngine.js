@@ -188,6 +188,11 @@ export function computeTermResultForConfig(studentMarks = {}, config, termId) {
 /**
  * The annual CONSOLIDATED result (বার্ষিক ফলাফল): every subject is the weighted sum
  * of the three terms, using the school's own percentages (default ১৫% + ১৫% + ৭০%).
+ *
+ * A term without marks contributes `0` — it is NEVER silently re-normalised, so
+ * `১০০` in the ১ম প্রান্তিক at ১৫% is `১৫`, not `১০০`. `isComplete` tells the caller
+ * whether all three terms were entered, which is what the UI uses to show
+ * "সব প্রান্তিকের নম্বর দেওয়া হয়নি" instead of a harsh F.
  */
 export function computeConsolidatedResult(studentMarks = {}, config) {
   const safeConfig = normalizeResultConfig(config, config?.classId);
@@ -205,13 +210,13 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
       0,
     );
     const percent = hasAnyMark ? round2(weightedPercent) : 0;
-    // Only the terms that actually hold marks are used for the grade / pass decision, so
-    // a year that is still being filled in is never graded against the missing weight.
+    // Weights of the terms that actually hold marks — reported for completeness only.
     const availableWeight = contributions.reduce(
       (sum, item) => sum + (item.entry.hasAnyMark ? item.weight : 0),
       0,
     );
-    const scoredPercent = availableWeight > 0 ? round2((weightedPercent / availableWeight) * 100) : 0;
+    // No re-normalisation: the weighted percent IS the score, missing terms count 0.
+    const scoredPercent = percent;
     const fullMarks = subject.fullMarks;
     const total = hasAnyMark ? round2((percent / 100) * fullMarks) : 0;
     const gradeInfo = gradeOfPercent(hasAnyMark ? scoredPercent : null);
@@ -245,14 +250,17 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
         weight: item.weight,
         percent: item.entry.percent,
         mark: item.entry.total,
+        hasMark: item.entry.hasAnyMark,
         contribution: item.entry.hasAnyMark ? round2(item.entry.percent * (item.weight / 100)) : 0,
       })),
     };
   });
 
-  // How much of the annual weighting the school has actually entered (e.g. ১৫% after only
-  // the ১st term). The overall percentage is scaled by it so a half-finished year is not
-  // reported as a failure.
+  // Terms that no subject has a mark for — the বার্ষিক ফলাফল screen flags them in Bangla.
+  const termHasMarks = RESULT_TERM_IDS.map((termId) => (
+    subjects.some((subject) => subject.contributions.some((item) => item.termId === termId && item.hasMark))
+  ));
+  const missingTerms = RESULT_TERM_IDS.filter((termId, index) => !termHasMarks[index]);
   const evaluatedWeight = subjects.reduce((max, subject) => Math.max(max, subject.availableWeight), 0);
   return {
     ...assembleStudentResult({
@@ -260,12 +268,15 @@ export function computeConsolidatedResult(studentMarks = {}, config) {
       term: 'consolidated',
       goldenMark: safeConfig.goldenMark,
       blankCountsAsZero: false,
-      fullMarksFactor: evaluatedWeight > 0 ? evaluatedWeight / 100 : 1,
+      // Missing terms count as 0 — no scaling of the remaining weighting.
+      fullMarksFactor: 1,
     }),
     weights,
     passMark,
     goldenMark: safeConfig.goldenMark,
     evaluatedWeight: round2(evaluatedWeight),
+    isComplete: missingTerms.length === 0,
+    missingTerms,
     goldenCount: subjects.filter((subject) => subject.isGolden).length,
   };
 }
@@ -307,15 +318,25 @@ export function rankClassRows(rows = [], { assignNewRoll = false } = {}) {
     .sort((a, b) => (a.roll || Number.MAX_SAFE_INTEGER) - (b.roll || Number.MAX_SAFE_INTEGER));
 
   const ordered = [...passing, ...failing, ...missing];
-  // Pupils with no marks keep their place at the end of the list and are numbered
-  // right after the ranked ones (they are never promoted ahead of an evaluated pupil).
+  // Merit positions are SHARED on a tie (`1, 1, 3`), exactly like
+  // `gradingCalculator.computeMeritRanking`, so every modal and printed marksheet
+  // reports the same figure for the same pupil. নতুন রোল stays unique (১, ২, ৩…) —
+  // two pupils may share a merit position but never a roll.
+  let lastKey = null;
+  let lastPosition = 0;
   let nextRoll = ordered.filter((row) => row.hasAnyMark).length + 1;
-  return ordered.map((row, index) => ({
-    ...row,
-    position: index + 1,
-    isEvaluated: row.hasAnyMark,
-    newRoll: assignNewRoll ? (row.hasAnyMark ? index + 1 : nextRoll++) : null,
-  }));
+  return ordered.map((row, index) => {
+    const tieKey = row.hasAnyMark ? `${row.totalMarks}|${row.gpa}` : `missing|${index}`;
+    const position = tieKey === lastKey ? lastPosition : index + 1;
+    lastKey = tieKey;
+    lastPosition = position;
+    return {
+      ...row,
+      position,
+      isEvaluated: row.hasAnyMark,
+      newRoll: assignNewRoll ? (row.hasAnyMark ? index + 1 : nextRoll++) : null,
+    };
+  });
 }
 
 /** Every entry field of a configuration (the grid + the Excel template read this). */

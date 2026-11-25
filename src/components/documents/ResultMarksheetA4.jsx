@@ -115,7 +115,7 @@ export default function ResultMarksheetA4({
   const defaultRemark = remark || generateRemarkForResult({ student, result });
 
   return (
-    <article className={`print-sheet rsheet ${compact ? 'print-sheet--compact rsheet--compact' : ''}`}>
+    <article className={`print-sheet ${compact ? 'print-sheet--compact rsheet--compact' : 'print-sheet--full rsheet'}`}>
       <SchoolDocumentHeader schoolProfile={schoolProfile} />
 
       <div className="rsheet__heading">
@@ -173,9 +173,18 @@ export default function ResultMarksheetA4({
                 </td>
                 <td>{bangla(subject.fullMarks ?? 100)}</td>
                 {isConsolidated ? (
-                  termColumns.map((term) => (
-                    <td key={term.id}>{markCell(subject.marks?.[term.id])}</td>
-                  ))
+                  termColumns.map((term) => {
+                    // The annual sheet mirrors the SCREEN: each term cell is that term's
+                    // WEIGHTED contribution (১০০ at ১৫% → ১৫), not a raw mark.
+                    const contribution = (subject.contributions ?? []).find((item) => item.termId === term.id);
+                    return (
+                      <td key={term.id}>
+                        {contribution && contribution.hasMark !== false && contribution.contribution !== null
+                          ? toBanglaNumber(contribution.contribution)
+                          : markCell(subject.marks?.[term.id])}
+                      </td>
+                    );
+                  })
                 ) : (
                   <>
                     <td>{hasSplit && subject.split ? markCell(subject.formative) : '—'}</td>

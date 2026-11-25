@@ -52,7 +52,7 @@ const PERSIST_DEBOUNCE_MS = 800;
 const nowISO = () => new Date().toISOString();
 const emptyDataset = (schoolId = '') => ({
   meta: { schemaVersion: SCHEMA_VERSION, schoolId, session: DEMO_SESSION, updatedAt: nowISO() },
-  students: [], marks: {}, remarks: {}, notices: [], audits: [],
+  students: [], marks: {}, remarks: {}, termRemarks: {}, notices: [], audits: [],
 });
 
 const makeId = (prefix) =>
@@ -183,13 +183,20 @@ export function SchoolDataProvider({ children }) {
       setDataset((previous) => {
         const marks = asRecord(results.marks);
         const remarks = asRecord(results.remarks);
+        // Term-scoped remarks: `{ studentId: { term1|term2|annual: text } }`, so a
+        // remark stays tied to its (year, class, term) snapshot.
+        const termRemarks = asRecord(results.termRemarks);
         if (!resultsInitialized && !Object.keys(marks).length && !Object.keys(remarks).length) {
           resultsInitialized = true;
           return previous;
         }
         resultsInitialized = true;
-        if (JSON.stringify(previous.marks) === JSON.stringify(marks) && JSON.stringify(previous.remarks) === JSON.stringify(remarks)) return previous;
-        return { ...previous, marks, remarks };
+        if (
+          JSON.stringify(previous.marks) === JSON.stringify(marks)
+          && JSON.stringify(previous.remarks) === JSON.stringify(remarks)
+          && JSON.stringify(previous.termRemarks ?? {}) === JSON.stringify(termRemarks)
+        ) return previous;
+        return { ...previous, marks, remarks, termRemarks };
       });
     }, undefined, activeYear);
     const unsubProfile = subscribeSchoolProfile(schoolId, (profile) => {
@@ -372,6 +379,7 @@ export function SchoolDataProvider({ children }) {
     renameSection,
     removeSection,
     executePromotion,
+    advanceAcademicYear,
   } = useStudents({
     dataset,
     datasetRef,
@@ -506,6 +514,7 @@ export function SchoolDataProvider({ children }) {
       students: dataset.students,
       marks: dataset.marks,
       remarks: dataset.remarks,
+      termRemarks: dataset.termRemarks ?? {},
       notices: dataset.notices ?? [],
       audits: dataset.audits ?? [],
       meta: dataset.meta,
@@ -558,6 +567,7 @@ export function SchoolDataProvider({ children }) {
       applyImportedMarks,
       setRemark,
       executePromotion,
+      advanceAcademicYear,
       addNotice,
       resetDemoData,
       clearAllData,
@@ -609,6 +619,7 @@ export function SchoolDataProvider({ children }) {
       applyImportedMarks,
       setRemark,
       executePromotion,
+      advanceAcademicYear,
       addNotice,
       resetDemoData,
       clearAllData,

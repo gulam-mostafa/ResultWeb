@@ -55,7 +55,12 @@ const SESSION_DURATION_MS = 1000 * 60 * 60 * 12; // 12 hours
 
 export const findDemoAccount = (role) => DEMO_ACCOUNTS.find((account) => account.role === role) ?? null;
 
-/** Verifies the school's EMIS code + PIN pair. */
+/**
+ * Verifies the school's EMIS code + PIN pair.
+ *
+ * The messages NEVER echo the expected code/PIN (or any "demo" answer): a failed
+ * verification must not leak a credential, even a seeded one.
+ */
 export function verifyEmisCredentials({ emisCode, pinCode, school }) {
   const target = school ?? {};
   const emis = String(emisCode ?? '').trim();
@@ -65,10 +70,10 @@ export function verifyEmisCredentials({ emisCode, pinCode, school }) {
     return { ok: false, message: 'ইএমআইএস কোড ও পিন কোড উভয়ই পূরণ করুন।' };
   }
   if (emis !== String(target.emisCode)) {
-    return { ok: false, message: 'ইএমআইএস কোড সঠিক নয়। ডেমো কোড: ১৩৩৭০১' };
+    return { ok: false, message: 'ইএমআইএস কোড সঠিক নয়। প্রতিষ্ঠানের অফিসিয়াল রেকর্ড দেখে আবার চেষ্টা করুন।' };
   }
   if (pin !== String(target.pinCode).toUpperCase()) {
-    return { ok: false, message: 'পিন কোড সঠিক নয়। ডেমো পিন: GZP-4821' };
+    return { ok: false, message: 'পিন কোড সঠিক নয়। প্রতিষ্ঠানের অনুমোদিত কর্মকর্তার সঙ্গে যোগাযোগ করুন।' };
   }
   return { ok: true, message: 'প্রতিষ্ঠান সফলভাবে যাচাই করা হয়েছে।' };
 }

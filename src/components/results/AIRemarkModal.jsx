@@ -30,6 +30,10 @@ export default function AIRemarkModal({
   result,
   marks = {},
   config = null,
+  /** Persisted term id this remark belongs to (`term1` | `term2` | `annual`). */
+  termId = 'annual',
+  /** Human label of that term, shown in the header + the save feedback. */
+  termName = '',
   initialRemark = '',
   onSave,
 }) {
@@ -49,8 +53,11 @@ export default function AIRemarkModal({
   const [variant, setVariant] = useState(0);
   const [drafts, setDrafts] = useState(options);
   const cycleIndex = useRef(0);
+  /** Latest typed text — a subscription update must never wipe it. */
+  const remarkRef = useRef(remark);
+  remarkRef.current = remark;
 
-  // Re-opening on another pupil always starts from THAT pupil's saved remark.
+  // Re-opening on another pupil (or another term) starts from THAT snapshot's remark.
   useEffect(() => {
     if (!open) return;
     cycleIndex.current = 0;
@@ -59,15 +66,46 @@ export default function AIRemarkModal({
     setEdited(false);
     setSaved(false);
     setRemark(initialRemark || options[0] || '');
-  }, [open, student?.id, initialRemark, options]);
+  }, [open, student?.id, termId, initialRemark, options]);
+
+  /**
+   * Storage → editor sync.
+   *
+   * A live subscription may echo the saved remark back while the teacher is still
+   * typing. It must NEVER wipe typed text, so the remote value only seeds an EMPTY
+   * editor; once anything has been typed (or edited) the local text wins.
+   */
+  useEffect(() => {
+    if (!open) return;
+    if (edited) return;
+    const typed = String(remarkRef.current ?? '').trim();
+    if (typed) return;
+    if (initialRemark) setRemark(initialRemark);
+  }, [open, initialRemark, edited]);
+
+  /**
+   * Applies a draft. Overwriting text the teacher typed themselves asks for an explicit
+   * Bangla confirmation first — a stray click can never destroy their own wording.
+   */
+  const applyDraft = (next, index = null) => {
+    const typedByTeacher = edited && String(remarkRef.current ?? '').trim().length > 0;
+    if (typedByTeacher && next !== remarkRef.current) {
+      const ok = typeof window === 'undefined'
+        ? true
+        : window.confirm('আপনি নিজে লেখা মন্তব্য পরিবর্তন করতে চলেছেন। প্রস্তাবিত মন্তব্য দিয়ে প্রতিস্থাপন করবেন?');
+      if (!ok) return;
+    }
+    if (index !== null) cycleIndex.current = index;
+    setRemark(next);
+    setEdited(false);
+    setSaved(false);
+  };
 
   /** Click-to-cycle: each click picks the NEXT distinct generated remark. */
   const cycleRemark = () => {
     if (!drafts.length) return;
-    cycleIndex.current = (cycleIndex.current + 1) % drafts.length;
-    setRemark(drafts[cycleIndex.current]);
-    setEdited(false);
-    setSaved(false);
+    const nextIndex = (cycleIndex.current + 1) % drafts.length;
+    applyDraft(drafts[nextIndex], nextIndex);
   };
 
   /** "আবার তৈরি করুন" — drafts a fresh set of sentences from the live performance figures. */
@@ -80,25 +118,24 @@ export default function AIRemarkModal({
     setVariant(nextVariant);
     setDrafts(next);
     cycleIndex.current = 0;
-    setRemark(next[0] ?? '');
-    setEdited(false);
-    setSaved(false);
+    applyDraft(next[0] ?? '');
   };
 
   const store = () => {
     onSave?.(remark);
     setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+    setTimeout(() => setSaved(false), 2400);
   };
 
   const hasResult = Boolean(result?.hasAnyMark);
+  const scopeLabel = termName ? `${student?.name ?? ''} · ${termName}` : (student?.name ?? '');
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="শিক্ষক মন্তব্য"
-      subtitle={`${student?.name ?? ''} · গাঠনিক ও সামষ্টিক মূল্যায়ন বিশ্লেষণ করে প্রস্তাবিত`}
+      subtitle={`${scopeLabel} · গাঠনিক ও সামষ্টিক মূল্যায়ন বিশ্লেষণ করে প্রস্তাবিত`}
       icon={Sparkles}
       size="lg"
       footer={(
@@ -147,7 +184,9 @@ export default function AIRemarkModal({
         </p>
 
         <label className="block">
-          <span className="label-base">মন্তব্য (সম্পাদনাযোগ্য)</span>
+          <span className="label-base">
+            মন্তব্য (সম্পাদনাযোগ্য){termName ? ` · ${termName}` : ''}
+          </span>
           <textarea
             className="input-base min-h-32"
             value={remark}
@@ -160,7 +199,7 @@ export default function AIRemarkModal({
           />
           <span className="mt-1 block text-[11px] text-slate-400">
             {edited
-              ? 'নিজের লেখা মন্তব্য — সংরক্ষণ চাপলেই এই বিদ্যালয়ের ডেটাবেজে যাবে।'
+              ? `নিজের লেখা মন্তব্য — সংরক্ষণ চাপলেই ${termName || 'এই প্রান্তিকের'} স্ন্যাপশটে যুক্ত হবে।`
               : 'প্রস্তাবিত মন্তব্য — পছন্দ না হলে নিচের যেকোনোটি বেছে নিন।'}
           </span>
         </label>
@@ -181,12 +220,7 @@ export default function AIRemarkModal({
                 <li key={`${index}-${option.slice(0, 12)}`}>
                   <button
                     type="button"
-                    onClick={() => {
-                      cycleIndex.current = index;
-                      setRemark(option);
-                      setEdited(false);
-                      setSaved(false);
-                    }}
+                    onClick={() => applyDraft(option, index)}
                     className={`w-full rounded-xl border p-3 text-left text-[12px] leading-relaxed transition ${
                       active
                         ? 'border-brand-500 bg-brand-50 text-brand-900 dark:border-brand-400 dark:bg-brand-900/30 dark:text-brand-100'
@@ -207,7 +241,7 @@ export default function AIRemarkModal({
 
         {saved ? (
           <p role="status" className="rounded-lg bg-emerald-50 p-2.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
-            মন্তব্য সংরক্ষণ হয়েছে — মার্কশিটে স্বয়ংক্রিয়ভাবে যুক্ত হবে।
+            মন্তব্য সংরক্ষিত হয়েছে{termName ? ` (${termName})` : ''} — {termName || 'এই প্রান্তিকের'} মার্কশিটে স্বয়ংক্রিয়ভাবে যুক্ত হবে।
           </p>
         ) : null}
       </div>

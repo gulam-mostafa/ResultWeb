@@ -29,6 +29,7 @@ import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx'
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 import { downloadResultExcel, parseResultWorkbook, templateSpec } from '../services/excel/resultExcel.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
+import { nextSessionYear } from '../services/database/sessionService.js';
 
 /** The two A4 page layouts of the marksheet print / PDF flow. */
 const PAGE_LAYOUTS = [
@@ -51,6 +52,7 @@ export default function ResultsPage() {
     studentsByClass,
     marks,
     schoolProfile,
+    schoolId,
     activeYear,
     getResultConfig,
     getStudentResult,
@@ -66,12 +68,13 @@ export default function ResultsPage() {
     getClassRankMap,
     getSectionsOfClass,
     executePromotion,
+    advanceAcademicYear,
     saveResultConfig,
     resetResultConfig,
     syncState,
     isHydrating,
   } = useSchoolData();
-  const { canManageStudents } = useAuth();
+  const { canManageStudents, canEditMarks, canPrintDocuments } = useAuth();
 
   const [classId, setClassId] = useState('c5');
   const [tabId, setTabId] = useState('term1');
@@ -98,6 +101,8 @@ export default function ResultsPage() {
   const [parsingUpload, setParsingUpload] = useState(false);
   /** Short-lived overlay while a class/শাখা/tab switch recalculates the grid. */
   const [switching, setSwitching] = useState(false);
+  /** Bangla feedback of the year-end rollover (`নতুন শিক্ষাবর্ষ শুরু`). */
+  const [yearNotice, setYearNotice] = useState(null);
   const fileInputRef = useRef(null);
   const switchTimer = useRef(null);
 
@@ -172,6 +177,16 @@ export default function ResultsPage() {
   const printTarget = students.find((student) => student.id === printTargetId) ?? students[0];
   const remarkResult = remarkTarget ? getRowResult(remarkTarget.id) : null;
   const remarkMarks = marks ?? {};
+  /** Term the remark editor saves into (consolidated edits the ANNUAL remark). */
+  const remarkTermId = isConsolidated ? 'annual' : (activeTab.termId ?? 'annual');
+  /**
+   * Saved remark of one pupil for the ACTIVE term — the grid's মন্তব্য column and the
+   * remark modal share it, so what the teacher types is what the row previews.
+   */
+  const getTermRemark = useCallback(
+    (studentId) => getRemark?.(studentId, remarkTermId) ?? '',
+    [getRemark, remarkTermId],
+  );
   const weights = normalizedWeightPercent(config.weights);
   const goldenCount = useMemo(
     () => classRows.filter((row) => row.result?.isGolden).length,
@@ -221,6 +236,61 @@ export default function ResultsPage() {
     // Give React one frame to mount the sheet(s) before the print dialog opens.
     setTimeout(() => window.print(), 80);
   };
+
+  /**
+   * Year-end rollover confirmed in the promotion modal.
+   *
+   * `advanceAcademicYear` writes the NEW year's roster (same `studentMasterId`s, empty
+   * results) and clears the old year's GPA/grade/merit stamps from the new rows. The
+   * finished year stays frozen, and a failure surfaces a clear Bangla error — never a
+   * silent "synced".
+   *
+   * Every pupil is carried into the new year: the modal's decisions are used for the
+   * class it was opened on, and each remaining pupil follows their OWN consolidated
+   * annual result (`isPass`). A pupil with no annual marks is RETAINED — never
+   * auto-promoted without an explicit teacher decision.
+   */
+  const handleAdvanceYear = useCallback(async (payload = {}) => {
+    setYearNotice(null);
+    const decidedIds = new Set(
+      (payload.decisions ?? []).map((item) => String(item.studentId ?? item.studentMasterId ?? '')),
+    );
+    const decisions = [...(payload.decisions ?? [])];
+    allStudents
+      .filter((student) => student?.id && student.classId && student.classId !== 'archive')
+      .forEach((student) => {
+        if (decidedIds.has(String(student.id))) return;
+        const annual = getStudentResult?.(student.id) ?? null;
+        // No annual marks ⇒ same class (the teacher must decide explicitly).
+        const pass = annual?.hasAnyMark === true && annual?.isPass === true;
+        decisions.push({
+          studentId: student.id,
+          studentMasterId: student.studentMasterId || student.id,
+          action: pass ? 'promote' : 'retain',
+          section: student.section || '',
+        });
+      });
+
+    const result = await advanceAcademicYear?.({
+      year: payload.year || activeYear,
+      nextYear: payload.nextYear || nextSessionYear(activeYear),
+      decisions,
+    });
+    if (!result?.synced) {
+      const reason = result?.reason === 'offline'
+        ? 'ইন্টারনেট সংযোগ নেই — নতুন শিক্ষাবর্ষ শুরু করা যায়নি।'
+        : result?.reason === 'timeout'
+          ? 'ক্লাউড সংযোগ সময় শেষ হয়ে গেছে — নতুন শিক্ষাবর্ষ শুরু হয়নি; আবার চেষ্টা করুন।'
+          : 'নতুন শিক্ষাবর্ষ শুরু করা যায়নি — ক্লাউডে সংরক্ষণ ব্যর্থ হয়েছে; আবার চেষ্টা করুন।';
+      setYearNotice({ tone: 'error', text: reason });
+      return result;
+    }
+    setYearNotice({
+      tone: 'success',
+      text: `${toBanglaNumber(result.nextYear)} শিক্ষাবর্ষ শুরু হয়েছে — উত্তীর্ণ ${toBanglaNumber(result.promoted)} জন, একই শ্রেণিতে ${toBanglaNumber(result.retained)} জন, আর্কাইভ ${toBanglaNumber(result.graduated)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।`,
+    });
+    return result;
+  }, [advanceAcademicYear, activeYear, allStudents, getStudentResult]);
 
   /* ---------------------------------------------------------------- *
    * Excel: download (with the format warning) / upload (strict) / save
@@ -333,6 +403,17 @@ export default function ResultsPage() {
         প্রান্তিকভিত্তিক নম্বর, মেধাক্রম ও ফলাফল · বার্ষিক ফলাফল {toBanglaNumber(weights.term1)}% + {toBanglaNumber(weights.term2)}% + {toBanglaNumber(weights.annual)}% ওজনে
       </p>
     </div>
+
+    {yearNotice ? (
+      <p
+        role={yearNotice.tone === 'error' ? 'alert' : 'status'}
+        className={`no-print mb-4 rounded-xl p-3 text-xs font-bold ${yearNotice.tone === 'error'
+          ? 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-200'
+          : 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200'}`}
+      >
+        {yearNotice.text}
+      </p>
+    ) : null}
 
     {/* চারটি মূল্যায়ন ট্যাব */}
     <div className="no-print mb-4 flex flex-wrap gap-2" role="tablist" aria-label="মূল্যায়ন নির্বাচন">
@@ -468,10 +549,11 @@ export default function ResultsPage() {
             getResult={getRowResult}
             onEntry={setMark}
             setMark={setMark}
-            canEdit={!isConsolidated}
+            canEdit={!isConsolidated && canEditMarks}
             onShowStudent={setProfileTarget}
             onShowRemark={setRemarkTarget}
             onShowResult={setResultTarget}
+            getRemark={getTermRemark}
             sortMode={sortMode}
             onSortModeChange={setSortMode}
             newRollMap={newRollMap}
@@ -561,7 +643,7 @@ export default function ResultsPage() {
               setBulkPrint(false);
               printSheets();
             }}
-            disabled={!printTarget}
+            disabled={!printTarget || !canPrintDocuments}
           >
             <Printer size={15} /> একক শিক্ষার্থীর প্রিন্ট
           </button>
@@ -574,7 +656,7 @@ export default function ResultsPage() {
               setBulkPrint(true);
               printSheets();
             }}
-            disabled={!marksheetRows.length}
+            disabled={!marksheetRows.length || !canPrintDocuments}
           >
             <Download size={15} /> সব শিক্ষার্থীর একসাথে PDF ডাউনলোড
           </button>
@@ -594,7 +676,7 @@ export default function ResultsPage() {
           key={row.student.id}
           student={row.student}
           result={row.result}
-          remark={getRemark(row.student.id)}
+          remark={getRemark(row.student.id, isConsolidated ? 'annual' : activeTab.termId)}
           schoolProfile={schoolProfile}
           tabId={tabId}
           tabName={activeTab.name}
@@ -613,8 +695,10 @@ export default function ResultsPage() {
         result={remarkResult}
         marks={remarkMarks}
         config={config}
-        initialRemark={getRemark(remarkTarget.id)}
-        onSave={(text) => setRemark(remarkTarget.id, text)}
+        termId={remarkTermId}
+        termName={isConsolidated ? 'বার্ষিক ফলাফল' : activeTab.name}
+        initialRemark={getTermRemark(remarkTarget.id)}
+        onSave={(text) => setRemark(remarkTarget.id, text, remarkTermId)}
       />
     )}
 
@@ -661,6 +745,8 @@ export default function ResultsPage() {
       getStudentResult={getStudentResult}
       getClassAnalytics={getClassAnalytics}
       getResultConfig={getResultConfig}
+      schoolId={schoolId}
+      activeYear={activeYear}
     />
 
     <StudentResultModal
@@ -671,6 +757,7 @@ export default function ResultsPage() {
       getStudentResult={getStudentResult}
       getTermResult={getTermResult}
       getClassAnalytics={getClassAnalytics}
+      getRemark={getRemark}
       term={isConsolidated ? null : tabId}
     />
 
@@ -688,7 +775,11 @@ export default function ResultsPage() {
       getClassRankMap={getClassRankMap}
       getSectionsOfClass={getSectionsOfClass}
       getResultConfig={getResultConfig}
+      getRemark={getRemark}
       onExecute={executePromotion}
+      currentYear={activeYear}
+      nextYear={nextSessionYear(activeYear)}
+      onAdvanceYear={handleAdvanceYear}
     />
   </>;
 }

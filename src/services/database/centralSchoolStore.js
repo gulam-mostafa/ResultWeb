@@ -435,17 +435,29 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       .map((item) => [String(item?.studentMasterId || item?.studentId || '').trim(), item?.action || 'promote'])
       .filter(([id]) => Boolean(id)),
   );
-  const hasDecisions = decisionMap.size > 0;
+  /**
+   * When the caller supplies decisions, ONLY the pupils it decided are moved.
+   *
+   * A pupil with no explicit teacher decision is skipped entirely — never auto-promoted
+   * and never auto-retained — because the pass decision must come from the consolidated
+   * annual result the teacher reviewed. An undecided pupil simply keeps their current
+   * year's enrollment untouched.
+   */
+  const decidedOnly = options?.decisions !== undefined && options?.decisions !== null;
+  const decisionFor = (studentMasterId, record) => (
+    decisionMap.get(studentMasterId)
+    || decisionMap.get(String(record?.legacyId ?? ''))
+    || ''
+  );
 
   /** Every pupil of the source year, resolved to its destination class. */
   const moves = [];
   CLASS_ORDER.forEach((sourceClassId) => {
     Object.entries(asRecord(enrollmentByClass[sourceClassId])).forEach(([studentMasterId, record]) => {
-      const action = hasDecisions
-        ? (decisionMap.get(studentMasterId)
-          || decisionMap.get(String(record?.legacyId ?? ''))
-          || 'promote')
-        : 'promote';
+      const decided = decisionFor(studentMasterId, record);
+      // With explicit decisions, an undecided pupil is left where they are.
+      if (decidedOnly && !decided) return;
+      const action = decided || 'promote';
       const targetClassId = action === 'retain'
         ? sourceClassId
         : (action === 'demote'
@@ -474,7 +486,6 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
     });
     bySection.forEach((bucket, section) => {
       orderByMeritAndRoll(bucket, resultsTree).forEach((entry, index) => {
-        const merit = finalMeritOf(resultsTree, entry.sourceClassId, entry.studentMasterId);
         nextYearClassUpdates[`${targetClassId}/${section}/${entry.studentMasterId}`] = cleanForCloud({
           ...entry.record,
           studentMasterId: entry.studentMasterId,
@@ -485,11 +496,15 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
           status: 'active',
           year: toYear,
           previousClassId: entry.sourceClassId,
+          promotedFromClass: entry.sourceClassId,
           promotedFromYear: fromYear,
           academicYear: toYear,
-          meritPosition: merit.meritPosition,
-          gpa: merit.gpa,
-          grade: merit.grade,
+          // The NEW year starts clean: last year's GPA / grade / merit / total belong to
+          // the frozen history and must never label a fresh best-empty roster row.
+          meritPosition: null,
+          gpa: null,
+          grade: '',
+          grandTotal: null,
           promotedAt: now,
           updatedAt: now,
         });

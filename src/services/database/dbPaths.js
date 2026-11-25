@@ -258,6 +258,13 @@ export const dbPaths = Object.freeze({
   studentMaster: (reference) => collectionOrLegacy(reference, 'studentMaster'),
   studentMasterEntry: (reference, studentMasterId) =>
     `${collectionOrLegacy(reference, 'studentMaster')}/${segment(studentMasterId)}`,
+  /**
+   * `…/studentMasterCounters/{year}` — the per-year admission sequence that
+   * `generateStudentMasterId()` bumps with an atomic RTDB transaction, so two teachers
+   * admitting a pupil at the same moment can never mint the same id.
+   */
+  studentMasterCounter: (reference, year) =>
+    `${collectionOrLegacy(reference, 'studentMasterCounters')}/${segment(normalizeSessionYear(year, 'default'))}`,
   /* ---------------- Legacy flat roster / results (still written) ---------------- */
   students: (schoolId) => `${legacyRoot(schoolId)}/students`,
   student: (schoolId, studentId) => `${legacyRoot(schoolId)}/students/${segment(studentId)}`,

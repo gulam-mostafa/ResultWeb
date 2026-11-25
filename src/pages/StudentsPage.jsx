@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { UserPlus, ArrowUpRight, Sparkles, RotateCcw } from 'lucide-react';
+import { UserPlus, ArrowUpRight, Sparkles, RotateCcw, Search } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { isDemoLoginEnabled } from '../context/AuthContext.jsx';
 import { CLASS_LEVELS, CLASS_TABS } from '../utils/constants.js';
 import { createDemoStudents } from '../utils/demoSeedData.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
+import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import { Card } from '../components/ui/Primitives.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import ClassTabs from '../components/students/ClassTabs.jsx';
@@ -16,7 +19,7 @@ import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 
 export default function StudentsPage() {
-  const { students, studentsByClass, sectionCounts, marks, addStudent, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
+  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, addStudent, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
   const { canManageStudents } = useAuth();
   const [tab, setTab] = useState('pre');
   const [section, setSection] = useState(DEFAULT_SECTION_ID);
@@ -41,9 +44,32 @@ export default function StudentsPage() {
 
   const classStudents = studentsByClass[tab] ?? [];
   const visibleStudents = sectioned ? getStudentsOfSection(tab, activeSection) : classStudents;
-  const visibleCount = visibleStudents.length;
+  /**
+   * Roster search (topbar ➔ `/students?q=…`). It filters the current class + শাখা list
+   * by name, roll or birth-certificate number, so the topbar search box is a real,
+   * working entry point instead of a decorative input.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = String(searchParams.get('q') ?? '').trim();
+  const searchedStudents = useMemo(() => {
+    if (!query) return visibleStudents;
+    const needle = query.toLowerCase();
+    return visibleStudents.filter((student) => [
+      student?.name,
+      student?.roll,
+      student?.birthCertificateNo,
+      student?.fatherName,
+      student?.motherName,
+    ].some((field) => String(field ?? '').toLowerCase().includes(needle)));
+  }, [visibleStudents, query]);
+  const visibleCount = searchedStudents.length;
 
   const addDemoStudents = () => {
+    if (!isDemoLoginEnabled()) {
+      setDemoMessage('ডেমো শিক্ষার্থী যোগ করার সুবিধা এই পরিবেশে বন্ধ আছে।');
+      return;
+    }
+    if (!window.confirm('ডেমো (নমুনা) শিক্ষার্থী যোগ করবেন? এরা এই বিদ্যালয়ের আসল তালিকায় যুক্ত হবে।')) return;
     const classId = tab === 'archive' ? 'pre' : tab;
     const targetSection = classId === tab && sectioned ? activeSection : DEFAULT_SECTION_ID;
     const sectionRoster = (studentsByClass[classId] ?? []).filter((student) => (student.section || DEFAULT_SECTION_ID) === targetSection);
@@ -68,12 +94,25 @@ export default function StudentsPage() {
     <div className="mb-5"><h2 className="text-xl font-extrabold">শিক্ষার্থী ব্যবস্থাপনা</h2><p className="text-xs text-slate-500">শ্রেণিভিত্তিক তালিকা, ভর্তি ও বার্ষিক উত্তরণ</p></div>
     <div className="mb-4 flex flex-wrap justify-end gap-2">
       {canManageStudents && <>
-        <button className="btn-secondary" onClick={addDemoStudents}><Sparkles size={15} /> ডেমো শিক্ষার্থী যোগ করুন</button>
+        {isDemoLoginEnabled() ? (
+          <button className="btn-secondary" onClick={addDemoStudents}><Sparkles size={15} /> ডেমো শিক্ষার্থী যোগ করুন</button>
+        ) : null}
         <button className="btn-secondary" onClick={() => setPromoting(true)}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
         <button className="btn-primary" onClick={() => setAdding(true)}><UserPlus size={15} /> নতুন ভর্তি</button>
       </>}
     </div>
     {demoMessage && <p role="status" className="mb-3 text-right text-sm text-emerald-700 dark:text-emerald-300">{demoMessage}</p>}
+    {query ? (
+      <p className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-brand-50 px-3 py-2 text-[11px] font-semibold text-brand-800 dark:bg-brand-900/30 dark:text-brand-200">
+        <span className="inline-flex items-center gap-1.5">
+          <Search size={12} aria-hidden="true" />
+          অনুসন্ধান: <b>{query}</b> — {toBanglaNumber(searchedStudents.length)} জন পাওয়া গেছে
+        </span>
+        <button type="button" className="font-bold underline" onClick={() => setSearchParams({}, { replace: true })}>
+          অনুসন্ধান মুছুন
+        </button>
+      </p>
+    ) : null}
     <Card>
       <ClassTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setSection(DEFAULT_SECTION_ID); setDemoMessage(''); }} counts={counts} />
       {sectioned && <SectionSelect
@@ -87,7 +126,7 @@ export default function StudentsPage() {
         onRenameSection={(from, to) => renameSection(tab, from, to)}
         onRemoveSection={(label) => removeSection(tab, label)}
       />}
-      <StudentTable students={visibleStudents} canEdit={canManageStudents} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
+      <StudentTable students={searchedStudents} canEdit={canManageStudents} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
         onShowResult={setResultTarget} getStudentResult={getStudentResult}
         onRestore={(student) => { setRestoring(student); setRestoreClassId(CLASS_LEVELS.some((item) => item.id === student.previousClassId) ? student.previousClassId : 'pre'); }} />
     </Card>
@@ -95,10 +134,11 @@ export default function StudentsPage() {
     <AddStudentModal open={Boolean(editing)} onClose={() => setEditing(null)} onSave={saveStudent} student={editing} defaultClass={editing?.classId === 'archive' ? (editing?.previousClassId || 'pre') : (editing?.classId || tab)} onArchive={confirmArchive} sectionOptions={editing ? getSectionsOfClass(editing.classId === 'archive' ? (editing.previousClassId || 'pre') : editing.classId) : []} roster={students} getSectionsOfClass={getSectionsOfClass} />
     <StudentDetailsModal open={Boolean(selected)} onClose={() => setSelected(null)} student={selected ? (students.find((item) => item.id === selected.id) ?? selected) : null}
       marks={marks} allStudents={students} getTermResult={getTermResult} getStudentResult={getStudentResult} getClassAnalytics={getClassAnalytics} getResultConfig={getResultConfig}
+      schoolId={schoolId} activeYear={activeYear}
       onEdit={canManageStudents ? (student) => { setSelected(null); setEditing(student); } : null} />
     <StudentResultModal open={Boolean(resultTarget)} onClose={() => setResultTarget(null)}
       student={resultTarget ? (students.find((item) => item.id === resultTarget.id) ?? resultTarget) : null}
-      marks={marks} getStudentResult={getStudentResult} getTermResult={getTermResult} getClassAnalytics={getClassAnalytics} />
+      marks={marks} getStudentResult={getStudentResult} getTermResult={getTermResult} getClassAnalytics={getClassAnalytics} getRemark={getRemark} />
     <Modal open={Boolean(restoring)} onClose={() => setRestoring(null)} title="শিক্ষার্থীকে শ্রেণিতে ফিরিয়ে নিন" subtitle={restoring?.name} icon={RotateCcw}>
       <div className="space-y-4">
         <label className="block"><span className="label-base">যে শ্রেণিতে ফিরিয়ে নেবেন</span><select className="input-base" value={restoreClassId} onChange={(event) => setRestoreClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -118,6 +158,7 @@ export default function StudentsPage() {
       getClassRankMap={getClassRankMap}
       getSectionsOfClass={getSectionsOfClass}
       getResultConfig={getResultConfig}
+      getRemark={getRemark}
       onExecute={executePromotion}
     />
   </>;

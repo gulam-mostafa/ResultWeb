@@ -95,8 +95,16 @@ export function useResults({
   );
 
   const getRemark = useCallback(
-    (studentId) => dataset.remarks?.[studentId] ?? '',
-    [dataset.remarks],
+    (studentId, termId = '') => {
+      // Remarks are scoped to (academicYear, classId, termId, studentId). The annual
+      // remark wins when no term is asked for, so a marksheet keeps its current text.
+      const term = termId || 'annual';
+      const scoped = dataset.termRemarks?.[studentId]?.[term];
+      if (typeof scoped === 'string' && scoped.trim()) return scoped;
+      if (term === 'annual' || !termId) return dataset.remarks?.[studentId] ?? '';
+      return '';
+    },
+    [dataset.remarks, dataset.termRemarks],
   );
 
   /** Result of one pupil for one tab (`term1` | `term2` | `annual` | `consolidated`). */
@@ -397,17 +405,29 @@ export function useResults({
     [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, resultConfigs],
   );
 
+  /**
+   * Saves the teacher's remark for one pupil/term.
+   * It is stored under `sessions/{year}/results/{classId}/{term}/{studentMasterId}/remark`,
+   * so the text stays tied to that (year, class, term) snapshot — editing the ১ম প্রান্তিক
+   * remark never overwrites the বার্ষিক one.
+   */
   const setRemark = useCallback(
-    (studentId, remark) => {
+    (studentId, remark, termId = 'annual') => {
       const text = String(remark ?? '');
+      const term = TERMS.some((item) => item.id === termId) ? termId : 'annual';
       const student = datasetRef.current.students.find((item) => item.id === studentId);
       if (canWriteCloud && canWriteTenant && student && student.classId !== 'archive') {
-        runCloudSave(() => saveRemarkCloud(tenantRef, 'annual', student.classId, studentId, text, year));
+        runCloudSave(() => saveRemarkCloud(tenantRef, term, student.classId, studentId, text, year));
       }
       updateDataset(
         (prev) => ({
           ...prev,
-          remarks: { ...prev.remarks, [studentId]: text },
+          // The annual remark doubles as the roster-wide remark every list shows.
+          remarks: term === 'annual' ? { ...prev.remarks, [studentId]: text } : prev.remarks,
+          termRemarks: {
+            ...(prev.termRemarks ?? {}),
+            [studentId]: { ...((prev.termRemarks ?? {})[studentId] ?? {}), [term]: text },
+          },
         }),
         { action: 'remark.save', detail: 'শিক্ষকের মন্তব্য সংরক্ষণ হয়েছে', actor: 'school_admin' },
       );

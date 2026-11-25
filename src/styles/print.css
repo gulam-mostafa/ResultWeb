@@ -19,9 +19,12 @@
  * Screen preview: the A4 sheet is rendered at true paper size
  * ------------------------------------------------------------------ */
 .print-sheet {
-  width: 210mm;
-  min-height: 297mm;
-  padding: 12mm 12mm 14mm 12mm;
+  /* 210mm paper − 12mm side margins = 186mm printable width. Giving the sheet the
+     PRINTABLE width (with padding: 0) is what stops `210mm` overflowing the 186mm
+     print box and clipping the right-hand columns. */
+  width: 186mm;
+  min-height: 271mm; /* 297mm − (12mm top + 14mm bottom) */
+  padding: 0;
   margin: 0 auto;
   background: #ffffff;
   color: #111827;
@@ -30,6 +33,20 @@
   font-size: 11.5pt;
   line-height: 1.55;
   position: relative;
+  /* One column that FILLS the whole sheet: the footer is pushed to the bottom with
+     `margin-top: auto` instead of an absolutely-positioned box overlapping the table. */
+  display: flex;
+  flex-direction: column;
+}
+
+.print-sheet > * {
+  flex: 0 0 auto;
+}
+
+/* The footer (signatures + QR) always sits on the very bottom edge of the sheet. */
+.print-sheet > .doc-footer,
+.print-sheet > .rsheet__foot {
+  margin-top: auto;
 }
 
 .print-sheet--flush {
@@ -152,7 +169,23 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
+  gap: 6mm;
   font-size: 9.5pt;
+}
+
+/**
+ * The footer of a full-height sheet is laid out with the SAME 7 signatory/qr slots as
+ * the on-screen marksheet, so a 3-column / 7-slot footer never overlaps the table and
+ * every column stays aligned on paper.
+ */
+.doc-footer--grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: end;
+}
+
+.doc-footer--grid > * {
+  min-width: 0;
 }
 
 .signature {
@@ -237,6 +270,30 @@
     break-after: page;
   }
 
+  /**
+   * A 1-per-A4 sheet must FILL the printable height and must NOT break inside. The
+   * footer is a normal flex item pushed down by `margin-top: auto`, so it can never
+   * overlap the subject table (the old `position: fixed` footer was repeated on every
+   * page and landed on top of the last rows).
+   */
+  .print-single .print-sheet:not(.print-sheet--compact),
+  .print-sheet:not(.print-sheet--compact).print-sheet--full {
+    min-height: 271mm !important;
+    height: 271mm !important;
+    max-height: 271mm !important;
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .print-sheet:not(.print-sheet--compact) > .doc-footer,
+  .print-sheet:not(.print-sheet--compact) > .rsheet__foot {
+    position: static !important;
+    margin-top: auto !important;
+  }
+
   .print-sheet:last-of-type {
     page-break-after: auto;
     break-after: auto;
@@ -246,11 +303,11 @@
     display: none !important;
   }
 
-  .doc-footer {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+  /* Only the PAIR (half-page) sheets keep a fixed footer: their box is 135mm and the
+     footer must stay inside that half without pushing the content over. */
+  .print-sheet--compact .doc-footer {
+    position: static;
+    margin-top: auto;
   }
 
   /* Force backgrounds (grade chips, header tint) to render. */

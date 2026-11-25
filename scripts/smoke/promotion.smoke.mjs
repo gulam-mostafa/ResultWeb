@@ -392,3 +392,63 @@ console.log('PASS — section-aware annual promotion + origin metadata + badge w
   console.log('PASS — individual class change writes class row + master + passedArchive exactly once');
 }
 
+/* ------------------------------------------------------------------ *
+ * P0-3 / P0-7 — year-scoped promotion (`2026` ➔ `2027`): the new year's roster
+ * starts EMPTY (no carried GPA/grade/merit) and the finished year is untouched.
+ * ------------------------------------------------------------------ */
+{
+  const { promoteStudentsToNextYear } = await import('../../src/services/database/centralSchoolStore.js');
+  const srcYear = '2026';
+  const dstYear = '2027';
+  const srcPath = `${BASE}/sessions/${srcYear}`;
+  const dstPath = `${BASE}/sessions/${dstYear}`;
+
+  seed(`${srcPath}/students/class-2/ক`, {
+    'STU-2026-0001': { studentMasterId: 'STU-2026-0001', legacyId: 'a1', name: 'রুমি', classId: 'class-2', section: 'ক', roll: 1, status: 'active', year: srcYear },
+  });
+  seed(`${srcPath}/results/class-2/final/STU-2026-0001`, { grandTotal: 400, gpa: 4.5, grade: 'A+', meritPosition: 1 });
+  // Snapshot the finished year's DATA so we can prove it is not rewritten.
+  const finishedBefore = {
+    row: at(`${srcPath}/students/class-2/ক/STU-2026-0001`),
+    result: at(`${srcPath}/results/class-2/final/STU-2026-0001`),
+  };
+
+  const rollover = await promoteStudentsToNextYear(location, srcYear, dstYear, {
+    decisions: [{ studentId: 'a1', studentMasterId: 'STU-2026-0001', action: 'promote' }],
+    students: [{ id: 'a1', studentMasterId: 'STU-2026-0001', name: 'রুমি', classId: 'c2', section: 'ক', roll: 1 }],
+  });
+  assert.equal(rollover.synced, true);
+
+  const nextRow = at(`${dstPath}/students/class-3/ক/STU-2026-0001`);
+  assert.ok(nextRow, 'the pupil exists in the new year’s next class');
+  assert.equal(nextRow.classId, 'class-3');
+  assert.equal(nextRow.year, dstYear, 'the row is stamped with the NEW year');
+  // P0-3: the new year starts clean — no last-year GPA / grade / merit stamped on it.
+  assert.equal(nextRow.gpa, null, 'no carried GPA on the new row');
+  assert.equal(nextRow.grade, '', 'no carried grade on the new row');
+  assert.equal(nextRow.meritPosition, null, 'no carried merit on the new row');
+  assert.equal(nextRow.grandTotal, null, 'no carried total on the new row');
+  assert.equal(nextRow.promotedFromYear, srcYear, 'the source year is recorded');
+  // P0-3: the new year has NO result rows at all → the new class's result starts at ০০.
+  const noRows = Object.values(at(`${dstPath}/results`) ?? {})
+    .flatMap((terms) => Object.values(terms ?? {}))
+    .flatMap((rows) => Object.keys(rows ?? {}));
+  assert.deepEqual(noRows, [], 'the new year starts with no result rows');
+
+  // The finished year's DATA is frozen: the pupil row and the published result row are
+  // byte-identical. (Only empty class-bucket skeletons and the promotion meta timestamp
+  // may be refreshed by the idempotent year-bucket setup.)
+  assert.deepEqual(
+    at(`${srcPath}/students/class-2/ক/STU-2026-0001`),
+    finishedBefore.row,
+    'the previous year’s roster row is never rewritten',
+  );
+  assert.deepEqual(
+    at(`${srcPath}/results/class-2/final/STU-2026-0001`),
+    finishedBefore.result,
+    'the previous year’s published result is never rewritten',
+  );
+
+  console.log('PASS — year rollover starts the new year at ০০ / no stale stamps and freezes the old year');
+}
+

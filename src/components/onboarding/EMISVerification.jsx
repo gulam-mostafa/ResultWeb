@@ -1,16 +1,22 @@
 import { useState } from 'react';
 import { ShieldCheck, ShieldAlert, KeyRound, Hash, Info } from 'lucide-react';
 import { clsx } from '../../utils/clsx.js';
+import { isDemoLoginEnabled } from '../../context/AuthContext.jsx';
 
 /**
  * EMISVerification — step 2 of onboarding.
  * Validates the school's EMIS code + PIN before role login is unlocked.
+ *
+ * The seeded demo credentials are only offered when demo mode is explicitly enabled
+ * (`?demo=1` / `VITE_ENABLE_DEMO_LOGIN=true`) — a production screen never displays an
+ * EMIS code or PIN, and a failed verification never echoes one either.
  */
 export default function EMISVerification({ school, verified, onVerifiedChange, onVerify }) {
   const target = school ?? { name: 'নির্বাচিত বিদ্যালয়', emisCode: '', pinCode: '' };
   const [emisCode, setEmisCode] = useState('');
   const [pinCode, setPinCode] = useState('');
   const [message, setMessage] = useState(null);
+  const demoMode = isDemoLoginEnabled();
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -63,7 +69,7 @@ export default function EMISVerification({ school, verified, onVerifiedChange, o
             )}
           >
             {verified
-              ? `${target.name} — ইএমআইএস ${target.emisCode} সফলভাবে যাচাই করা হয়েছে। এখন ভূমিকা নির্বাচন করে লগইন করুন।`
+              ? `${target.name} — প্রতিষ্ঠান সফলভাবে যাচাই করা হয়েছে। এখন ভূমিকা নির্বাচন করে লগইন করুন।`
               : 'বিদ্যালয়ের ইএমআইএস কোড ও পিন কোড দিয়ে প্রতিষ্ঠান যাচাই করুন।'}
           </p>
         </div>
@@ -110,12 +116,16 @@ export default function EMISVerification({ school, verified, onVerifiedChange, o
               <ShieldCheck size={14} aria-hidden="true" />
               যাচাই করুন
             </button>
-            <button type="button" onClick={fillDemo} className="btn-secondary btn-sm">
-              <Info size={13} aria-hidden="true" />
-              ডেমো তথ্য বসান
-            </button>
+            {demoMode ? (
+              <button type="button" onClick={fillDemo} className="btn-secondary btn-sm">
+                <Info size={13} aria-hidden="true" />
+                ডেমো তথ্য বসান
+              </button>
+            ) : null}
             <span className="text-[10px] text-slate-400">
-              ডেমো: {target.emisCode} / {target.pinCode}
+              {demoMode
+                ? 'ডেমো মোড চালু — নমুনা তথ্য স্বয়ংক্রিয়ভাবে পূরণ হবে।'
+                : 'ইএমআইএস কোড ও পিন প্রতিষ্ঠানের অফিসিয়াল রেকর্ড থেকে নিন।'}
             </span>
           </div>
 

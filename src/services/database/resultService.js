@@ -37,10 +37,23 @@ export const subjectTotal = (formative, summative) => {
   return Math.round(((Number(formative) || 0) + (Number(summative) || 0)) * 100) / 100;
 };
 
-/** The persisted canonical term key (`annual` ➔ `final`). */
+/** Stored/persisted term key (`'final'` | `'term1'` | `'term2'`). */
 const termKey = (term) => {
   const key = resolveTermKey(term) || 'annual';
   return key === 'annual' ? 'final' : key;
+};
+
+/**
+ * App-facing term id (`'annual'` | `'term1'` | `'term2'`).
+ *
+ * RTDB stores the annual term as `'final'`, but every UI consumer
+ * (`gradingCalculator`, `useResults`, `SchoolDataContext`, the grid and the modals)
+ * addresses it as `'annual'` (see `TERM_IDS`). Mapping here — on the way IN — is what
+ * keeps a saved বার্ষিক মূল্যায়ন mark visible after a reload/tab switch.
+ */
+const appTermId = (term) => {
+  const key = resolveTermKey(term) || '';
+  return key === 'final' ? 'annual' : key;
 };
 
 /** Empty mark sheet for one student — the canonical shape used app-wide. */
@@ -64,19 +77,33 @@ export function createEmptySubjectMarks(subjectIds = SUBJECT_IDS) {
 
 /**
  * Normalises one persisted subject entry.
- * Accepts the canonical `{formative, summative, total}`, a bare number, or the
- * legacy `{mark}` / `{value}` shape.
+ *
+ * Accepts the canonical `{formative, summative, total}`, a bare single mark
+ * (`{total}` / a number) or the legacy `{mark}` / `{value}` shape.
+ *
+ * Rules (they must never change, every reader depends on them):
+ *  1. An EXPLICIT stored `total` is always authoritative — components are only
+ *     carried alongside it.
+ *  2. A single-mark row stores `{ total: v }`; it is NEVER expanded into both
+ *     components (that is what used to double `30` into `60`).
+ *  3. Legacy `{ formative: v, summative: v }` rows (written before `total` existed)
+ *     stored the SAME value twice, so the mark is `v` — not `2v`.
+ *  4. Only a real component pair is summed into a derived total.
  */
 export function normalizeSubjectMark(value, fallback = null) {
   if (isObject(value)) {
     const formative = numberOrNull(value.formative ?? value.formativeMark);
     const summative = numberOrNull(value.summative ?? value.summativeMark);
     const storedTotal = numberOrNull(value.total);
-    const total = storedTotal ?? subjectTotal(formative, summative);
+    if (storedTotal !== null) return { formative, summative, total: storedTotal };
     if (formative === null && summative === null) {
       return { formative: fallback, summative: fallback, total: fallback };
     }
-    return { formative, summative, total };
+    // Legacy aggregate: the same figure in both components is one mark, not two.
+    if (formative !== null && summative !== null && formative === summative) {
+      return { formative, summative, total: formative };
+    }
+    return { formative, summative, total: subjectTotal(formative, summative) };
   }
   const flat = numberOrNull(value);
   return { formative: flat ?? fallback, summative: flat ?? fallback, total: flat ?? fallback };
@@ -212,8 +239,10 @@ function flatten(tree = {}, aliasOf = (id) => id) {
     marks[appId][`${subjectId}:summative`][term] = mark.summative ?? 0;
   };
 
-  const visit = (classId, term, studentId, row) => {
+  const visit = (classId, storedTerm, studentId, row) => {
     if (!isObject(row)) return;
+    // `final` ➔ `annual`: the UI reads `TERM_IDS`, the database stores `final`.
+    const term = appTermId(storedTerm);
     const normalized = normalizeResultRow(row);
     const appId = aliasOf(normalized.legacyId || studentId) || studentId;
 
@@ -224,7 +253,7 @@ function flatten(tree = {}, aliasOf = (id) => id) {
     if (typeof normalized.remark === 'string' && normalized.remark.trim()) {
       termRemarks[appId] = termRemarks[appId] ?? {};
       termRemarks[appId][term] = normalized.remark;
-      if (!remarks[appId] || term === 'final') remarks[appId] = normalized.remark;
+      if (!remarks[appId] || term === 'annual') remarks[appId] = normalized.remark;
     }
 
     if (normalized.meritPosition) {
@@ -263,11 +292,83 @@ function flatten(tree = {}, aliasOf = (id) => id) {
 
   return { tree: tree ?? {}, marks, remarks, termRemarks, rankings, rows };
 }
-/** Views key terms by the persisted id (`final` ➔ `annual`) so hooks stay unchanged. */
+/** Views key terms by the app-facing id (`final` ➔ `annual`) so hooks stay unchanged. */
 const persistedTermId = (term) => {
   const key = termKey(term);
   return key === 'final' ? 'annual' : key;
 };
+
+/**
+ * Live subscription to one term only (cheaper than the whole tree).
+ *
+ * Emits `{ [classId]: { [studentId]: row } }` keyed by the APP term id. The stored
+ * annual segment is `final`, so the year partition is read with the persisted key and
+ * every row is normalised before it reaches a consumer — a `বার্ষিক` term therefore
+ * arrives exactly like `১ম` / `২য়`.
+ */
+export function subscribeTermResults(schoolId, termId, callback, onStatus, year = '') {
+  if (!schoolId || !TERM_IDS.includes(termId) || typeof callback !== 'function') {
+    callback?.({});
+    return () => {};
+  }
+
+  // The database segment (`term1` | `term2` | `final`); `termId` stays app-facing.
+  const storedTerm = termKey(termId);
+  const requestedYear = normalizeSessionYear(year);
+  let legacyTerm = {};
+  let yearTerm = {};
+  const emit = () => callback({ ...asRecord(legacyTerm), ...asRecord(yearTerm) });
+
+  /** `/results/{term}/{classId}/{studentId}` ➔ `{classId: {studentId: row}}`. */
+  const readLegacyTerm = (value) => Object.entries(asRecord(value)).reduce((acc, [classId, rows]) => {
+    const perStudent = {};
+    Object.entries(asRecord(rows)).forEach(([studentId, row]) => {
+      if (!isObject(row)) return;
+      // The app-facing term id travels on the row, so a consumer never has to know that
+      // the database spells the annual term `final`.
+      perStudent[studentId] = { ...normalizeResultRow(row), term: termId };
+    });
+    if (Object.keys(perStudent).length) acc[classId] = perStudent;
+    return acc;
+  }, {});
+
+  const unsubs = [safeSubscribe(dbPaths.resultTerm(schoolId, termId), (value) => {
+    legacyTerm = readLegacyTerm(value);
+    emit();
+  }, {}, onStatus)];
+
+  const bindYear = (yearKey) => {
+    const normalized = normalizeSessionYear(yearKey);
+    if (!normalized) return;
+    unsubs.push(safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
+      const perClass = {};
+      Object.entries(asRecord(value)).forEach(([classId, terms]) => {
+        // Stored key first (`final`), plus the app spelling as a legacy alias.
+        const level = asRecord(terms);
+        const rows = isObject(level[storedTerm]) ? level[storedTerm] : level[persistedTermId(termId)];
+        if (!isObject(rows)) return;
+        const perStudent = {};
+        Object.entries(rows).forEach(([studentId, row]) => {
+          if (!isObject(row)) return;
+          perStudent[studentId] = {
+            ...normalizeResultRow(row),
+            classId,
+            // App-facing term id (`annual`), never the stored `final`.
+            term: termId,
+          };
+        });
+        if (Object.keys(perStudent).length) perClass[classId] = perStudent;
+      });
+      yearTerm = perClass;
+      emit();
+    }, {}, onStatus));
+  };
+
+  if (requestedYear) bindYear(requestedYear);
+  else resolveActiveYear(schoolId).then(bindYear).catch(() => {});
+
+  return () => unsubs.forEach((unsub) => unsub?.());
+}
 
 /** Live subscription to one academic year's results (merged with the legacy root). */
 export function subscribeResults(schoolId, callback, onStatus, year = '') {
@@ -323,46 +424,59 @@ export async function readSessionResults(schoolId, year = '') {
   if (Object.keys(partition).length) return flatten(partition);
   return flatten(asRecord(await safeRead(dbPaths.results(schoolId), {})));
 }
+/**
+ * Moves ONE pupil's CURRENT-YEAR result rows from one class to another.
+ *
+ * Used when a pupil is moved down a class (`এক শ্রেণি নিচে যাবে`) or shifted between
+ * classes inside the same academic year: their marks must appear in the TARGET class's
+ * current-year result view, otherwise the teacher would keep seeing an empty sheet.
+ *
+ * Guarantees:
+ *  - only `sessions/{year}/results/...` of THIS year is touched;
+ *  - every previous academic year stays untouched (frozen history);
+ *  - the source class row is removed in the same atomic update, so a pupil is never
+ *    counted in two classes at once.
+ *
+ * @returns {Promise<{synced:boolean, moved:number}>}
+ */
+export async function moveStudentResultRows(schoolId, year, studentId, fromClassId, toClassId) {
+  const yearKey = normalizeSessionYear(year);
+  if (!schoolId || !yearKey || !studentId || !fromClassId || !toClassId) return { synced: false, moved: 0 };
+  if (toDbClassId(fromClassId) === toDbClassId(toClassId)) return { synced: true, moved: 0 };
+  const studentMasterId = await resolveMasterId(schoolId, studentId);
+  const sourceRoot = dbPaths.yearResults(schoolId, yearKey);
+  const relTo = (absolute) => absolute.slice(sourceRoot.length + 1);
 
-/** Live subscription to a single term only (cheaper for the 3-tab grid). */
-export function subscribeTermResults(schoolId, termId, callback, onStatus, year = '') {
-  if (!schoolId || !TERM_IDS.includes(termId) || typeof callback !== 'function') {
-    callback?.({});
-    return () => {};
-  }
+  // The row VALUES travel with the move, so the source rows are read first.
+  const rows = await Promise.all(TERM_IDS.map(async (termId) => {
+    const raw = await safeRead(yearResultPath(schoolId, yearKey, fromClassId, termId, studentMasterId), null);
+    return { termId, row: isObject(raw) ? raw : null };
+  }));
 
-  const term = persistedTermId(termId);
-  const requestedYear = normalizeSessionYear(year);
-  let legacyTerm = {};
-  let yearTerm = {};
-  const emit = () => callback({ ...asRecord(legacyTerm), ...asRecord(yearTerm) });
-
-  const unsubs = [safeSubscribe(dbPaths.resultTerm(schoolId, termId), (value) => {
-    legacyTerm = asRecord(value);
-    emit();
-  }, {}, onStatus)];
-
-  const bindYear = (yearKey) => {
-    const normalized = normalizeSessionYear(yearKey);
-    if (!normalized) return;
-    unsubs.push(safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
-      const perClass = {};
-      Object.entries(asRecord(value)).forEach(([classId, terms]) => {
-        const row = asRecord(terms)[term];
-        if (isObject(row)) perClass[classId] = row;
-      });
-      yearTerm = perClass;
-      emit();
-    }, {}, onStatus));
-  };
-
-  if (requestedYear) bindYear(requestedYear);
-  else resolveActiveYear(schoolId).then(bindYear).catch(() => {});
-
-  return () => unsubs.forEach((unsub) => unsub?.());
+  const patch = {};
+  let moved = 0;
+  rows.forEach(({ termId, row }) => {
+    if (!row) return;
+    const term = termKey(termId);
+    const fromAbsolute = yearResultPath(schoolId, yearKey, fromClassId, term, studentMasterId);
+    const toAbsolute = yearResultPath(schoolId, yearKey, toClassId, term, studentMasterId);
+    moved += 1;
+    patch[relTo(toAbsolute)] = cleanForCloud({
+      ...row,
+      classId: toDbClassId(toClassId),
+      term,
+      updatedAt: nowISO(),
+    });
+    patch[relTo(fromAbsolute)] = null;
+  });
+  if (!Object.keys(patch).length) return { synced: true, moved: 0 };
+  await ensureSchoolYear(schoolId, yearKey);
+  const result = await safeUpdate(sourceRoot, patch);
+  return { synced: result?.synced !== false, moved };
 }
+
 /* ------------------------------------------------------------------ *
- * Writes — one row per student/term inside the year partition
+ * Reads — one row per student/term inside the year partition
  * ------------------------------------------------------------------ */
 
 /** Current row for a student/term (year partition first, legacy fallback). */
@@ -386,8 +500,27 @@ const rowRelativeKey = (schoolId, year, classId, term, studentMasterId) => (
 );
 
 /**
- * Auto-save for one subject component (formative or summative).
- * `total` is always recomputed so a document never shows a stale subject total.
+ * Explicit component pair ➔ canonical row. The two components are ALWAYS summed, so a
+ * genuine ৫০/৫০ split (৩০ + ৩০ = ৬০) is never mistaken for the legacy aggregate shape.
+ */
+export function buildSubjectMark(formative, summative) {
+  const f = numberOrNull(formative);
+  const s = numberOrNull(summative);
+  if (f === null && s === null) return { formative: null, summative: null, total: null };
+  return { formative: f, summative: s, total: subjectTotal(f, s) };
+}
+
+/**
+ * Auto-save for one subject cell.
+ *
+ * Three mutually exclusive shapes (see the P0-2 requirement):
+ *  1. `component = 'formative' | 'summative'` on a split subject →
+ *     `{ formative: fVal, summative: sVal, total: fVal + sVal }`.
+ *  2. `component = 'total'` (a single-score subject) → `{ total: value }` and NO
+ *     components. The value is never copied into both components, which is what used to
+ *     turn a typed `৩০` into a stored `৬০`.
+ *  3. An explicit stored `total` is always authoritative on read
+ *     (`normalizeSubjectMark`), so a legacy row keeps its own figure.
  */
 export async function saveMark(schoolId, termId, classId, studentId, subjectId, value, year = '', component = 'total') {
   if (!schoolId || !TERM_IDS.includes(termId) || !classId || !studentId || !subjectId) {
@@ -399,22 +532,20 @@ export async function saveMark(schoolId, termId, classId, studentId, subjectId, 
   const previous = await readResultRow(schoolId, yearKey, classId, term, studentMasterId);
   const priorSubjects = normalizeResultRow(previous).subjects ?? {};
   const current = priorSubjects[subjectId] ?? {};
-  // A component edit keeps the other component; a single-score edit replaces both
-  // components with the one typed value (`summative: null` keeps `total` = value, so a
-  // non-split subject is never double counted).
-  const nextInput = component === 'formative' || component === 'summative'
-    ? { ...current, [component]: value }
-    : { formative: value, summative: null };
-  const next = normalizeSubjectMark(nextInput);
+  const isComponent = component === 'formative' || component === 'summative';
+  //  • Component edit: keep the other component and re-derive the total from the pair
+  //    (a stale stored total must never survive a component change).
+  //  • Single-mark edit: store the bare total and clear both components.
+  const next = isComponent
+    ? buildSubjectMark(
+      component === 'formative' ? value : current.formative,
+      component === 'summative' ? value : current.summative,
+    )
+    : { formative: null, summative: null, total: numberOrNull(value) };
   const subjects = { ...priorSubjects, [subjectId]: next };
-  // `total` is derived, so it is written last: a component edit must never leave
-  // the previous subject total behind.
   return writeResultRow(schoolId, yearKey, classId, term, studentMasterId, {
     ...(isObject(previous) ? previous : {}),
-    subjects: {
-      ...priorSubjects,
-      [subjectId]: { formative: next.formative, summative: next.summative },
-    },
+    subjects,
   }, { subjects });
 }
 
@@ -448,16 +579,17 @@ export async function saveTermMarksBulk(reference, year, classId, termId, entrie
     Object.entries(perSubject).forEach(([subjectId, parts]) => {
       const subject = config?.subjects?.find((item) => item.id === subjectId) ?? null;
       if (subject?.split || parts.formative !== undefined || parts.summative !== undefined) {
-        const formative = parts.formative ?? null;
-        const summative = parts.summative ?? null;
-        const total = formative === null && summative === null ? null : subjectTotal(formative, summative);
-        patch[`${key}/subjects/${subjectId}/formative`] = formative;
-        patch[`${key}/subjects/${subjectId}/summative`] = summative;
-        patch[`${key}/subjects/${subjectId}/total`] = total;
+        // A real component pair is summed (`buildSubjectMark`), never expanded.
+        const mark = buildSubjectMark(parts.formative ?? null, parts.summative ?? null);
+        patch[`${key}/subjects/${subjectId}/formative`] = mark.formative;
+        patch[`${key}/subjects/${subjectId}/summative`] = mark.summative;
+        patch[`${key}/subjects/${subjectId}/total`] = mark.total;
         return;
       }
+      // Single-score subject: the typed value IS the total — components stay empty so
+      // one mark can never be counted twice.
       const total = parts.total ?? null;
-      patch[`${key}/subjects/${subjectId}/formative`] = total;
+      patch[`${key}/subjects/${subjectId}/formative`] = null;
       patch[`${key}/subjects/${subjectId}/summative`] = null;
       patch[`${key}/subjects/${subjectId}/total`] = total;
     });
@@ -481,9 +613,17 @@ export async function saveStudentTermMarks(schoolId, termId, classId, studentId,
   const term = termKey(termId);
   const subjects = {};
   Object.entries(asRecord(marks)).forEach(([subjectId, value]) => {
-    const mark = normalizeSubjectMark(value);
+    // An object carrying real components is a split row; anything else is ONE mark.
+    const isComponentRow = isObject(value)
+      && (value.formative !== undefined || value.summative !== undefined);
+    const mark = isComponentRow
+      ? buildSubjectMark(value.formative, value.summative)
+      : normalizeSubjectMark(value);
     if (mark.formative === null && mark.summative === null && mark.total === null) return;
-    subjects[subjectId] = mark;
+    // A single mark keeps its components empty so it can never be counted twice.
+    subjects[subjectId] = isComponentRow
+      ? mark
+      : { formative: null, summative: null, total: mark.total };
   });
   return writeResultRow(schoolId, yearKey, classId, term, studentMasterId, { subjects });
 }
@@ -593,9 +733,10 @@ export async function saveTermResults(schoolId, termId, classId, resultMap = {},
 }
 /**
  * Mirrors the context's normalized marks/remarks into the year partition.
- * `marks` keeps the flat `{ [studentId]: { [subjectId]: { [termId]: number } } }`
- * shape the UI works with; a single aggregate value is stored as both evaluated
- * components so the formative/summative structure stays complete.
+ *
+ * `marks` keeps the flat `{ [studentId]: { [subjectId]: { [termId]: number } } }` shape
+ * the UI works with. A bare number is ONE mark and is stored as `{ total }` — the single
+ * mark is never copied into both components (that doubling is the P0-2 bug).
  */
 export async function syncResultTree(schoolId, marks = {}, remarks = {}, students = [], year = '') {
   if (!schoolId) return Promise.resolve({ synced: false });
@@ -619,6 +760,17 @@ export async function syncResultTree(schoolId, marks = {}, remarks = {}, student
     patch[`${key}/updatedAt`] = nowISO();
   };
 
+  /** A bare value is ONE mark: it is stored as a total, never doubled into components. */
+  const markFromValue = (value) => {
+    if (isObject(value)) {
+      const isComponentRow = value.formative !== undefined || value.summative !== undefined;
+      return isComponentRow
+        ? buildSubjectMark(value.formative, value.summative)
+        : { formative: null, summative: null, total: numberOrNull(value.total ?? value.mark ?? value.value) };
+    }
+    return { formative: null, summative: null, total: numberOrNull(value) };
+  };
+
   Object.entries(asRecord(marks)).forEach(([studentId, subjects]) => {
     const student = studentsById.get(studentId);
     if (!student || student.classId === 'archive') return;
@@ -626,13 +778,13 @@ export async function syncResultTree(schoolId, marks = {}, remarks = {}, student
       const keys = Object.keys(asRecord(terms));
       if (keys.length && !keys.some((key) => TERM_IDS.includes(key))) {
         // Already a component map (`{formative, summative}`): apply to every term.
-        const mark = normalizeSubjectMark(terms);
+        const mark = markFromValue(terms);
         TERM_IDS.forEach((termId) => setSubject(student, termId, subjectId, mark));
         return;
       }
       Object.entries(asRecord(terms)).forEach(([termId, value]) => {
         if (!TERM_IDS.includes(termId)) return;
-        setSubject(student, termId, subjectId, normalizeSubjectMark(value));
+        setSubject(student, termId, subjectId, markFromValue(value));
       });
     });
   });
@@ -718,7 +870,11 @@ function collectTermResults(resultsTree, studentMasterId) {
   Object.entries(asRecord(resultsTree)).forEach(([classId, levelOne]) => {
     Object.entries(asRecord(levelOne)).forEach(([termSegment, levelTwo]) => {
       const row = asRecord(levelTwo)[studentMasterId];
-      if (isObject(row)) terms[termKey(termSegment)] = normalizeResultRow({ ...row, classId });
+      // Keyed by the APP term id (`annual`), so the history viewer can address the
+      // locked-in বার্ষিক snapshot exactly like the live tabs do.
+      if (isObject(row)) {
+        terms[appTermId(termSegment) || termSegment] = normalizeResultRow({ ...row, classId });
+      }
     });
   });
   return terms;
@@ -764,7 +920,7 @@ export async function getStudentCrossYearHistory(schoolId, studentMasterId) {
     const terms = collectTermResults(resultsTree, studentMasterId);
     if (!enrollment && !passed && Object.keys(terms).length === 0) return null;
 
-    const finalResult = terms.final ?? terms.annual ?? null;
+    const finalResult = terms.annual ?? terms.final ?? null;
     return {
       year,
       classId: enrollment?.classId || passed?.classId || finalResult?.classId || '',
@@ -793,6 +949,7 @@ export default {
   createEmptyMarks,
   createEmptySubjectMarks,
   subjectTotal,
+  buildSubjectMark,
   normalizeSubjectMark,
   normalizeResultRow,
   buildTermResult,
@@ -809,6 +966,7 @@ export default {
   saveTermResults,
   syncResultTree,
   deleteStudentResults,
+  moveStudentResultRows,
   getStudentCrossYearHistory,
 };
 

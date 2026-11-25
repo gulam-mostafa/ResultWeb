@@ -1,0 +1,102 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "visitors": {
+      "$visitorId": {
+        ".read": true,
+        ".write": "!data.exists()"
+      }
+    },
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        "role": {
+          ".validate": "newData.val() === 'school_admin' || newData.val() === 'super_admin' || newData.val() === 'student'"
+        }
+      }
+    },
+
+    "schoolLocator": {
+      ".read": true,
+      "$schoolId": { ".write": "auth != null" }
+    },
+
+    "schoolIndex": {
+      ".read": true,
+      "$divisionId": {
+        "$districtId": {
+          "$upazilaId": {
+            ".write": "auth != null",
+            "$schoolId": {
+              ".validate": "newData.hasChildren(['id', 'name'])"
+            }
+          }
+        }
+      }
+    },
+
+    "schoolRegistry": {
+      ".read": true,
+      "$division": {
+        "$district": {
+          "$upazila": {
+            ".write": "auth != null",
+            "$schoolId": {
+              ".validate": "newData.hasChildren(['id', 'name'])"
+            }
+          }
+        }
+      }
+    },
+
+    "divisions": {
+      "$divisionId": {
+        "districts": {
+          "$districtId": {
+            "upazilas": {
+              "$upazilaId": {
+                "schools": {
+                  "$schoolId": {
+                    ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('schoolId').val() === $schoolId || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')",
+                    ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')",
+                    "profile": {
+                      ".read": "auth != null",
+                      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('schoolId').val() === $schoolId || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')"
+                    },
+                    "studentMaster": {
+                      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')",
+                      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')"
+                    },
+                    "studentMasterCounters": {
+                      ".read": "auth != null && root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved'",
+                      ".write": "auth != null && root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved'"
+                    },
+                    "teachers": {
+                      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('schoolId').val() === $schoolId || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')",
+                      "$uid": {
+                        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || auth.uid === $uid || (root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('canApprove').val() === true && root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved'))",
+                        "status": {
+                          ".validate": "newData.val() === 'pending' || newData.val() === 'approved' || newData.val() === 'rejected'"
+                        }
+                      }
+                    },
+                    "sessions": {
+                      "$year": {
+                        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')",
+                        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('divisions').child($divisionId).child('districts').child($districtId).child('upazilas').child($upazilaId).child('schools').child($schoolId).child('teachers').child(auth.uid).child('status').val() === 'approved')"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

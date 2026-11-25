@@ -32,6 +32,8 @@ export default function StudentResultModal({
   getStudentResult,
   getTermResult,
   getClassAnalytics,
+  /** `(studentId, termId) => string` — the term-scoped saved remark. */
+  getRemark,
   tab = null,
   term = null,
 }) {
@@ -79,6 +81,18 @@ export default function StudentResultModal({
       </section>
 
       {activeTerm && termResult ? <p className="rounded-lg bg-brand-50 p-3 text-xs text-brand-800 dark:bg-brand-900/30 dark:text-brand-200">বর্তমানে নির্বাচিত মূল্যায়ন: <b>{activeTerm.name}</b> — মোট {toBanglaNumber(termResult.totalMarks ?? 0)}, শতকরা {toBanglaNumber(termResult.percentage ?? 0)}%, গ্রেড {termResult.grade ?? '—'}</p> : null}
+
+      {/* শিক্ষকের মন্তব্য — the snapshot of the ACTIVE term (never another term's text). */}
+      {student && typeof getRemark === 'function' ? (
+        <section>
+          <h3 className="mb-2 text-sm font-bold">
+            শিক্ষকের মন্তব্য{activeTerm ? ` · ${activeTerm.name}` : ' · বার্ষিক'}
+          </h3>
+          <p className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            {getRemark(student.id, activeTerm?.id ?? 'annual') || 'এই প্রান্তিকে কোনো মন্তব্য সংরক্ষিত নেই।'}
+          </p>
+        </section>
+      ) : null}
 
       <section>
         <h3 className="mb-2 text-sm font-bold">বিষয়ভিত্তিক নম্বর ও গ্রেড</h3>

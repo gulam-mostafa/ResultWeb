@@ -84,6 +84,15 @@ const GROUP_STYLE = {
   },
 };
 
+/** A remark preview: one sentence, trimmed, or the `মন্তব্য লিখুন` prompt. */
+const remarkPreview = (text) => {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const sentences = clean.match(/[^।]+।?/g) ?? [clean];
+  const first = (sentences[0] ?? clean).trim();
+  return first.length > 34 ? `${first.slice(0, 32)}…` : first;
+};
+
 /** The three renderable groups, in display order. */
 const GROUP_ORDER = ['formative', 'summative', 'single'];
 
@@ -101,6 +110,8 @@ export default function SpreadsheetMarksGrid({
   /** Click on a pupil's NAME → the editable remark modal. */
   onShowRemark,
   onShowResult,
+  /** `(studentId) => string` — the saved remark of the ACTIVE term (preview column). */
+  getRemark,
   sortMode = 'roll',
   onSortModeChange,
   saving = false,
@@ -367,6 +378,12 @@ export default function SpreadsheetMarksGrid({
 
   const rankOf = (studentId) => rankMap.get(studentId) ?? null;
 
+  /** Saved remark of a pupil for the ACTIVE term (undefined when the caller has none). */
+  const remarkOf = (studentId) => {
+    if (typeof getRemark !== 'function') return '';
+    return String(getRemark(studentId) ?? '');
+  };
+
   /**
    * নতুন রোল of one pupil: the consolidated map wins; the consolidated tab falls back to
    * its own ranking. A per-term tab therefore shows `—` until বার্ষিক ফলাফল exists.
@@ -448,6 +465,7 @@ export default function SpreadsheetMarksGrid({
               <th rowSpan={2} className="top-0">গ্রেড</th>
               <th rowSpan={2} className="top-0">মেধাক্রম</th>
               {showNewRoll ? <th rowSpan={2} className="top-0">নতুন রোল</th> : null}
+              <th rowSpan={2} className="top-0">মন্তব্য</th>
             </tr>
             <tr>
               {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
@@ -527,6 +545,20 @@ export default function SpreadsheetMarksGrid({
                       {toBanglaNumber(newRollOf(student.id) ?? '—')}
                     </td>
                   ) : null}
+                  <td className="min-w-32 align-top">
+                    {/* মন্তব্য — clicking the cell (or the name) opens the editable modal. */}
+                    <button
+                      type="button"
+                      onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                      className="w-full rounded-lg px-1.5 py-1 text-left text-[11px] font-semibold leading-snug text-slate-600 transition hover:bg-brand-50 hover:text-brand-800 dark:text-slate-300 dark:hover:bg-slate-800"
+                      title="মন্তব্য দেখুন ও সম্পাদনা করুন"
+                      aria-label={`${student.name} এর মন্তব্য`}
+                    >
+                      {remarkOf(student.id)
+                        ? remarkPreview(remarkOf(student.id))
+                        : <span className="text-slate-400 underline decoration-dotted underline-offset-2">মন্তব্য লিখুন</span>}
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -613,6 +645,17 @@ export default function SpreadsheetMarksGrid({
                   <span>· নতুন রোল {toBanglaNumber(newRollOf(student.id) ?? '—')}</span>
                 ) : null}
               </div>
+              <button
+                type="button"
+                onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                className="mt-1.5 w-full rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 transition hover:border-brand-300 hover:bg-brand-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                aria-label={`${student.name} এর মন্তব্য`}
+              >
+                <span className="text-slate-400">মন্তব্য: </span>
+                {remarkOf(student.id)
+                  ? remarkPreview(remarkOf(student.id))
+                  : <span className="text-slate-400">মন্তব্য লিখুন</span>}
+              </button>
             </div>
           );
         })}

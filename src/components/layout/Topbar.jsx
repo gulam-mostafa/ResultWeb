@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Bell, Calendar, Check, ChevronDown, Loader2, Menu, Plus, Search, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSchoolData } from '../../context/SchoolDataContext.jsx';
@@ -335,6 +335,9 @@ function AdminNotificationBell({ schoolId, user, pending, noticeCount }) {
 export default function Topbar({ onMenuClick, title, subtitle }) {
   const { user, role, canApproveTeachers } = useAuth();
   const { notices, schoolProfile, saveProfile } = useSchoolData();
+  const navigate = useNavigate();
+  /** Student search — Enter jumps to the roster with that query applied. */
+  const [search, setSearch] = useState('');
 
   const schoolId = user?.schoolId || '';
   const isSuperAdmin = role === ROLES.SUPER_ADMIN;
@@ -377,7 +380,16 @@ export default function Topbar({ onMenuClick, title, subtitle }) {
 
         <div className="hidden items-center gap-2 md:flex">
           <OfflineSyncBadge />
-          <div className="relative">
+          <form
+            className="relative"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const query = search.trim();
+              // The roster reads `?q=` — an empty query simply opens the roster.
+              navigate(query ? `/students?q=${encodeURIComponent(query)}` : '/students');
+            }}
+          >
             <Search
               size={14}
               className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
@@ -385,11 +397,13 @@ export default function Topbar({ onMenuClick, title, subtitle }) {
             />
             <input
               type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="শিক্ষার্থী খুঁজুন…"
               className="w-44 rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-2 text-xs text-slate-700 placeholder:text-slate-400 focus:border-brand-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/20 xl:w-56"
               aria-label="শিক্ষার্থী অনুসন্ধান"
             />
-          </div>
+          </form>
           <AcademicYearSelector
             schoolId={schoolId}
             activeYear={activeYear}

@@ -18,6 +18,7 @@ import {
   buildStudentMasterRecord,
   buildEnrollmentRecord,
   moveStudentClass,
+  moveStudentResultRows,
   toDbClassId,
   toSectionId,
   DEFAULT_SECTION_ID,
@@ -27,6 +28,7 @@ import {
   subscribeSectionRegistry,
   ensureSchoolYearBuckets,
 } from '../services/database/index.js';
+import { promoteSession, nextSessionYear } from '../services/database/sessionService.js';
 
 const nowISO = () => new Date().toISOString();
 const makeId = (prefix) =>
@@ -508,6 +510,12 @@ export function useStudents({
               section: toSectionId(effectivePatch.section ?? existing.section),
             },
           ));
+          // A class move inside the SAME year keeps the pupil's marks usable: their
+          // current-year result rows follow them into the target class, so the target's
+          // result view is never blank while the old class no longer lists them.
+          if (classMoved && nextClassId !== 'archive') {
+            runCloudSave(() => moveStudentResultRows(tenantRef, year, studentId, existing.classId, nextClassId));
+          }
         } else {
           runCloudSave(() => saveStudentPatch(tenantRef, year, studentId, effectivePatch, existing.classId, existing));
         }
@@ -1004,6 +1012,57 @@ export function useStudents({
     [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, markSynced],
   );
 
+  /* ---------------------------------------------------------------- *
+   * Year-scoped promotion (P0-3 / P0-7)
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Annual rollover: `sessions/{currentYear}` ➔ `sessions/{nextYear}`.
+   *
+   * Guarantees:
+   *  - the finished year (`students`, `results`, `attendance`, remarks) is NEVER edited —
+   *    it stays frozen history;
+   *  - every pupil keeps the same `studentMasterId`; the new year's roster starts with
+   *    EMPTY results (the new class's result begins at `০০`, no old GPA/grade stamp);
+   *  - `profile.activeYear` moves to the new year, so the whole UI re-partitions.
+   *
+   * @param {{year?:string, nextYear?:string, decisions?:Array<object>}} options
+   * @returns {Promise<{synced:boolean, year:string, nextYear:string, promoted:number,
+   *   graduated:number, retained:number, demoted:number, reason?:string}>}
+   */
+  const advanceAcademicYear = useCallback(
+    async ({ year: fromYear = year, nextYear = '', decisions = [] } = {}) => {
+      const sourceYear = normalizeSessionYear(fromYear, year);
+      const targetYear = normalizeSessionYear(nextYear, nextSessionYear(sourceYear));
+      const failed = { synced: false, year: sourceYear, nextYear: targetYear, promoted: 0, graduated: 0, retained: 0, demoted: 0 };
+      if (!schoolId || !sourceYear || !targetYear || targetYear === sourceYear) {
+        return { ...failed, reason: 'invalid-target-year' };
+      }
+      if (!canWriteCloud || !canWriteTenant) return { ...failed, reason: 'offline' };
+
+      // The source year is only READ here: `promoteSession` writes the destination year,
+      // the leavers' archive and the profile's active year.
+      const result = await runCloudSave(
+        () => promoteSession(schoolId, { year: sourceYear, nextYear: targetYear, decisions }),
+        { timeoutMs: PROMOTION_SAVE_TIMEOUT_MS },
+      );
+      if (result?.synced === false) {
+        return { ...failed, reason: result?.reason || (result?.timedOut ? 'timeout' : 'write-failed') };
+      }
+      markSynced?.();
+      return {
+        synced: true,
+        year: sourceYear,
+        nextYear: targetYear,
+        promoted: result?.promoted ?? 0,
+        graduated: result?.graduated ?? 0,
+        retained: result?.retained ?? 0,
+        demoted: result?.demoted ?? 0,
+      };
+    },
+    [schoolId, year, canWriteCloud, canWriteTenant, runCloudSave, markSynced],
+  );
+
   return {
     studentsByClass,
     sectionCounts,
@@ -1022,6 +1081,7 @@ export function useStudents({
     removeStudent,
     setStudentRoll,
     executePromotion,
+    advanceAcademicYear,
   };
 }
 

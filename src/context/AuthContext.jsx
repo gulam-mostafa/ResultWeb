@@ -19,6 +19,24 @@ const AuthContext = createContext(null);
 export const DEFAULT_ACTIVE_YEAR = '2026';
 
 /**
+ * Demo/bypass tools are OFF unless the environment explicitly opts in.
+ *
+ * Enable with either `VITE_ENABLE_DEMO_LOGIN=true` (build env) or a `?demo=1` query
+ * flag. Nothing in the production UI can therefore open a bypass admin session by
+ * accident, and every demo entry point shows a Bangla confirmation first.
+ */
+export function isDemoLoginEnabled() {
+  const envFlag = String(import.meta.env?.VITE_ENABLE_DEMO_LOGIN ?? '').toLowerCase();
+  if (envFlag === '1' || envFlag === 'true') return true;
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get('demo') === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The seeded demo tenant, re-exported so every consumer (Demo / Bypass login,
  * demo-student seeding, hooks) shares ONE quadruple:
  * `{ divisionId: 'dhaka', districtId: 'gazipur', upazilaId: 'gazipur-sadar', schoolId: 'demo-school-01' }`.
@@ -210,8 +228,19 @@ export function AuthProvider({ children }) {
     return resolved;
   }, []);
 
-  // 1-Click Bypass Admin Login
+  // 1-Click Bypass Admin Login — STRICTLY a demo tool.
+  //
+  // It is gated behind an explicit `?demo=1` flag (or `VITE_ENABLE_DEMO_LOGIN=true`),
+  // asks for a Bangla confirmation, and never becomes a silent way into a real school's
+  // workspace. Without the flag it refuses with a Bangla message.
   const bypassLogin = useCallback((school = null, location = {}) => {
+    if (!isDemoLoginEnabled()) {
+      return { ok: false, message: 'বাইপাস প্রবেশ এই পরিবেশে বন্ধ আছে। নির্দিষ্ট বিদ্যালয়ের অনুমোদিত অ্যাকাউন্টে লগইন করুন।' };
+    }
+    const confirmed = typeof window === 'undefined'
+      ? true
+      : window.confirm('ডেমো (বাইপাস) অ্যাডমিন হিসেবে প্রবেশ করবেন? এটি শুধু পরীক্ষার জন্য — আসল বিদ্যালয়ের ডেটা পরিবর্তন করতে পারেন।');
+    if (!confirmed) return { ok: false, message: 'বাইপাস প্রবেশ বাতিল করা হয়েছে।' };
     setError(null);
     const schoolName = school?.name || DEMO_SCHOOL_NAME;
     const uid = 'bypass-founder-admin';
@@ -246,19 +275,25 @@ export function AuthProvider({ children }) {
     try {
       const member = await readMember(school.id, uid);
       const profile = await readSchoolProfile(school.id);
-      const memberData = member || {
-        uid,
-        name: identity || email || 'শিক্ষক',
-        designation: 'সহকারী শিক্ষক',
-        status: MEMBER_STATUS.APPROVED,
-        isFounder: false,
-        canApprove: false,
-      };
+      // NO auto-approve fallback: a Firebase account that is not a member of THIS school
+      // must be told so. Inventing an approved row here used to grant full mark-entry
+      // rights to any signed-in stranger.
+      if (!member || member.isDeleted === true) {
+        setStatus('error');
+        return {
+          ok: false,
+          message: 'এই বিদ্যালয়ে আপনার শিক্ষক অ্যাকাউন্ট পাওয়া যায়নি। প্রতিষ্ঠাতা অ্যাডমিনের কাছে অনুমোদনের আবেদন করুন।',
+        };
+      }
+      if (member.status === MEMBER_STATUS.REJECTED) {
+        setStatus('error');
+        return { ok: false, message: 'আপনার আবেদন বাতিল করা হয়েছে — প্রতিষ্ঠানের সঙ্গে যোগাযোগ করুন।' };
+      }
       const next = createSession(ROLES.SCHOOL_ADMIN, {
-        ...memberData,
+        ...member,
         uid,
         id: uid,
-        email: email || '',
+        email: email || member.email || '',
         role: ROLES.SCHOOL_ADMIN,
         schoolId: school.id,
         schoolName: profile?.name || school.name || '',
@@ -273,7 +308,7 @@ export function AuthProvider({ children }) {
       return {
         ok: true,
         session: stamped,
-        redirectTo: memberData.status === MEMBER_STATUS.APPROVED ? '/dashboard' : '/pending-approval',
+        redirectTo: member.status === MEMBER_STATUS.APPROVED ? '/dashboard' : '/pending-approval',
       };
     } catch {
       setStatus('error');

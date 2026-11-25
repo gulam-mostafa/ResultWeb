@@ -11,6 +11,7 @@ import {
   normalizeResultConfig,
   normalizeWeights,
   normalizedWeightPercent,
+  round2,
   totalFullMarks,
   weightsAreClean,
 } from '../../utils/resultConfig.js';
@@ -76,12 +77,19 @@ export default function ResultConfigModal({ open, onClose, classId, config, onSa
 
   const submit = async () => {
     if (!canEdit) return;
+    // Weights must sum to EXACTLY 100%. An invalid sum is rejected in Bangla instead of
+    // being silently re-normalised (the annual figure must be predictable for the school).
+    if (!weightsAreClean(draft.weights)) {
+      const total = round2(draft.weights.term1 + draft.weights.term2 + draft.weights.annual);
+      setNotice(`ওজনের যোগফল ${toBanglaNumber(total)}% — তিন প্রান্তিকের ওজনের যোগফল অবশ্যই ১০০% হতে হবে। সংরক্ষণ করা হয়নি।`);
+      return;
+    }
     setBusy(true);
     setNotice('');
     const result = await onSave?.(classId, draft);
     setBusy(false);
     if (result?.synced === false) {
-      setNotice('সেটিংস লোকালি সংরক্ষিত হয়েছে, কিন্তু ক্লাউডে যেতে ব্যর্থ — ইন্টারনেট সংযোগ দেখুন।');
+      setNotice('সেটিংস এই ব্রাউজারে রাখা হয়েছে, কিন্তু ক্লাউডে সংরক্ষণ ব্যর্থ — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।');
       return;
     }
     setNotice('শ্রেণির রেজাল্ট সেটিংস সংরক্ষিত হয়েছে।');
@@ -147,7 +155,7 @@ export default function ResultConfigModal({ open, onClose, classId, config, onSa
         <p className="mt-2 text-[11px] text-slate-500">
           {clean
             ? 'ওজনের যোগফল ১০০% — সরাসরি ব্যবহৃত হবে।'
-            : 'যোগফল ১০০% নয়, তাই স্বয়ংক্রিয়ভাবে অনুপাত ঠিক করে (নরমালাইজ) হিসাব হবে।'}
+            : 'যোগফল ১০০% নয় — সংরক্ষণ করা হবে না। ১ম + ২য় + বার্ষিক = ১০০% করুন (ডিফল্ট ১৫ + ১৫ + ৭০)।'}
         </p>
       </div>
 

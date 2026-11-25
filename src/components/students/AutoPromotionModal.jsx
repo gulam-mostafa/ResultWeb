@@ -138,6 +138,13 @@ export default function AutoPromotionModal({
   getClassRankMap,
   getSectionsOfClass,
   onExecute,
+  /**
+   * Year-scoped promotion (P0-3). When supplied, the modal confirms the batch with the
+   * "নতুন শিক্ষাবর্ষ শুরু করবেন?" wording and the handler advances the academic year.
+   */
+  currentYear = '',
+  nextYear = '',
+  onAdvanceYear = null,
   // Optional read-only context for the two drill-down popups (result + profile).
   // Without it the popups still open, they just show the marks-free view.
   allStudents = [],
@@ -145,6 +152,7 @@ export default function AutoPromotionModal({
   getTermResult,
   getClassAnalytics,
   getResultConfig,
+  getRemark,
 }) {
   const [classId, setClassId] = useState('c5');
   const [overrides, setOverrides] = useState({});     // {studentId: 'promote' | 'retain'}
@@ -232,14 +240,17 @@ export default function AutoPromotionModal({
 
   /**
    * Default status. Requirement: pass ➔ `উত্তীর্ণ`, fail ➔ `এই ক্লাসেই থাকুক`.
-   * A pupil whose marks were never entered has no failure to show, so they default
-   * to `উত্তীর্ণ` (the teacher can still switch any row to `এই ক্লাসেই থাকুক`).
+   *
+   * A pupil with NO annual marks is never auto-promoted: the pass decision must come
+   * from the consolidated annual result (`isPass`), so a missing marking sheet keeps the
+   * pupil in the same class until the teacher explicitly chooses `উত্তীর্ণ` for that row.
    */
   const statusOf = useCallback((student) => {
     const decided = overrides[student.id];
     if (decided) return decided;
     const row = rowById.get(student.id);
-    return row?.hasAnyMark && row?.result?.isPass === false ? STATUS_FAIL : STATUS_PASS;
+    if (!row?.hasAnyMark) return STATUS_FAIL;
+    return row.result?.isPass === false ? STATUS_FAIL : STATUS_PASS;
   }, [overrides, rowById]);
 
   /**
@@ -331,6 +342,17 @@ export default function AutoPromotionModal({
   const failedCount = ranked.length - passedCount;
   /** Rows whose শাখা was picked by hand (overriding the bulk distribution). */
   const manualCount = Object.keys(sectionOverrides).length;
+  /** `true` once the teacher confirmed the batch dialog — never skipped. */
+  const [confirmed, setConfirmed] = useState(false);
+  const [running, setRunning] = useState(false);
+  /** A year advance is only offered when the caller supplies both years + the handler. */
+  const canAdvanceYear = Boolean(onAdvanceYear && currentYear && nextYear);
+
+  /**
+   * How many pupils of the batch carry NO annual marks. They are never auto-promoted
+   * silently: the confirmation dialog names them so the teacher decides explicitly.
+   */
+  const noMarksCount = ranked.filter((row) => !row.hasAnyMark).length;
 
   /* ------------------------------------------------------------------ *
    * Origin + promotion-month views (display only).
@@ -375,8 +397,42 @@ export default function AutoPromotionModal({
     return sortPromotionRows(filtered, sortOrder);
   }, [ranked, originById, monthFilter, sortOrder]);
 
-  const execute = () => {
-    if (!ranked.length) return;
+  /**
+   * Asks for ONE explicit Bangla batch confirmation before ANY promotion write.
+   * The counts shown are exactly what will be written: উত্তীর্ণ / একই শ্রেণিতে থাকবে /
+   * আর্কাইভ.
+   */
+  const requestExecute = () => {
+    if (!ranked.length || running) return;
+    setConfirmed(true);
+  };
+
+  const confirmExecute = () => {
+    if (!ranked.length || running) return;
+    setRunning(true);
+    // A year advance goes through the dedicated handler (it writes the NEW year only and
+    // freezes the finished year); otherwise the in-year promotion writer is used.
+    if (canAdvanceYear) {
+      onAdvanceYear({
+        year: currentYear,
+        nextYear,
+        decisions: ranked.map((row) => ({
+          studentId: row.student.id,
+          studentMasterId: row.student.studentMasterId || row.student.id,
+          action: statusOf(row.student),
+          section: sectionOf(row.student),
+        })),
+        fromClassId: classId,
+        sections,
+        passedCount,
+        retainedCount: failedCount,
+        archivedCount: isGraduating ? passedCount : 0,
+      });
+      setRunning(false);
+      setConfirmed(false);
+      onClose?.();
+      return;
+    }
     // The decision list is already in merit order, so the new rolls follow it.
     onExecute?.(
       ranked.map((row) => ({
@@ -393,6 +449,8 @@ export default function AutoPromotionModal({
         }, {}),
       },
     );
+    setRunning(false);
+    setConfirmed(false);
     onClose();
   };
 
@@ -484,8 +542,64 @@ export default function AutoPromotionModal({
 
       <div className="flex justify-end gap-2">
         <button className="btn-secondary" onClick={onClose}>বাতিল</button>
-        <button className="btn-primary" onClick={execute} disabled={!ranked.length}><ArrowUpRight size={15}/> উত্তরণ কার্যকর ({toBanglaNumber(ranked.length)} জন)</button>
+        <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running}><ArrowUpRight size={15}/> উত্তরণ কার্যকর ({toBanglaNumber(ranked.length)} জন)</button>
       </div>
+
+      {/* একক ব্যাচ নিশ্চিতকরণ — কোনো লেখার আগে একটি বাংলা ডায়ালগ। */}
+      {confirmed ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="বার্ষিক উত্তরণ নিশ্চিতকরণ"
+          className="rounded-xl border-2 border-brand-500 bg-brand-50 p-4 text-sm dark:border-brand-400 dark:bg-brand-900/30"
+        >
+          <p className="text-base font-extrabold text-brand-900 dark:text-brand-100">
+            {canAdvanceYear ? 'নতুন শিক্ষাবর্ষ শুরু করবেন?' : 'বার্ষিক শ্রেণি উত্তরণ নিশ্চিত করুন'}
+          </p>
+          <div className="mt-2 space-y-1.5 text-[12px] font-semibold leading-relaxed text-brand-900 dark:text-brand-100">
+            {canAdvanceYear ? (
+              <>
+                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                  {toBanglaNumber(currentYear)} শিক্ষাবর্ষ শেষ করে {toBanglaNumber(nextYear)} শিক্ষাবর্ষ শুরু হবে।
+                </p>
+                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                  উত্তীর্ণ: <b>{toBanglaNumber(passedCount)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(failedCount)}</b> জন
+                  {' · '}আর্কাইভ: <b>{toBanglaNumber(isGraduating ? passedCount : 0)}</b> জন
+                </p>
+                <p className="text-[11px] font-normal">
+                  নতুন ক্লাসের রেজাল্ট <b>০০</b> থেকে শুরু হবে। গত বছরের রেজাল্ট ও মন্তব্য ইতিহাসে থাকবে, মুছে যাবে না।
+                </p>
+                {noMarksCount > 0 ? (
+                  <p className="text-[11px] font-bold text-amber-800 dark:text-amber-200">
+                    নম্বর ছাড়া {toBanglaNumber(noMarksCount)} জন আছেন — তাঁরা ডিফল্টভাবে <b>একই শ্রেণিতে</b> থাকছেন; উত্তীর্ণ করতে চাইলে ওই সারির সিদ্ধান্ত নিজে বদলান।
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                  <b>{getClassName(classId)}</b> শ্রেণির {toBanglaNumber(ranked.length)} জন শিক্ষার্থীর সিদ্ধান্ত এখন সংরক্ষিত হবে।
+                </p>
+                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                  উত্তীর্ণ: <b>{toBanglaNumber(passedCount)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(failedCount)}</b> জন
+                  {isGraduating ? <> · আর্কাইভ: <b>{toBanglaNumber(passedCount)}</b> জন</> : null}
+                </p>
+                <p className="text-[11px] font-normal">
+                  নতুন শ্রেণিতে রোল মেধাক্রম অনুযায়ী আবার শুরু হবে; আগের ফলাফল ইতিহাসে অপরিবর্তিত থাকবে।
+                </p>
+              </>
+            )}
+          </div>
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            <button type="button" className="btn-secondary btn-sm" onClick={() => setConfirmed(false)}>
+              না, বাতিল করুন
+            </button>
+            <button type="button" className="btn-primary btn-sm" onClick={confirmExecute} disabled={running}>
+              <ArrowUpRight size={14} /> {canAdvanceYear ? 'হ্যাঁ, শুরু করুন' : 'হ্যাঁ, উত্তরণ করুন'}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
     </Modal>
     {/* Drill-down popups — inspection only, the promotion state underneath is untouched. */}
@@ -513,6 +627,7 @@ export default function AutoPromotionModal({
       getTermResult={getTermResult}
       getClassAnalytics={getClassAnalytics}
       getResultConfig={getResultConfig}
+      getRemark={getRemark}
     />
   </>;
 }

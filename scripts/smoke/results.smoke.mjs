@@ -158,17 +158,49 @@ assert.equal(emptyResult.hasAnyMark, false);
 assert.equal(emptyResult.grade, '—');
 assert.equal(emptyResult.gpa, null);
 
-// The consolidated view does NOT punish an un-evaluated term: only subjects that have at
-// least one entered term are counted, and the percentage is scaled by the weighting that
-// has actually been entered, so a mid-year year-end figure stays fair.
+// The consolidated view does NOT re-normalise: a missing term contributes 0, so the
+// weighted percentage is reported as-is (requirement: "Treat missing terms as 0 without
+// silent re-normalization") and the UI shows "সব প্রান্তিকের নম্বর দেওয়া হয়নি".
 const midYear = computeConsolidatedResult({ bangla: { term1: 90 }, math: { term1: 80 } }, c1);
 const banglaMid = midYear.subjects.find((subject) => subject.id === 'bangla');
 assert.equal(banglaMid.percent, 13.5, '৯০ × ১৫% = ১৩.৫ when only the ১st term exists');
-assert.equal(banglaMid.scoredPercent, 90, 'the subject is graded on its own available weight');
-assert.equal(midYear.totalFullMarks, 30, 'only the ১৫% that has been entered is counted');
-assert.equal(midYear.percentage, 85, 'মোট শতকরা ৮৫% (৯০ ও ৮০ এর গড়)');
-assert.equal(midYear.isPass, true, 'an un-evaluated subject does not fail the annual result');
+assert.equal(banglaMid.scoredPercent, 13.5, 'no silent re-normalisation — the weighted percent IS the score');
+assert.equal(banglaMid.mark, 13.5, 'the subject total is the weighted figure');
+assert.equal(midYear.percentage, 12.75, 'মোট শতকরা = weighted average of the entered terms only');
 assert.equal(midYear.evaluatedWeight, 15);
+assert.equal(midYear.isComplete, false, 'two terms are still missing');
+assert.deepEqual(midYear.missingTerms, ['term2', 'annual'], 'the missing terms are named');
+
+// A FULL year scores ১০০ in every term? Not necessarily — but ১০০ in each term at
+// ১৫/১৫/৭০ must add up to exactly ১০০ (no more, no less).
+const perfectYear = {};
+['bangla', 'math', 'english', 'integrated'].forEach((id) => {
+  perfectYear[`${id}:formative`] = { term1: 30, term2: 30, annual: 30 };
+  perfectYear[`${id}:summative`] = { term1: 70, term2: 70, annual: 70 };
+  perfectYear[id] = { term1: 100, term2: 100, annual: 100 };
+});
+const perfect = computeConsolidatedResult(perfectYear, c1);
+assert.equal(perfect.subjects[0].percent, 100, '১০০ + ১০০ + ১০০ at ১৫% + ১৫% + ৭০% = ১০০');
+assert.equal(perfect.isComplete, true);
+
+/* ------------------------------------------------------------------ *
+ * 2b. P0-2 — one typed mark is NEVER doubled
+ * ------------------------------------------------------------------ */
+import { buildSubjectMark, normalizeSubjectMark } from '../../src/services/database/resultService.js';
+
+// A single ৩০ stays ৩০ (the old bug stored formative=30 + summative=30 ⇒ ৬০).
+assert.deepEqual(
+  normalizeSubjectMark({ total: 30 }),
+  { formative: null, summative: null, total: 30 },
+  'a stored single mark keeps its own total and no components',
+);
+// A legacy `{formative: v, summative: v}` row (written before `total`) is ONE mark, not 2v.
+assert.equal(normalizeSubjectMark({ formative: 30, summative: 30 }).total, 30, 'legacy duplicate components count once');
+// A real component pair IS summed.
+assert.equal(normalizeSubjectMark({ formative: 30, summative: 70 }).total, 100, 'a real ৩০ + ৭০ pair sums');
+assert.deepEqual(buildSubjectMark(25, 45), { formative: 25, summative: 45, total: 70 });
+// An explicit stored total always wins over the components.
+assert.equal(normalizeSubjectMark({ formative: 10, summative: 10, total: 55 }).total, 55, 'explicit total wins');
 
 /* ------------------------------------------------------------------ *
  * 3. Consolidated বার্ষিক ফলাফল weighting
@@ -207,6 +239,16 @@ assert.deepEqual(ranked.map((row) => row.newRoll), [1, 2, 3, 4, 5],
 const termRanked = rankClassRows(rows);
 assert.ok(termRanked.every((row) => row.newRoll === null),
   'a per-term tab shows মেধাক্রম only — no নতুন রোল');
+
+// Shared tie positions (1, 1, 3) — the SAME rule `gradingCalculator.computeMeritRanking`
+// applies, so a modal and a printed marksheet never disagree about a pupil's মেধাক্রম.
+const tied = rankClassRows([
+  { student: { id: 't1', name: 'ক', roll: 1 }, studentId: 't1', result: { totalMarks: 400, gpa: 4, hasAnyMark: true, isPass: true } },
+  { student: { id: 't2', name: 'খ', roll: 2 }, studentId: 't2', result: { totalMarks: 400, gpa: 4, hasAnyMark: true, isPass: true } },
+  { student: { id: 't3', name: 'গ', roll: 3 }, studentId: 't3', result: { totalMarks: 300, gpa: 3, hasAnyMark: true, isPass: true } },
+], { assignNewRoll: true });
+assert.deepEqual(tied.map((row) => row.position), [1, 1, 3], 'a tie shares the merit position (1, 1, 3)');
+assert.deepEqual(tied.map((row) => row.newRoll), [1, 2, 3], 'নতুন রোল stays unique even on a tie');
 
 /* ------------------------------------------------------------------ *
  * 5. Excel round-trip + strict validation
@@ -304,6 +346,62 @@ assert.equal(defaultResultConfig('c3').passMark, 33, 'school A still resolves th
 console.log('PASS — config isolation per school/year/class');
 
 console.log('PASS — results engine (subjects, split, pass/fail, golden, weights, ranking) + Excel validation');
+
+/* ------------------------------------------------------------------ *
+ * P0-1 — বার্ষিক মূল্যায়ন persistence: `final` in RTDB → `annual` for the UI
+ * ------------------------------------------------------------------ */
+{
+  const { subscribeResults, readSessionResults } = await import('../../src/services/database/resultService.js');
+  const schoolRef = { divisionId: 'd1', districtId: 'd2', upazilaId: 'u3', schoolId: 'annual-school' };
+  rememberSchoolLocation(schoolRef);
+
+  // A teacher saved weighted marks under the STORED key `final`.
+  await saveClassResultConfig(schoolRef, '2026', 'c1', c1);
+  const { saveMark } = await import('../../src/services/database/resultService.js');
+  await saveMark(schoolRef, 'annual', 'c1', 'STU-2026-001', 'bangla', 30, '2026', 'formative');
+  await saveMark(schoolRef, 'annual', 'c1', 'STU-2026-001', 'bangla', 70, '2026', 'summative');
+
+  const flattened = await readSessionResults(schoolRef, '2026');
+  assert.equal(flattened.marks['STU-2026-001'].bangla.annual, 100, 'the stored `final` row is read as `annual`');
+  assert.equal(flattened.marks['STU-2026-001']['bangla:formative'].annual, 30, 'components keep their term id');
+  assert.equal(flattened.rows['STU-2026-001'].annual?.grandTotal, 100, 'the row is keyed by the app term id');
+
+  // The live subscription must emit the very same shape. `safeSubscribe` paints from
+  // cache synchronously, so the unsubscribe handle is captured through a holder.
+  await new Promise((resolve) => {
+    let stop = null;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try { stop?.(); } catch { /* noop */ }
+      resolve();
+    };
+    stop = subscribeResults(schoolRef, (payload) => {
+      if (settled) return;
+      const value = payload?.marks?.['STU-2026-001']?.bangla?.annual;
+      if (!value) return;
+      assert.equal(value, 100, 'subscribeResults maps final ➔ annual');
+      finish();
+    }, undefined, '2026');
+    setTimeout(finish, 400);
+  });
+
+  // A stored single mark stays single (no doubling anywhere on the round trip).
+  await saveMark(schoolRef, 'annual', 'c1', 'STU-2026-002', 'math', 42, '2026', 'total');
+  const single = await readSessionResults(schoolRef, '2026');
+  assert.equal(single.marks['STU-2026-002'].math.annual, 42, 'a single ৪২ stays ৪২');
+
+  /* P0-7 — a class move inside the SAME year carries the result rows across. */
+  const { moveStudentResultRows } = await import('../../src/services/database/resultService.js');
+  const moved = await moveStudentResultRows(schoolRef, '2026', 'STU-2026-001', 'c1', 'c2');
+  assert.equal(moved.moved, 1, 'only the term row that actually holds marks moves');
+  const afterMove = await readSessionResults(schoolRef, '2026');
+  assert.equal(afterMove.marks['STU-2026-001'].bangla.annual, 100, 'the marks now resolve from the target class');
+  assert.equal(afterMove.rows['STU-2026-001'].annual?.classId, 'c2', 'the row is addressed by the target class');
+
+  console.log('PASS — annual (`final`) persistence maps to `annual` and single marks never double');
+}
 
 /* ------------------------------------------------------------------ *
  * 7. Rendered grid: highlights, golden badge, sort control, per-term columns
@@ -469,5 +567,25 @@ assert.ok(!preHtml.includes('গাঠনিক মূল্যায়ন'), '
 assert.ok(preHtml.includes('সংরক্ষণ হচ্ছে'), 'the grid surfaces a saving indicator');
 assert.ok(preHtml.includes('value="88"'), 'an entered mark is rendered in its cell');
 
+/* ------------------------------------------------------------------ *
+ * 13. Per-row মন্তব্য column (P0-5)
+ * ------------------------------------------------------------------ */
+const remarkHtml = renderToStaticMarkup(React.createElement(SpreadsheetMarksGrid, {
+  students: [{ id: 'r1', name: 'রুমি', roll: 1 }, { id: 'r2', name: 'সজীব', roll: 2 }],
+  marks: {},
+  config: c1,
+  tabId: 'term1',
+  getResult: () => computeTermResultForConfig({}, c1, 'term1'),
+  onEntry: () => {},
+  canEdit: true,
+  onShowRemark: () => {},
+  onSortModeChange: () => {},
+  // Only the first pupil has a saved remark for THIS term.
+  getRemark: (studentId) => (studentId === 'r1' ? 'নিয়মিত অনুশীলন চালিয়ে যাবে।' : ''),
+}));
+assert.ok(remarkHtml.includes('মন্তব্য'), 'every row ends with a মন্তব্য column');
+assert.ok(remarkHtml.includes('নিয়মিত অনুশীলন'), 'a saved remark is previewed in the row');
+assert.ok(remarkHtml.includes('মন্তব্য লিখুন'), 'an empty remark shows the write prompt');
+assert.ok(remarkHtml.includes('এর মন্তব্য'), 'the comment cell is a clickable button');
 
 console.log('PASS — rendered grid (highlights, golden badge, sort control, per-term columns)');

@@ -1,4 +1,6 @@
-﻿import { cleanForCloud, safeRead, safeSubscribe, safeUpdate } from './dbFallback.js';
+﻿import { ref, runTransaction } from 'firebase/database';
+import { db } from '../../firebase/firebaseConfig.js';
+import { cleanForCloud, safeRead, safeSubscribe, safeUpdate } from './dbFallback.js';
 import { DEFAULT_SECTION_ID, dbPaths, normalizeSessionYear, sectionSegment } from './dbPaths.js';
 import { resolveClassKey } from '../../utils/constants.js';
 import { ensureSchoolYear } from './centralSchoolStore.js';
@@ -176,10 +178,36 @@ export function findStudentMasterId(masters, reference) {
   return match ? match[0] : '';
 }
 
-/** Mints the next unique `studentMasterId` for a year (reads the master index). */
+/**
+ * Mints the next unique `studentMasterId` for a year.
+ *
+ * Uses an RTDB `runTransaction` on the year's counter node so two teachers admitting a
+ * pupil at the same moment can never receive the same id (a plain read-then-write raced
+ * and produced duplicates). The transaction only bumps a number; a failure degrades to a
+ * cache-aware local scan so an offline admission still gets a usable id.
+ *
+ * @returns {Promise<string>} e.g. `STU-2026-007`
+ */
 export async function generateStudentMasterId(schoolId, year) {
   const yearKey = normalizeSessionYear(year, String(new Date().getFullYear()));
+  const counterPath = dbPaths.studentMasterCounter(schoolId, yearKey);
   const masters = asRecord(await safeRead(dbPaths.studentMaster(schoolId), {}));
+  // A pre-existing roster (or a reseeded counter) must never be shadowed by the counter.
+  const highest = nextMasterSequence(masters, yearKey) - 1;
+  try {
+    const outcome = await runTransaction(ref(db, counterPath), (current) => {
+      const value = Math.max(Number(current) || 0, highest);
+      return value + 1;
+    });
+    const sequence = Number(outcome?.snapshot?.val?.()) || 0;
+    if (outcome?.committed && sequence > 0) {
+      const candidate = formatStudentMasterId(yearKey, sequence);
+      // The transaction guarantees a monotonic sequence; the scan is the last guard.
+      if (!masters[candidate]) return candidate;
+    }
+  } catch {
+    /* offline / rules blocked — fall back to the cache-aware scan below */
+  }
   return formatStudentMasterId(yearKey, nextMasterSequence(masters, yearKey));
 }
 

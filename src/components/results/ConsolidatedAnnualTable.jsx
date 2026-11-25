@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { ArrowDownUp, Crown, Info, ListOrdered } from 'lucide-react';
+import { AlertTriangle, ArrowDownUp, Crown, Info, ListOrdered } from 'lucide-react';
 import { toBanglaNumber, formatBanglaDecimal } from '../../utils/banglaNumberFormatter.js';
 import { TERMS } from '../../utils/constants.js';
 
@@ -32,22 +32,29 @@ const percentCell = (value) => (value === null || value === undefined ? '—' : 
 const termLabel = (term) => (term.id === 'annual' ? 'বার্ষিক মূল্যায়ন' : `${term.shortName} প্রান্তিক`);
 
 /**
- * Term total + percentage of one consolidated result.
- * Built from each subject's weighted `contributions`, so the figures shown here are
- * exactly the ones that produced the final GPA.
+ * Weighted percentage contribution of each term of ONE consolidated result.
+ *
+ * No individual subject column is shown; instead every term reports the percentage it
+ * contributed to the final figure. Scoring ১০০ in each term at ১৫% / ১৫% / ৭০% therefore
+ * yields `১৫ + ১৫ + ৭০ = ১০০`.
  */
 export function termCellsOf(result) {
   return TERMS.map((term) => {
     const contributions = (result?.subjects ?? [])
       .map((subject) => (subject.contributions ?? []).find((item) => item.termId === term.id))
-      .filter(Boolean)
-      .filter((item) => Number(item.mark) > 0 || Number(item.percent) > 0);
-    if (!contributions.length) return null;
-    const average = contributions.reduce((sum, item) => sum + Number(item.percent || 0), 0) / contributions.length;
+      .filter(Boolean);
+    const scored = contributions.filter((item) => item.hasMark === true);
+    if (!scored.length) return null;
+    // Average subject percentage of THIS term × the term's own weight.
+    const average = scored.reduce((sum, item) => sum + Number(item.percent || 0), 0) / scored.length;
+    const weight = Number(scored[0].weight ?? 0);
     return {
       id: term.id,
+      // `weighted` is the number that actually entered the final total.
+      weighted: Math.round(((average * weight) / 100 + Number.EPSILON) * 100) / 100,
       percent: Math.round((average + Number.EPSILON) * 100) / 100,
-      mark: contributions.reduce((sum, item) => sum + (Number(item.mark) || 0), 0),
+      weight,
+      mark: scored.reduce((sum, item) => sum + (Number(item.mark) || 0), 0),
     };
   });
 }
@@ -72,6 +79,12 @@ export default function ConsolidatedAnnualTable({
       (Number(a.student?.roll) || Number.MAX_SAFE_INTEGER) - (Number(b.student?.roll) || Number.MAX_SAFE_INTEGER)
     ));
   }, [rows, sortMode]);
+
+  /** Pupils whose three terms are not all entered — the Bangla warning names the gap. */
+  const incompleteCount = useMemo(
+    () => visibleRows.filter((row) => row?.result?.hasAnyMark && row?.result?.isComplete === false).length,
+    [visibleRows],
+  );
 
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700">
@@ -100,6 +113,13 @@ export default function ConsolidatedAnnualTable({
           </label>
         ) : null}
       </div>
+
+      {incompleteCount > 0 ? (
+        <p role="status" className="border-b border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900 dark:border-amber-900/40 dark:bg-amber-900/30 dark:text-amber-100">
+          <AlertTriangle size={12} className="mr-1 inline" aria-hidden="true" />
+          {toBanglaNumber(incompleteCount)} জন শিক্ষার্থীর <b>সব প্রান্তিকের নম্বর দেওয়া হয়নি</b> — অনুপস্থিত প্রান্তিক ০ হিসেবে গণনা করা হয়েছে।
+        </p>
+      ) : null}
 
       <div className="hidden overflow-auto md:block">
         <table className="table-base min-w-[900px]">
@@ -149,7 +169,7 @@ export default function ConsolidatedAnnualTable({
                     <td key={TERMS[index].id} className="text-center">
                       {cell ? (
                         <>
-                          <span className="font-semibold">{toBanglaNumber(cell.mark)}</span>
+                          <span className="font-semibold">{toBanglaNumber(cell.weighted)}%</span>
                           <span className="block text-[10px] text-slate-400">{percentCell(cell.percent)}</span>
                         </>
                       ) : '—'}
@@ -222,7 +242,7 @@ export default function ConsolidatedAnnualTable({
                         ({toBanglaNumber(weights?.[TERMS[index].id] ?? 0)}%)
                       </span>
                     </span>
-                    <span>{cell ? `${toBanglaNumber(cell.mark)} · ${percentCell(cell.percent)}` : '—'}</span>
+                    <span>{cell ? `${toBanglaNumber(cell.weighted)}% · ${percentCell(cell.percent)}` : '—'}</span>
                   </p>
                 ))}
                 <p className="flex items-center justify-between border-t border-slate-100 pt-1 dark:border-slate-800">
