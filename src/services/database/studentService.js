@@ -820,19 +820,8 @@ function writeImportRow(row, { reference, schoolId, yearKey, force, masters, sta
       year: yearKey,
       updatedAt: nowISO(),
     });
-    const legacyId = String(existing.legacyId || existing.id || masterId);
-    state.patch[dbPaths.student(schoolId, legacyId)] = cleanForCloud({
-      ...existing,
-      ...personal,
-      id: legacyId,
-      legacyId,
-      studentMasterId: masterId,
-      classId,
-      section,
-      roll,
-      status: 'active',
-      updatedAt: nowISO(),
-    });
+    // WRITE TRUTH: no legacy flat mirror — the hierarchical enrollment above is
+    // the whole write; old flat rows stay readable via the read fallback.
     state.updated += 1;
     return;
   }
@@ -854,14 +843,7 @@ function writeImportRow(row, { reference, schoolId, yearKey, force, masters, sta
   });
   state.patch[dbPaths.studentMasterEntry(reference, newMasterId)] = master;
   state.patch[dbPaths.yearSectionStudent(reference, yearKey, classId, section, newMasterId)] = enrollment;
-  state.patch[dbPaths.student(schoolId, newMasterId)] = cleanForCloud({
-    ...record,
-    ...master,
-    ...enrollment,
-    id: newMasterId,
-    legacyId: newMasterId,
-    studentMasterId: newMasterId,
-  });
+  // WRITE TRUTH: no legacy flat mirror — identity + hierarchical enrollment only.
   // A later row of the same file must never receive this id again.
   masters[newMasterId] = master;
   state.created += 1;
@@ -876,8 +858,9 @@ function writeImportRow(row, { reference, schoolId, yearKey, force, masters, sta
  * studentMaster/{studentMasterId}                       ← identity (new + changed fields)
  * sessions/{year}/students/{classId}/{section}/{id}     ← enrollment (roll / শাখা / class)
  * sessions/{year}/meta/sections/{classId}/{section}     ← declared শাখা registry
- * schoolData/{schoolId}/students/{legacyId}             ← legacy flat mirror
  * ```
+ * (No legacy `schoolData/{schoolId}/students` mirror is written — WRITE TRUTH,
+ * see dbPaths.js. Old flat rows stay readable via the read fallback.)
  *
  * Rules (they mirror `buildImportPlan`, which the preview shows):
  *  - a row scoring ≥80 against a stored pupil keeps the DATABASE roll and only updates
@@ -955,11 +938,11 @@ export async function importStudentsCloud(reference, year, plan = {}, { force = 
 
 /**
  * New admission: mints a permanent `studentMasterId`, writes the identity node and
- * this year's enrollment row in one atomic multi-path update, and mirrors the pupil
- * into the legacy flat roster in the SAME update.
+ * this year's enrollment row in one atomic multi-path update — hierarchical tree
+ * only, no legacy flat mirror (see WRITE TRUTH in dbPaths.js).
  *
- * All three leaves live under the tenant root but under different parents
- * (`studentMaster/…`, `sessions/{year}/students/…`, `schoolData/{schoolId}/students/…`),
+ * Both leaves live under the tenant root but under different parents
+ * (`studentMaster/…`, `sessions/{year}/students/…`),
  * so a root-relative `update()` is what makes them one indivisible write: a reader can
  * never see the pupil in the year roster without the identity row (or vice versa),
  * and an offline failure is queued as ONE unit instead of half an admission.
@@ -985,22 +968,14 @@ export async function addStudentCloud(schoolId, student, year = '') {
   await ensureSchoolYear(schoolId, yearKey);
 
   const legacyId = enrollment.legacyId || record.id || studentMasterId;
-  const workspace = dbPaths.workspace(schoolId);
-  const mirrorPath = classId === 'archive'
-    ? dbPaths.archivedStudent(schoolId, legacyId)
-    : dbPaths.student(schoolId, legacyId);
 
+  // WRITE TRUTH: identity + year enrollment only, on the hierarchical tree.
+  // No legacy `schoolData/{schoolId}/students` mirror is written any more —
+  // the year subscription reads the hierarchical node, and old flat rows stay
+  // readable through the legacy read fallback (they are never deleted).
   const primary = await safeMultiPathUpdate({
     [dbPaths.studentMasterEntry(schoolId, studentMasterId)]: master,
     [enrollmentNodePath(schoolId, yearKey, classId, studentMasterId, enrollment.section)]: enrollment,
-    [mirrorPath]: cleanForCloud({
-      ...record,
-      ...master,
-      ...enrollment,
-      id: legacyId,
-      legacyId,
-      studentMasterId,
-    }),
   });
 
   invalidateStudentMasterIndex(schoolId);
@@ -1100,39 +1075,14 @@ export async function updateStudentCloud(schoolId, studentId, patch, previousCla
     ));
   }
 
-  // Legacy flat mirror keeps the flat roster accurate for older readers. It travels
-  // in the SAME atomic update as the tenant patch, so a rename can never land on
-  // `studentMaster` while the legacy mirror still shows the old value.
-  const workspace = dbPaths.workspace(schoolId);
-  const legacyId = String(existingStudent?.legacyId || existingStudent?.id || studentId);
-  const legacyPatch = {};
+  // WRITE TRUTH: no legacy flat mirror is written any more. The hierarchical
+  // year enrollment + identity patch above is the whole write; old flat rows
+  // stay readable through the legacy read fallback and are never deleted here.
   const targetClassId = nextClassId || prevClassId || existingStudent?.classId || '';
-  if (legacyId && targetClassId) {
-    const mirrorPath = targetClassId === 'archive'
-      ? dbPaths.archivedStudent(schoolId, legacyId)
-      : dbPaths.student(schoolId, legacyId);
-    legacyPatch[mirrorPath] = cleanForCloud({
-      ...existingStudent,
-      ...clean,
-      id: legacyId,
-      legacyId,
-      ...(studentMasterId ? { studentMasterId } : {}),
-      classId: targetClassId,
-      status: targetClassId === 'archive' ? 'archived' : (enrollment.status ?? existingStudent?.status ?? 'active'),
-      updatedAt: nowISO(),
-    });
-    if (prevClassId && targetClassId !== prevClassId) {
-      const previousPath = prevClassId === 'archive'
-        ? dbPaths.archivedStudent(schoolId, legacyId)
-        : dbPaths.student(schoolId, legacyId);
-      if (previousPath !== mirrorPath) legacyPatch[previousPath] = null;
-    }
-  }
-
-  // One root-relative update: identity patch + enrollment patch + legacy mirror.
+  const legacyId = String(existingStudent?.legacyId || existingStudent?.id || studentId);
+  // One root-relative update: identity patch + enrollment patch.
   const absolutePatch = {};
   Object.entries(patchPaths).forEach(([key, value]) => { absolutePatch[`${base}/${key}`] = value; });
-  Object.entries(legacyPatch).forEach(([key, value]) => { absolutePatch[key] = value; });
   const primary = Object.keys(absolutePatch).length
     ? await safeMultiPathUpdate(absolutePatch)
     : { synced: true };
@@ -1171,14 +1121,10 @@ export async function deleteStudentCloud(schoolId, studentId, year = '', classId
     ? await safeUpdate(base, patchPaths)
     : { synced: false };
 
-  const workspace = dbPaths.workspace(schoolId);
+  // WRITE TRUTH: no legacy flat mirror is touched — the hierarchical soft-delete
+  // above is the whole write; old flat rows stay as they were (readable, never
+  // deleted by this call).
   const legacyId = String(masters[studentMasterId]?.legacyId ?? studentMasterId ?? studentId);
-  if (legacyId) {
-    await safeUpdate(workspace, {
-      [relativeKey(workspace, dbPaths.student(schoolId, legacyId))]: { isDeleted: true, deletedAt, updatedAt: deletedAt },
-      [relativeKey(workspace, dbPaths.archivedStudent(schoolId, legacyId))]: { isDeleted: true, deletedAt, updatedAt: deletedAt },
-    });
-  }
 
   invalidateStudentMasterIndex(schoolId);
   return { ...primary, studentMasterId, legacyId, softDeleted: true };
@@ -1477,6 +1423,13 @@ export async function markStudentGraduated(schoolId, studentMasterId, { year = '
 
 /**
  * Legacy flat batch move (yearless roster / demo reset).
+ *
+ * DEPRECATED for new writes: this writes ONLY the legacy `schoolData/{schoolId}`
+ * flat nodes. It is kept because `archiveStudentCloud` / `restoreStudentCloud`
+ * (old yearless callers) still use it, and because a live-DB check has not yet
+ * proven that no old data lives ONLY under the flat nodes. Do NOT call it for
+ * new roster work — use the hierarchical `saveStudentPatch` / `moveStudentClass`
+ * path instead. Old flat rows are never deleted by the hierarchical writers.
  * @param {Array<{id:string, from:'students'|'archive', to:'students'|'archive', student:object}>} moves
  */
 export function moveStudentsCloud(schoolId, moves = []) {
@@ -1494,7 +1447,8 @@ export function moveStudentsCloud(schoolId, moves = []) {
   return safeUpdate(dbPaths.workspace(schoolId), patch);
 }
 
-/** Wholesale roster replacement — only used by demo reset / bulk import. */
+/** Wholesale roster replacement — only used by demo reset / bulk import.
+ * DEPRECATED for new writes (legacy flat nodes only, see `moveStudentsCloud`). */
 export async function saveStudents(schoolId, students = []) {
   const active = Object.fromEntries(
     students.filter((student) => student.classId !== 'archive').map((student) => [student.id, student]),

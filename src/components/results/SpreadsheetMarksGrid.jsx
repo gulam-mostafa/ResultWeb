@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownUp, Crown, Info, Star } from 'lucide-react';
+import { ArrowDownUp, CheckCircle2, Crown, Info, Star } from 'lucide-react';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import { configEntryFields } from '../../utils/resultConfig.js';
 import { rankClassRows, subjectTermEntry } from '../../utils/resultEngine.js';
@@ -143,6 +143,29 @@ export default function SpreadsheetMarksGrid({
   const pendingRef = useRef({});
   const editingKey = useRef(null);
   const gridRef = useRef(null);
+
+  /**
+   * Brief "সংরক্ষণ হয়েছে" confirmation after the "সংরক্ষণ হচ্ছে…" spinner clears.
+   * A toast per typed cell would spam the teacher, so the grid shows this inline
+   * flash instead: it appears only on a `saving: true → false` transition (never
+   * on first render) and hides itself after 2.5 s or when the next save starts.
+   */
+  const [justSaved, setJustSaved] = useState(false);
+  const prevSavingRef = useRef(saving);
+  const savedTimerRef = useRef(null);
+  useEffect(() => {
+    if (prevSavingRef.current && !saving) {
+      setJustSaved(true);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setJustSaved(false), 2500);
+    } else if (saving) {
+      setJustSaved(false);
+    }
+    prevSavingRef.current = saving;
+  }, [saving]);
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+  }, []);
 
   const changeDraft = useCallback((key, value) => {
     const next = { ...draftsRef.current, [key]: value };
@@ -364,7 +387,7 @@ export default function SpreadsheetMarksGrid({
         max={fieldLimit(field)}
         step="any"
         inputMode="decimal"
-        className={clsx('mark-cell', groupStyle.input, tone, invalid && 'mark-cell-invalid')}
+        className={clsx('mark-cell min-w-0 flex-1', groupStyle.input, tone, invalid && 'mark-cell-invalid')}
         value={value}
         onFocus={(event) => {
           editingKey.current = key;
@@ -406,7 +429,7 @@ export default function SpreadsheetMarksGrid({
   );
 
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-700">
+    <div className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-700">
       {onSortModeChange ? (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 dark:border-slate-800">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-slate-500">
@@ -415,6 +438,10 @@ export default function SpreadsheetMarksGrid({
             {saving ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2 py-0.5 font-bold text-brand-700 dark:bg-brand-900/40 dark:text-brand-200">
                 <Spinner size="xs" tone="brand" label="নম্বর সংরক্ষণ হচ্ছে…" /> সংরক্ষণ হচ্ছে…
+              </span>
+            ) : justSaved ? (
+              <span role="status" className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 font-bold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                <CheckCircle2 size={12} aria-hidden="true" /> সংরক্ষণ হয়েছে
               </span>
             ) : null}
           </p>
@@ -446,7 +473,7 @@ export default function SpreadsheetMarksGrid({
       ) : null}
 
       {/* Desktop / tablet: one spreadsheet row per pupil. */}
-      <div className="hidden overflow-auto md:block">
+      <div className="hidden max-w-full overflow-x-auto scroll-thin md:block">
         <table className="table-base min-w-[980px]">
           <thead>
             <tr>
@@ -627,7 +654,7 @@ export default function SpreadsheetMarksGrid({
                     </p>
                     <div className="grid gap-1.5 sm:grid-cols-2">
                       {columnGroups[groupKey].map((field) => (
-                        <label key={field.key} className="flex items-center gap-1.5">
+                        <label key={field.key} className="flex min-w-0 items-center gap-1.5">
                           <span className="w-20 shrink-0 truncate text-[10px] font-semibold text-slate-600 dark:text-slate-300">
                             {field.subject?.name ?? field.subjectName}
                             <span className="block text-[9px] font-normal text-slate-400">

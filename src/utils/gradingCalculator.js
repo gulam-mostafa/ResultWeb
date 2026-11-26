@@ -16,6 +16,7 @@ import {
   FULL_MARKS_PER_SUBJECT,
 } from './constants.js';
 import { toEnglishNumber } from './banglaNumberFormatter.js';
+import { rankClassRows } from './resultEngine.js';
 
 /* ------------------------------------------------------------------ *
  * 1. Sanitising
@@ -188,26 +189,53 @@ export function computeStudentResult(marks = {}) {
 
 /**
  * Ranks a class by total marks. Ties share the same position (1, 1, 3 ...).
- * @returns {Array} ranked rows: { studentId, totalMarks, gpa, position }
+ *
+ * Delegates to the config-driven `rankClassRows` (`resultEngine.js`) so the
+ * roster, the modals and the printed marksheets can never disagree about a
+ * pupil's মেধাক্রম. The old local implementation is gone on purpose: it ranked
+ * pupils with NO marks at all (total 0) and broke ties by student id.
+ * The new rules: passing first (total → GPA → current roll → name), failed
+ * after them, pupils with no marks last — and a pupil with no marks gets
+ * `position: null` (no merit position), never a fake rank.
+ *
+ * @returns {Array} ranked rows in merit order: the caller's original row
+ *   objects, each with `position` (shared on ties, `null` when not entered).
  */
 export function computeMeritRanking(rows = []) {
-  const safeRows = Array.isArray(rows) ? rows.filter(Boolean) : [];
-  const scored = [...safeRows].sort((a, b) => {
-    const totalA = Number(a?.totalMarks) || 0;
-    const totalB = Number(b?.totalMarks) || 0;
-    if (totalB !== totalA) return totalB - totalA;
-    return String(a?.studentId ?? '').localeCompare(String(b?.studentId ?? ''));
-  });
-
-  let lastTotal = null;
-  let lastPosition = 0;
-
-  return scored.map((row, index) => {
-    const total = Number(row?.totalMarks) || 0;
-    const position = total === lastTotal ? lastPosition : index + 1;
-    lastTotal = total;
-    lastPosition = position;
-    return { ...row, position };
+  const input = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const ranked = rankClassRows(
+    input.map((row, index) => {
+      const totalMarks = Number(row?.totalMarks) || 0;
+      // A row is "entered" only when the caller says so, or it carries a real
+      // total — a bare `totalMarks: 0` row is a pupil with no marks, not a 0.
+      const hasAnyMark = row?.hasAnyMark === true || totalMarks > 0;
+      return {
+        __index: index,
+        studentId: String(row?.studentId ?? row?.id ?? ''),
+        student: { roll: Number(row?.roll) || 0, name: row?.name ?? '' },
+        result: {
+          totalMarks,
+          gpa: Number(row?.gpa) || 0,
+          hasAnyMark,
+          // Rows that carry no pass/fail info are treated as passing, so the
+          // sort stays purely by total → GPA → roll → name (the old behaviour
+          // for such rows, minus the student-id tie-break).
+          isPass: row?.isPass === undefined ? true : row.isPass === true,
+        },
+      };
+    }),
+  );
+  return ranked.map((rankedRow) => {
+    const original = input[rankedRow.__index];
+    // Strip the adapter/engine fields — the caller gets its own row back,
+    // in merit order, with only `position` (+ `isEvaluated`) added.
+    const { __index, student, result, roll, totalMarks, gpa, hasAnyMark, isPass, newRoll, ...rest } = rankedRow;
+    return {
+      ...original,
+      ...rest,
+      position: rankedRow.isEvaluated ? rankedRow.position : null,
+      isEvaluated: rankedRow.isEvaluated,
+    };
   });
 }
 

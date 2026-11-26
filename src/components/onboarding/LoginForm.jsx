@@ -1,4 +1,4 @@
-import { AuthFormActions, AuthQuickAccess, Directory, Field, RoleCards } from './AuthFormParts.jsx';
+import { AuthFormActions, Directory, Field, RoleCards } from './AuthFormParts.jsx';
 
 export default function LoginForm({
   kind = 'teacher',
@@ -17,7 +17,6 @@ export default function LoginForm({
   notice = '',
   isSubmitting = false,
   onSubmit = () => {},
-  onBypass = () => {},
   schoolName = 'বিদ্যালয় নির্বাচন করুন',
 }) {
   return <>
@@ -30,6 +29,5 @@ export default function LoginForm({
       </div>
       <AuthFormActions notice={notice} isSubmitting={isSubmitting} submitLabel="লগইন করুন" />
     </form>
-    <AuthQuickAccess onBypass={onBypass} schoolName={schoolName} />
   </>;
 }

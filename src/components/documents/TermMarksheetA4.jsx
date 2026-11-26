@@ -33,7 +33,7 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
   };
 
   return (
-    <article className="print-sheet rounded-lg shadow-lg">
+    <article className="print-sheet print-sheet--full rounded-lg shadow-lg">
       <SchoolDocumentHeader schoolProfile={schoolProfile} />
 
       <h2 className="doc-title">{term?.name} প্রগতিপত্র</h2>
@@ -100,7 +100,9 @@ export default function TermMarksheetA4({ student, result, term, remark, positio
         <b>শিক্ষক মন্তব্য:</b> {remark || 'শিক্ষার্থীর ফলাফল পর্যবেক্ষণ করা হয়েছে। নিয়মিত পড়াশোনা অব্যাহত রাখুন।'}
       </div>
 
-      <div className="mt-6 flex items-end justify-between">
+      {/* `.rsheet__foot` is pushed to the bottom of the A4 by print.css, so the signature
+          row can never overlap the table and the sheet fills the page height. */}
+      <div className="rsheet__foot mt-6 flex items-end justify-between">
         <div className="signature">
           <div className="signature__line">শ্রেণি শিক্ষকের স্বাক্ষর</div>
           <div className="signature__role">তারিখ: ______________</div>

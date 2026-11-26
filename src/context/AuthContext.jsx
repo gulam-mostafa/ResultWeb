@@ -208,65 +208,14 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  /** Demo / bypass login: guarantees the demo tenant exists in the hierarchy. */
-  const ensureDemoTenant = useCallback((school = null, location = {}) => {
-    const schoolId = school?.id || DEMO_SCHOOL_LOCATION.schoolId;
-    const resolved = {
-      divisionId: location?.divisionId || school?.divisionId || DEMO_SCHOOL_LOCATION.divisionId,
-      districtId: location?.districtId || school?.districtId || DEMO_SCHOOL_LOCATION.districtId,
-      upazilaId: location?.upazilaId || school?.upazilaId || DEMO_SCHOOL_LOCATION.upazilaId,
-      schoolId,
-    };
-    // Prime the location cache synchronously: every hook that reads `schoolRef`
-    // resolves the hierarchical base immediately, even before the writes land.
-    rememberSchoolLocation(resolved);
-    if (schoolId === DEMO_SCHOOL_LOCATION.schoolId) {
-      // Seed `divisions/…/schools/demo-school-01/profile` (activeYear 2026) so demo
-      // students never fall back to the legacy `schoolData/demo-school-01` node.
-      ensureDemoSchool({ name: school?.name || DEMO_SCHOOL_NAME }).catch(() => {});
-    }
-    return resolved;
-  }, []);
-
-  // 1-Click Bypass Admin Login — STRICTLY a demo tool.
-  //
-  // It is gated behind an explicit `?demo=1` flag (or `VITE_ENABLE_DEMO_LOGIN=true`),
-  // asks for a Bangla confirmation, and never becomes a silent way into a real school's
-  // workspace. Without the flag it refuses with a Bangla message.
-  const bypassLogin = useCallback((school = null, location = {}) => {
-    if (!isDemoLoginEnabled()) {
-      return { ok: false, message: 'বাইপাস প্রবেশ এই পরিবেশে বন্ধ আছে। নির্দিষ্ট বিদ্যালয়ের অনুমোদিত অ্যাকাউন্টে লগইন করুন।' };
-    }
-    const confirmed = typeof window === 'undefined'
-      ? true
-      : window.confirm('ডেমো (বাইপাস) অ্যাডমিন হিসেবে প্রবেশ করবেন? এটি শুধু পরীক্ষার জন্য — আসল বিদ্যালয়ের ডেটা পরিবর্তন করতে পারেন।');
-    if (!confirmed) return { ok: false, message: 'বাইপাস প্রবেশ বাতিল করা হয়েছে।' };
-    setError(null);
-    const schoolName = school?.name || DEMO_SCHOOL_NAME;
-    const uid = 'bypass-founder-admin';
-    const resolved = ensureDemoTenant(school, location);
-    const overrides = {
-      uid,
-      id: uid,
-      role: ROLES.SCHOOL_ADMIN,
-      name: 'প্রতিষ্ঠাতা অ্যাডমিন (বাইপাস)',
-      designation: 'প্রধান শিক্ষক',
-      status: MEMBER_STATUS.APPROVED,
-      isFounder: true,
-      isAdmin: true,
-      canApprove: true,
-      isBypass: true,
-      schoolId: resolved.schoolId,
-      schoolName,
-      divisionId: resolved.divisionId,
-      districtId: resolved.districtId,
-      upazilaId: resolved.upazilaId,
-    };
-    const next = stampSession(createSession(ROLES.SCHOOL_ADMIN, overrides));
-    setSession(next);
-    setStatus('authenticated');
-    return { ok: true, session: next, redirectTo: '/dashboard' };
-  }, [ensureDemoTenant]);
+  // NOTE (2026-11-27): the passwordless `bypassLogin()` ("1-Click Bypass Admin
+  // Login") was REMOVED entirely — it fabricated an approved founder-admin
+  // session (`bypass-founder-admin`) without any credential. Admin access now
+  // requires a real Firebase account + membership of the school (see
+  // `signInTeacher`, which refuses unknown members). The demo-school seed
+  // (`ensureDemoSchool`) is still used by the normal demo sign-in path in
+  // `signInWithRole`; `isDemoLoginEnabled()` is kept for the demo-student
+  // seeding gate only.
 
   const signInTeacher = useCallback(async ({ school, uid, email, identity }) => {
     if (!school?.id || !uid) return { ok: false, message: 'বিদ্যালয় ও অ্যাকাউন্ট তথ্য প্রয়োজন।' };
@@ -478,9 +427,9 @@ export function AuthProvider({ children }) {
       canManageStudents: role === ROLES.SUPER_ADMIN || isApprovedTeacher,
       canEditMarks: role === ROLES.SUPER_ADMIN || isApprovedTeacher,
       canPrintDocuments: role === ROLES.SUPER_ADMIN || isApprovedTeacher,
-      signInWithRole, signInTeacher, bypassLogin, registerTeacher, refreshMembership, signOut, verifySchool, landingRouteFor,
+      signInWithRole, signInTeacher, registerTeacher, refreshMembership, signOut, verifySchool, landingRouteFor,
     };
-  }, [session, status, error, locationVersion, signInWithRole, signInTeacher, bypassLogin, registerTeacher, refreshMembership, signOut, verifySchool]);
+  }, [session, status, error, locationVersion, signInWithRole, signInTeacher, registerTeacher, refreshMembership, signOut, verifySchool]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

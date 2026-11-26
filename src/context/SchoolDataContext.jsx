@@ -27,6 +27,7 @@ import {
   syncSchoolProfileRegistry,
 } from '../services/database/index.js';
 import { normalizeResultConfig, defaultResultConfig } from '../utils/resultConfig.js';
+import { flushOfflineQueue, pendingOfflineCount } from '../services/database/dbFallback.js';
 import { useStudents } from '../hooks/useStudents.js';
 import { useResults } from '../hooks/useResults.js';
 
@@ -232,6 +233,13 @@ export function SchoolDataProvider({ children }) {
     const handleOnline = () => {
       setIsOnline(true);
       setSyncState(activeSaveTimers.current.size ? 'saving' : 'synced');
+      // Reconnect: replay the durable offline queue in insertion order, so a
+      // save that failed while offline lands exactly once, in the order it was made.
+      flushOfflineQueue().then((flushed) => {
+        if (activeSaveTimers.current.size === 0) {
+          setSyncState(flushed?.pending > 0 ? 'offline' : 'synced');
+        }
+      }).catch(() => {});
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -296,21 +304,60 @@ export function SchoolDataProvider({ children }) {
   // Only explicitly-invoked mutations enter the Saving state. The timeout keeps
   // a stalled Firebase request from leaving the badge spinning indefinitely; a
   // caller with a bigger payload (a whole class promotion) may pass a longer one.
+  //
+  // Honesty rules (a failed save must never look `synced`):
+  //  - the underlying write runs through `safeUpdate`/`safeMultiPathUpdate`, which
+  //    enqueue a failed write in the durable offline queue (`dbFallback.js`) and
+  //    replay it in order on reconnect — `runCloudSave` never has to rebuild a
+  //    payload it cannot see, it only has to report the outcome truthfully;
+  //  - a TIMEOUT is not a failure and not a success: the write may still land, so
+  //    the badge stays on 'saving' and the result carries `timedOut: true` (the
+  //    caller keeps its optimistic state and says "সংরক্ষণ হচ্ছে…");
+  //  - a definite failure (`synced: false`, not a timeout, not `partial`) leaves
+  //    the badge on 'error' while online, so the caller can roll back.
   const runCloudSave = useCallback(async (operation, { timeoutMs = 3000 } = {}) => {
     const id = ++saveSequence.current;
     let timeoutId;
-    const timedOut = new Promise((resolve) => {
+    let timedOut = false;
+    const operationPromise = Promise.resolve().then(operation);
+    // The write keeps running after a timeout — when it finally settles, the
+    // badge is corrected from 'saving' to its real state (and any queued writes
+    // are drained in order).
+    const settleBadge = (settledResult) => {
+      if (activeSaveTimers.current.size > 0) return;
+      if (settledResult?.synced === false && settledResult?.partial !== true) {
+        setSyncState(pendingOfflineCount() > 0 ? 'offline' : (isOnline ? 'error' : 'offline'));
+        return;
+      }
+      if (pendingOfflineCount() > 0) {
+        setSyncState('saving');
+        flushOfflineQueue().then((flushed) => {
+          if (activeSaveTimers.current.size === 0) {
+            setSyncState(flushed?.pending > 0 ? 'offline' : (isOnline ? 'synced' : 'offline'));
+          }
+        }).catch(() => {});
+        return;
+      }
+      setSyncState(isOnline ? 'synced' : 'offline');
+    };
+    operationPromise.then(
+      (settledResult) => { if (timedOut) settleBadge(settledResult); },
+      () => { if (timedOut) settleBadge({ synced: false }); },
+    );
+    const timedOutPromise = new Promise((resolve) => {
       timeoutId = setTimeout(() => {
+        timedOut = true;
         activeSaveTimers.current.delete(id);
-        setSyncState(activeSaveTimers.current.size ? 'saving' : (isOnline ? 'synced' : 'offline'));
-        resolve({ synced: false, timedOut: true });
+        // Unknown, not synced: stay on 'saving' until the write settles.
+        setSyncState('saving');
+        resolve({ synced: false, timedOut: true, pending: true });
       }, Math.max(1000, Number(timeoutMs) || 3000));
     });
     activeSaveTimers.current.set(id, timeoutId);
     setSyncState('saving');
     let result = { synced: false };
     try {
-      result = await Promise.race([Promise.resolve().then(operation), timedOut]);
+      result = await Promise.race([operationPromise, timedOutPromise]);
       return result;
     } catch {
       result = { synced: false };
@@ -318,13 +365,20 @@ export function SchoolDataProvider({ children }) {
     } finally {
       clearTimeout(activeSaveTimers.current.get(id));
       activeSaveTimers.current.delete(id);
-      if (activeSaveTimers.current.size === 0) {
+      if (activeSaveTimers.current.size === 0 && !timedOut) {
         // A timed-out request is a slow network, not a rejected write: it must never
         // leave the badge stuck on the red "সেভ ব্যর্থ হয়েছে" state. The same holds
         // for a save whose PRIMARY write succeeded while a non-critical secondary
         // write (`partial: true`) failed — the data the teacher saved is safe.
-        const failed = result?.synced === false && !result?.timedOut && result?.partial !== true;
-        setSyncState(failed && isOnline ? 'error' : (isOnline ? 'synced' : 'offline'));
+        const failed = result?.synced === false && result?.partial !== true;
+        if (failed) {
+          setSyncState(pendingOfflineCount() > 0 ? 'offline' : (isOnline ? 'error' : 'offline'));
+        } else if (pendingOfflineCount() > 0) {
+          setSyncState('saving');
+          flushOfflineQueue().catch(() => {});
+        } else {
+          setSyncState(isOnline ? 'synced' : 'offline');
+        }
       }
     }
   }, [isOnline]);

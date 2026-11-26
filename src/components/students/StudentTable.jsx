@@ -20,8 +20,8 @@ export default function StudentTable({ students = [], canEdit, isArchive = false
   const filtered = useMemo(() => students.filter((student) => [student.name, student.roll, student.fatherName, student.motherName, student.guardianPhone, student.fatherPhone, student.motherPhone].join(' ').toLowerCase().includes(query.toLowerCase())), [students, query]);
   if (!students.length) return <EmptyState icon={UserRound} title={isArchive ? 'আর্কাইভে শিক্ষার্থী নেই' : 'এই শ্রেণিতে শিক্ষার্থী নেই'} message="শিক্ষার্থীর তালিকা এখানে দেখা যাবে।" />;
   return <div>
-    <div className="relative mb-3 max-w-sm"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input className="input-base pl-9" placeholder="নাম, রোল বা অভিভাবক খুঁজুন" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-    <div className="overflow-x-auto"><table className="table-base min-w-[720px]"><thead><tr><th>রোল</th><th>শিক্ষার্থীর নাম</th><th>পিতা / মাতা</th><th>লিঙ্গ</th><th>ফলাফল</th><th>অভিভাবকের ফোন</th>{canEdit && <th>কার্যক্রম</th>}</tr></thead><tbody>
+    <div className="relative mb-3 w-full max-w-sm"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input className="input-base pl-9" placeholder="নাম, রোল বা অভিভাবক খুঁজুন" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+    <div className="max-w-full overflow-x-auto scroll-thin"><table className="table-base min-w-[720px]"><thead><tr><th>রোল</th><th>শিক্ষার্থীর নাম</th><th>পিতা / মাতা</th><th>লিঙ্গ</th><th>ফলাফল · বার্ষিক (ওজনযুক্ত)</th><th>অভিভাবকের ফোন</th>{canEdit && <th>কার্যক্রম</th>}</tr></thead><tbody>
       {filtered.map((student) => {
         const result = getStudentResult?.(student.id) ?? null;
         return <tr key={student.id} onClick={() => onSelect?.(student)} onKeyDown={(event) => { if (event.key === 'Enter') onSelect?.(student); }} tabIndex={0} className="cursor-pointer hover:bg-brand-50/60 dark:hover:bg-slate-800">
@@ -31,14 +31,14 @@ export default function StudentTable({ students = [], canEdit, isArchive = false
           <button type="button" className="text-left" onClick={(event) => { event.stopPropagation(); onSelect?.(student); }} aria-label={`${student.name} এর পূর্ণাঙ্গ তথ্য`}>
             <span className="font-bold text-brand-800 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700 dark:text-brand-200">{student.name}</span>
           </button>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">{student.id}<PromotionBadge student={student} /></div>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 break-all text-[10px] text-slate-400">{student.id}<PromotionBadge student={student} /></div>
         </td>
         <td>{student.fatherName || '—'}<div className="text-[10px] text-slate-400">{student.motherName || '—'}</div></td><td>{student.gender === 'female' ? 'ছাত্রী' : 'ছাত্র'}</td>
         <td onClick={(event) => event.stopPropagation()}>
-          <button type="button" className="inline-flex items-center gap-1 text-xs font-bold text-brand-700 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700" onClick={() => onShowResult?.(student)} aria-label={`${student.name} এর ফলাফল`} disabled={!onShowResult}>
+          <button type="button" className="inline-flex max-w-full items-center gap-1 whitespace-nowrap text-xs font-bold text-brand-700 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700" onClick={() => onShowResult?.(student)} aria-label={`${student.name} এর ফলাফল`} disabled={!onShowResult} title="বার্ষিক ফলাফল — ১ম প্রান্তিক ১৫% + ২য় প্রান্তিক ১৫% + বার্ষিক ৭০% ওজনে হিসাব করা মোট (কোনো এক প্রান্তিকের কাঁচা মোট নয়)">
             <BarChart3 size={12} /> {result?.hasAnyMark
-              ? `মোট ${toBanglaNumber(result.totalMarks ?? 0)} · GPA ${result.gpa == null ? '—' : Number(result.gpa).toFixed(2)}`
-              : `মোট ${toBanglaNumber(0)} · ফলাফল নেই`}
+              ? `বার্ষিক মোট ${toBanglaNumber(result.totalMarks ?? 0)} · GPA ${result.gpa == null ? '—' : Number(result.gpa).toFixed(2)}`
+              : `বার্ষিক মোট ${toBanglaNumber(0)} · ফলাফল নেই`}
           </button>
         </td>
         <td>{student.fatherPhone || student.guardianPhone || '—'}</td>

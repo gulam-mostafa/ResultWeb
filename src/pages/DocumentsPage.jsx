@@ -96,6 +96,9 @@ export default function DocumentsPage() {
             ডকুমেন্ট প্রিন্ট করার অনুমতি নেই — অনুমোদিত শিক্ষকের সঙ্গে যোগাযোগ করুন।
           </p>
         ) : null}
+        <p className="mt-2 rounded-xl bg-slate-50 p-2.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          প্রিন্ট ডায়ালগে <b>Save as PDF</b> নির্বাচন করলেই PDF ডাউনলোড হবে।
+        </p>
       </Card>
     </div>
 

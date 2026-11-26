@@ -32,11 +32,19 @@ const percentCell = (value) => (value === null || value === undefined ? '—' : 
 const termLabel = (term) => (term.id === 'annual' ? 'বার্ষিক মূল্যায়ন' : `${term.shortName} প্রান্তিক`);
 
 /**
- * Weighted percentage contribution of each term of ONE consolidated result.
+ * Weighted MARKS contribution of each term of ONE consolidated result.
  *
- * No individual subject column is shown; instead every term reports the percentage it
- * contributed to the final figure. Scoring ১০০ in each term at ১৫% / ১৫% / ৭০% therefore
- * yields `১৫ + ১৫ + ৭০ = ১০০`.
+ * No individual subject column is shown; instead every term reports the WEIGHTED
+ * MARKS it contributed to the final total: Σ (subject's raw term total mark ×
+ * that term's configured weight / ১০০), rounded to 2 decimals. The weight comes
+ * from the engine's own per-subject `contributions` (the school/class setting,
+ * default ১৫% / ১৫% / ৭০%) — never hard-coded, so বার্ষিক gets ৭০% by default
+ * and ১৫% only when the setting itself says ১৫%.
+ *
+ * The three `weightedMarks` add up to the engine's `result.totalMarks`, apart
+ * from the engine's own per-subject rounding (≤ ০.০১ × বিষয় সংখ্যা). `weighted`
+ * (weighted %) and `percent` (raw term %) are kept as the small print below
+ * the marks; they are average-percent based, as before.
  */
 export function termCellsOf(result) {
   return TERMS.map((term) => {
@@ -48,9 +56,18 @@ export function termCellsOf(result) {
     // Average subject percentage of THIS term × the term's own weight.
     const average = scored.reduce((sum, item) => sum + Number(item.percent || 0), 0) / scored.length;
     const weight = Number(scored[0].weight ?? 0);
+    // Weighted MARKS of this term: Σ (subject raw term total mark × its own
+    // configured weight / ১০০). Each contribution carries its own weight from
+    // the engine, so no term — বার্ষিক included — ever gets a hard-coded ১৫%.
+    const weightedMarks = Math.round((
+      scored.reduce((sum, item) => sum + (Number(item.mark) || 0) * (Number(item.weight ?? 0) / 100), 0)
+      + Number.EPSILON
+    ) * 100) / 100;
     return {
       id: term.id,
-      // `weighted` is the number that actually entered the final total.
+      // `weighted` is the weighted % (small print); `weightedMarks` is the
+      // number that actually entered the final total, in marks.
+      weightedMarks,
       weighted: Math.round(((average * weight) / 100 + Number.EPSILON) * 100) / 100,
       percent: Math.round((average + Number.EPSILON) * 100) / 100,
       weight,
@@ -91,7 +108,7 @@ export default function ConsolidatedAnnualTable({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 dark:border-slate-800">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-slate-500">
           <Info size={12} aria-hidden="true" />
-          কোনো বিষয়ভিত্তিক কলাম নেই — শুধু তিন প্রান্তিকের ওজনযুক্ত ফলাফল ({weightText})
+          কোনো বিষয়ভিত্তিক কলাম নেই — শুধু তিন প্রান্তিকের ওজনযুক্ত নম্বর ({weightText})
           {switching || isHydrating ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2 py-0.5 font-bold text-brand-700 dark:bg-brand-900/40 dark:text-brand-200">
               হিসাব হচ্ছে…
@@ -121,7 +138,7 @@ export default function ConsolidatedAnnualTable({
         </p>
       ) : null}
 
-      <div className="hidden overflow-auto md:block">
+      <div className="hidden max-w-full overflow-x-auto scroll-thin md:block">
         <table className="table-base min-w-[900px]">
           <thead>
             <tr>
@@ -169,12 +186,15 @@ export default function ConsolidatedAnnualTable({
                     <td key={TERMS[index].id} className="text-center">
                       {cell ? (
                         <>
-                          <span className="font-semibold">{toBanglaNumber(cell.weighted)}%</span>
-                          <span className="block text-[10px] text-slate-400">{percentCell(cell.percent)}</span>
+                          <span className="font-semibold">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
+                          <span className="block text-[10px] text-slate-400">ওজনযুক্ত {percentCell(cell.weighted)}</span>
+                          <span className="block text-[10px] text-slate-400">কাঁচা {percentCell(cell.percent)}</span>
                         </>
                       ) : '—'}
                     </td>
                   ))}
+                  {/* মোট নম্বর: ইঞ্জিনের result.totalMarks — তিন প্রান্তিকের
+                      ওজনযুক্ত নম্বরের (weightedMarks) যোগফলের সমান। */}
                   <td className="text-center font-bold">{toBanglaNumber(result?.totalMarks ?? 0)}</td>
                   <td className="text-center">
                     <button
@@ -242,7 +262,16 @@ export default function ConsolidatedAnnualTable({
                         ({toBanglaNumber(weights?.[TERMS[index].id] ?? 0)}%)
                       </span>
                     </span>
-                    <span>{cell ? `${toBanglaNumber(cell.weighted)}% · ${percentCell(cell.percent)}` : '—'}</span>
+                    <span className="text-right">
+                      {cell ? (
+                        <>
+                          <span className="block">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
+                          <span className="block text-[10px] font-normal text-slate-400">
+                            ওজনযুক্ত {percentCell(cell.weighted)} · কাঁচা {percentCell(cell.percent)}
+                          </span>
+                        </>
+                      ) : '—'}
+                    </span>
                   </p>
                 ))}
                 <p className="flex items-center justify-between border-t border-slate-100 pt-1 dark:border-slate-800">

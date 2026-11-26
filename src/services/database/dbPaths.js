@@ -1,3 +1,21 @@
+/* ------------------------------------------------------------------ *
+ * WRITE TRUTH — একটাই লেখার ঠিকানা (single write truth)
+ * ------------------------------------------------------------------ *
+ * সব নতুন লেখা (write) যায় ক্যানোনিক্যাল hierarchical পাথে:
+ *   divisions/{divisionId}/districts/{districtId}/upazilas/{upazilaId}
+ *     /schools/{schoolId}/sessions/{year}/...
+ * `writeSchoolBase(reference)` সেই ঠিকানাই দেয় — location অজানা থাকলে '' দেয়,
+ * কখনো legacy-তে ফেলে দেয় না (লেখার caller-কে তখন লেখা বন্ধ করতে হবে)।
+ *
+ * পুরনো `schoolData/{schoolId}` গাছ থেকে শুধু পড়া যায় (read fallback):
+ * পুরনো ডেটা কখনো মোছা হয় না, কোনো পুরনো রো-কে orphan করা হয় না।
+ * নিচের `students` / `results` / `session*` হেল্পারগুলো সেই fallback-এর
+ * জন্যই আছে — নতুন কোনো লেখায় এগুলো ব্যবহার করা যাবে না।
+ * লিগ্যাসি মিরর লেখা (addStudentCloud / updateStudentCloud / import) থেকে
+ * সরানো হয়েছে; `moveStudentsCloud` / `saveStudents` শুধু পুরনো yearless
+ * ডেটার batch helper হিসেবে রয়ে গেছে — live-DB যাচাই ছাড়া সেগুলোও
+ * সরানো যাবে না (দেখুন studentService.js)।
+ */
 import { resolveTermKey } from '../../utils/constants.js';
 import { safeRead } from './dbFallback.js';
 
@@ -116,6 +134,16 @@ export function resolveSchoolBase(reference) {
 }
 
 /**
+ * WRITE TRUTH: the hierarchical tenant root for new writes, or `''` when the
+ * location is unknown. Unlike `baseOrLegacy` it NEVER falls back to
+ * `schoolData/{schoolId}` — a caller that gets `''` must refuse the write
+ * (see `tenantBasePath` in useStudents.js) instead of writing to the legacy tree.
+ */
+export function writeSchoolBase(reference) {
+  return resolveSchoolBase(reference);
+}
+
+/**
  * Resolves (and caches) a school's location from `schoolLocator/{schoolId}`.
  * Lets services that only receive a `schoolId` (e.g. a restored session) reach
  * the hierarchical node without scanning the nationwide tree.
@@ -215,7 +243,9 @@ const sessionRoot = (schoolId, year) => `${legacyRoot(schoolId)}/sessions/${segm
  * The helpers degrade to the legacy flat workspace (`schoolData/{schoolId}/…`)
  * while a school's location is still unknown (fresh cache / offline first paint),
  * so existing nodes stay readable and no write is ever silently dropped.
- */
+ * READ ONLY, however: `writeSchoolBase()` never degrades, and every new write
+ * helper (`saveNewStudent`, `saveStudentPatch`, `importStudentsCloud`, …) refuses
+ * to write when the hierarchical reference is incomplete. */
 export const dbPaths = Object.freeze({
   visitors: () => 'visitors',
   visitor: (visitorId) => `visitors/${segment(visitorId)}`,
@@ -265,7 +295,9 @@ export const dbPaths = Object.freeze({
    */
   studentMasterCounter: (reference, year) =>
     `${collectionOrLegacy(reference, 'studentMasterCounters')}/${segment(normalizeSessionYear(year, 'default'))}`,
-  /* ---------------- Legacy flat roster / results (still written) ---------------- */
+  /* ---------------- Legacy flat roster / results (READ FALLBACK ONLY) ----------------
+   * These nodes are read for old data only — no new write may target them.
+   * New writes go to the hierarchical `year*` helpers above. */
   students: (schoolId) => `${legacyRoot(schoolId)}/students`,
   student: (schoolId, studentId) => `${legacyRoot(schoolId)}/students/${segment(studentId)}`,
   archive: (schoolId) => `${legacyRoot(schoolId)}/archive`,
@@ -285,7 +317,9 @@ export const dbPaths = Object.freeze({
   sessions: (schoolId) => `${legacyRoot(schoolId)}/sessionsIndex`,
   sessionMeta: (schoolId, year) => `${legacyRoot(schoolId)}/sessionsIndex/${segment(normalizeSessionYear(year, 'default'))}`,
 
-  /* ---------------- Legacy academic-year partitioned nodes ---------------- */
+  /* ---------------- Legacy academic-year partitioned nodes (READ FALLBACK ONLY) ----------------
+   * Older `sessions/{year}/students/{studentId}` layout — read for old data only.
+   * New writes use the `year*` helpers (শাখা folders). */
   session: (schoolId, year) => sessionRoot(schoolId, year),
   sessionStudents: (schoolId, year) => `${sessionRoot(schoolId, year)}/students`,
   sessionStudent: (schoolId, year, studentId) => `${sessionRoot(schoolId, year)}/students/${segment(studentId)}`,

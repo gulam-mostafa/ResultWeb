@@ -19,19 +19,19 @@ export function Card({ as: Tag = 'div', className, padded = true, children, ...r
 
 export function CardHeader({ title, subtitle, icon: Icon, action, className }) {
   return (
-    <div className={clsx('mb-4 flex items-start justify-between gap-3', className)}>
-      <div className="flex items-start gap-3">
+    <div className={clsx('mb-4 flex flex-wrap items-start justify-between gap-3', className)}>
+      <div className="flex min-w-0 items-start gap-3">
         {Icon ? (
           <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
             <Icon size={18} strokeWidth={2.2} aria-hidden="true" />
           </span>
         ) : null}
-        <div>
-          <h2 className="text-base font-bold leading-tight text-slate-900">{title}</h2>
-          {subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}
+        <div className="min-w-0">
+          <h2 className="break-words text-base font-bold leading-tight text-slate-900">{title}</h2>
+          {subtitle ? <p className="mt-0.5 break-words text-xs text-slate-500">{subtitle}</p> : null}
         </div>
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
+      {action ? <div className="min-w-0 shrink-0">{action}</div> : null}
     </div>
   );
 }

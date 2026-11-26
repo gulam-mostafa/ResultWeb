@@ -11,19 +11,20 @@
 
 @page {
   size: A4 portrait;
-  /* 12mm margins keep the official header clear of the printer's non-printable edge. */
-  margin: 12mm 12mm 14mm 12mm;
+  /* 0.75in (19.05mm) on ALL four sides, as specified — the sheet geometry below
+     (171.9mm wide × 258.9mm tall printable area) is derived from this margin. */
+  margin: 0.75in;
 }
 
 /* ------------------------------------------------------------------ *
  * Screen preview: the A4 sheet is rendered at true paper size
  * ------------------------------------------------------------------ */
 .print-sheet {
-  /* 210mm paper − 12mm side margins = 186mm printable width. Giving the sheet the
-     PRINTABLE width (with padding: 0) is what stops `210mm` overflowing the 186mm
-     print box and clipping the right-hand columns. */
-  width: 186mm;
-  min-height: 271mm; /* 297mm − (12mm top + 14mm bottom) */
+  /* 210mm paper − 2 × 19.05mm (0.75in) side margins = 171.9mm printable width. Giving
+     the sheet the PRINTABLE width (with padding: 0) is what stops `210mm` overflowing
+     the 171.9mm print box and clipping the right-hand columns. */
+  width: 171.9mm;
+  min-height: 258.9mm; /* 297mm − 2 × 19.05mm (0.75in top + bottom) */
   padding: 0;
   margin: 0 auto;
   background: #ffffff;
@@ -163,9 +164,9 @@
 
 .doc-footer {
   position: absolute;
-  bottom: 12mm;
-  left: 12mm;
-  right: 12mm;
+  bottom: 19.05mm;
+  left: 19.05mm;
+  right: 19.05mm;
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
@@ -278,9 +279,9 @@
    */
   .print-single .print-sheet:not(.print-sheet--compact),
   .print-sheet:not(.print-sheet--compact).print-sheet--full {
-    min-height: 271mm !important;
-    height: 271mm !important;
-    max-height: 271mm !important;
+    min-height: 258.9mm !important;
+    height: 258.9mm !important;
+    max-height: 258.9mm !important;
     padding: 0 !important;
     display: flex !important;
     flex-direction: column !important;
@@ -303,7 +304,7 @@
     display: none !important;
   }
 
-  /* Only the PAIR (half-page) sheets keep a fixed footer: their box is 135mm and the
+  /* Only the PAIR (half-page) sheets keep a fixed footer: their box is 129.4mm and the
      footer must stay inside that half without pushing the content over. */
   .print-sheet--compact .doc-footer {
     position: static;
@@ -600,8 +601,8 @@
   margin-top: 5px;
 }
 
-/* Half-page layout: the measured sheet budget is ~101mm inside the 121mm usable area
-   (135mm box − 7mm padding top/bottom), so a 30mm QR still leaves ~16mm of headroom.
+/* Half-page layout: the usable area is ~125mm (129.4mm box − 4mm separator-side
+   padding in print), so a 30mm QR still leaves ample headroom.
    30mm / 73 cells ≈ 0.41mm per cell — comfortably scannable — and a pair can never
    spill onto a third page. */
 .rsheet--compact .rsheet__qr {
@@ -628,9 +629,10 @@
      no page break would ever be emitted and 40 sheets would stack onto a single page. */
   .print-sheet--compact {
     min-height: 0 !important;
-    /* 271mm of printable height (297 − 12 − 14) splits into two 135mm halves. */
-    height: 135mm !important;
-    max-height: 135mm !important;
+    /* 258.9mm of printable height (297 − 2 × 19.05mm) splits into two 129.4mm halves
+       (258.8mm — a hair of rounding slack, so the pair can never spill over). */
+    height: 129.4mm !important;
+    max-height: 129.4mm !important;
     padding: 0 !important;
     page-break-after: auto;
     break-after: auto;

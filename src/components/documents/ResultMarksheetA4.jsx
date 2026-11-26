@@ -43,7 +43,7 @@ const bangla = (value) => (value === null || value === undefined || value === ''
 
 /**
  * Shortens a remark for the half-page (`pair`) layout WITHOUT cutting mid-sentence.
- * A 135mm half page has room for two sentences; trimming at a `।` boundary keeps the
+ * A 129.4mm half page has room for two sentences; trimming at a `।` boundary keeps the
  * text readable and guarantees the sheet can never overflow onto a third page.
  */
 const compactRemark = (text, maxSentences = 2) => {

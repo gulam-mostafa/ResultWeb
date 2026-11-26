@@ -1,4 +1,4 @@
-import { AuthFormActions, AuthQuickAccess, Directory, Field, RoleCards } from './AuthFormParts.jsx';
+import { AuthFormActions, Directory, Field, RoleCards } from './AuthFormParts.jsx';
 
 export default function SignUpForm({
   kind = 'teacher',
@@ -27,7 +27,6 @@ export default function SignUpForm({
   notice = '',
   isSubmitting = false,
   onSubmit = () => {},
-  onBypass = () => {},
   schoolName = 'বিদ্যালয় নির্বাচন করুন',
 }) {
   return <>
@@ -39,6 +38,5 @@ export default function SignUpForm({
       <Directory value={directory} onChange={onDirectoryChange} schools={schools} allowAdd={kind === 'teacher'} adding={adding} onAdd={onAddSchool} newName={newName} setNewName={onNewNameChange} />
       <AuthFormActions notice={notice} isSubmitting={isSubmitting} submitLabel="নিবন্ধন সম্পন্ন করুন" />
     </form>
-    <AuthQuickAccess onBypass={onBypass} schoolName={schoolName} />
   </>;
 }

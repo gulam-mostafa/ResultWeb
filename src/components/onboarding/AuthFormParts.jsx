@@ -1,4 +1,4 @@
-import { Facebook, GraduationCap, School } from 'lucide-react';
+import { GraduationCap, School } from 'lucide-react';
 import { BD_LOCATIONS } from '../../data/bdLocations.js';
 
 const ROLE_CARD_OPTIONS = Object.freeze([
@@ -63,10 +63,11 @@ export function AuthFormActions({ notice = '', isSubmitting = false, submitLabel
   </>;
 }
 
-export function AuthQuickAccess({ onBypass = () => {}, schoolName = 'বিদ্যালয় নির্বাচন করুন' }) {
-  return <>
-    <div className="my-5 flex items-center gap-3 text-xs text-slate-400"><span className="h-px flex-1 bg-slate-200 dark:bg-slate-700"/>অথবা দ্রুত প্রবেশ করুন<span className="h-px flex-1 bg-slate-200 dark:bg-slate-700"/></div>
-    <div className="grid grid-cols-2 gap-3"><button type="button" onClick={onBypass} className="btn-secondary justify-center"><span aria-hidden="true" className="text-lg font-black text-red-500">G</span> Google</button><button type="button" onClick={onBypass} className="btn-secondary justify-center"><Facebook size={17} className="text-blue-600"/> Facebook</button></div>
-    <p className="mt-4 text-center text-[11px] text-slate-400">পরীক্ষামূলক মোডে লগইন তাৎক্ষণিক · {schoolName}</p>
-  </>;
-}
+/**
+ * Quick social login — REMOVED (2026-11-27). The Google/Facebook buttons used
+ * to call `onBypass` (passwordless bypass login), and no real OAuth handler
+ * exists anywhere in this codebase. `bypassLogin()` itself was also removed
+ * from AuthContext, so this export is deleted — LoginForm/SignUpForm no longer
+ * render it. Re-add these buttons only together with a real `signInWithPopup`
+ * handler.
+ */

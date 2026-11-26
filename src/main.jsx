@@ -5,6 +5,7 @@ import App, { AppErrorBoundary } from './App.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { SchoolDataProvider } from './context/SchoolDataContext.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
+import { ToastProvider } from './components/ui/Toast.jsx';
 import { installOfflineQueueAutoFlush } from './services/database/dbFallback.js';
 import './index.css';
 
@@ -25,7 +26,9 @@ ReactDOM.createRoot(rootElement).render(
         <BrowserRouter>
           <AuthProvider>
             <SchoolDataProvider>
-              <App />
+              <ToastProvider>
+                <App />
+              </ToastProvider>
             </SchoolDataProvider>
           </AuthProvider>
         </BrowserRouter>

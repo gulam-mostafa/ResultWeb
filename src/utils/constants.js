@@ -169,37 +169,22 @@ export const STUDENT_TEMPLATE_MAGIC = 'RESULTWEB STUDENT TEMPLATE v1';
  * ------------------------------------------------------------------ */
 
 /**
- * Every subject carries two evaluation components plus their combined total:
- *   formative (গাঠনিক) + summative (সামষ্টিক) ➔ total (মোট)
- * `total` is derived, so it is never entered by hand.
+ * Component ids every subject carries — formative (গাঠনিক) + summative (সামষ্টিক)
+ * + derived total (মোট). The old EVALUATION_COMPONENTS table (৪০%/৬০%, each out of
+ * ১০০) was removed: nothing in src/ or scripts/ used it, and the real split lives
+ * in resultConfig.js (গাঠনিক ৩০ + সামষ্টিক ৭০ = ১০০).
  */
-export const EVALUATION_COMPONENTS = Object.freeze([
-  { id: 'formative', name: 'গাঠনিক মূল্যায়ন', shortName: 'গাঠনিক', weight: 0.4, weightLabel: '৪০%', fullMarks: 100, derived: false },
-  { id: 'summative', name: 'সামষ্টিক মূল্যায়ন', shortName: 'সামষ্টিক', weight: 0.6, weightLabel: '৬০%', fullMarks: 100, derived: false },
-  { id: 'total', name: 'মোট নম্বর', shortName: 'মোট', weight: 1, weightLabel: '১০০%', fullMarks: 100, derived: true },
-]);
-
-export const EVALUATION_COMPONENT_IDS = Object.freeze(EVALUATION_COMPONENTS.map((component) => component.id));
-export const EVALUATION_COMPONENT_LABELS = Object.freeze(
-  EVALUATION_COMPONENTS.reduce((acc, component) => {
-    acc[component.id] = component.name;
-    return acc;
-  }, {}),
-);
-/** Components a teacher actually enters — `total` is always computed. */
-export const ENTERED_COMPONENT_IDS = Object.freeze(
-  EVALUATION_COMPONENTS.filter((component) => !component.derived).map((component) => component.id),
-);
+const SUBJECT_COMPONENT_IDS = Object.freeze(['formative', 'summative', 'total']);
 
 /** Master subject catalogue — every entry supports formative + summative + total. */
 export const SUBJECTS = Object.freeze([
-  { id: 'bangla', name: 'বাংলা', code: 'BAN', color: '#2563eb', components: EVALUATION_COMPONENT_IDS },
-  { id: 'english', name: 'ইংরেজি', code: 'ENG', color: '#059669', components: EVALUATION_COMPONENT_IDS },
-  { id: 'math', name: 'গণিত', code: 'MAT', color: '#d97706', components: EVALUATION_COMPONENT_IDS },
-  { id: 'integrated', name: 'সমন্বিত', code: 'INT', color: '#7c3aed', components: EVALUATION_COMPONENT_IDS },
-  { id: 'science', name: 'প্রাথমিক বিজ্ঞান', code: 'SCI', color: '#0891b2', components: EVALUATION_COMPONENT_IDS },
-  { id: 'bgs', name: 'বাংলাদেশ ও বিশ্বপরিচয়', code: 'BGS', color: '#0d9488', components: EVALUATION_COMPONENT_IDS },
-  { id: 'religion', name: 'ধর্ম ও নৈতিক শিক্ষা', code: 'REL', color: '#db2777', components: EVALUATION_COMPONENT_IDS },
+  { id: 'bangla', name: 'বাংলা', code: 'BAN', color: '#2563eb', components: SUBJECT_COMPONENT_IDS },
+  { id: 'english', name: 'ইংরেজি', code: 'ENG', color: '#059669', components: SUBJECT_COMPONENT_IDS },
+  { id: 'math', name: 'গণিত', code: 'MAT', color: '#d97706', components: SUBJECT_COMPONENT_IDS },
+  { id: 'integrated', name: 'সমন্বিত', code: 'INT', color: '#7c3aed', components: SUBJECT_COMPONENT_IDS },
+  { id: 'science', name: 'প্রাথমিক বিজ্ঞান', code: 'SCI', color: '#0891b2', components: SUBJECT_COMPONENT_IDS },
+  { id: 'bgs', name: 'বাংলাদেশ ও বিশ্বপরিচয়', code: 'BGS', color: '#0d9488', components: SUBJECT_COMPONENT_IDS },
+  { id: 'religion', name: 'ধর্ম ও নৈতিক শিক্ষা', code: 'REL', color: '#db2777', components: SUBJECT_COMPONENT_IDS },
 ]);
 
 export const SUBJECT_IDS = Object.freeze(SUBJECTS.map((subject) => subject.id));
@@ -247,15 +232,15 @@ export const resolveClassKey = (classId) => {
  * Class-wise subject matrix (শ্রেণিভিত্তিক বিষয়):
  *  - প্রাক-প্রাথমিক       ➔ বাংলা, ইংরেজি, গণিত                    (৩)
  *  - ১ম ও ২য় শ্রেণি       ➔ বাংলা, ইংরেজি, গণিত, সমন্বিত           (৪)
- *  - ৩য়, ৪র্থ, ৫ম শ্রেণি  ➔ বাংলা, ইংরেজি, গণিত, বিজ্ঞান, বি.ও.বি., ধর্ম (৬)
+ *  - ৩য়, ৪র্থ, ৫ম শ্রেণি  ➔ বাংলা, ইংরেজি, গণিত, বিজ্ঞান, বি.ও.বি., ধর্ম, সমন্বিত (৭)
  */
 export const CLASS_SUBJECT_IDS = Object.freeze({
   [CLASS_KEYS.PRE_PRIMARY]: Object.freeze(['bangla', 'english', 'math']),
   [CLASS_KEYS.CLASS_1]: Object.freeze(['bangla', 'english', 'math', 'integrated']),
   [CLASS_KEYS.CLASS_2]: Object.freeze(['bangla', 'english', 'math', 'integrated']),
-  [CLASS_KEYS.CLASS_3]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion']),
-  [CLASS_KEYS.CLASS_4]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion']),
-  [CLASS_KEYS.CLASS_5]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion']),
+  [CLASS_KEYS.CLASS_3]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion', 'integrated']),
+  [CLASS_KEYS.CLASS_4]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion', 'integrated']),
+  [CLASS_KEYS.CLASS_5]: Object.freeze(['bangla', 'english', 'math', 'science', 'bgs', 'religion', 'integrated']),
 });
 
 /** Unknown/archived class ids fall back to the widest (Class 3–5) syllabus. */
@@ -265,9 +250,6 @@ export const getSubjectIdsForClass = (classId) =>
 /** Full subject descriptors (with their evaluation components) for one class. */
 export const getSubjectsForClass = (classId) =>
   getSubjectIdsForClass(classId).map((subjectId) => SUBJECT_MAP[subjectId]).filter(Boolean);
-
-/** The evaluation structure every subject of a class supports. */
-export const getEvaluationStructure = () => EVALUATION_COMPONENTS;
 
 /**
  * Terms (প্রান্তিক): ১ম প্রান্তিক, ২য় প্রান্তিক ও বার্ষিক।

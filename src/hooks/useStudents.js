@@ -625,23 +625,27 @@ export function useStudents({
     [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
   );
 
+  /**
+   * Archives a pupil — with feedback and rollback.
+   *
+   * Flow: optimistic local move first (instant UI), then the cloud write.
+   * A DEFINITE cloud failure rolls the pupil back to their class — the roster
+   * never shows a pupil as archived while the cloud still has them active.
+   * A timeout is NOT a failure: the write may still land (or is already queued
+   * in the offline queue), so the optimistic state is kept and `pending: true`
+   * is returned so the UI can say "সংরক্ষণ হচ্ছে…" instead of "ব্যর্থ হয়েছে".
+   *
+   * @returns {Promise<{ok:boolean, synced:boolean, pending?:boolean, reason?:string}>}
+   *   reason: 'not-found' | 'already-archived' | 'save-failed' | 'pending'
+   */
   const archiveStudent = useCallback(
-    (studentId) => {
+    async (studentId) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
-      if (!existing || existing.classId === 'archive') return;
+      if (!existing) return { ok: false, synced: false, reason: 'not-found' };
+      if (existing.classId === 'archive') return { ok: false, synced: false, reason: 'already-archived' };
       const archived = { ...existing, previousClassId: existing.classId, classId: 'archive', status: 'archived' };
       // The year partition keeps the graduate, so no flat `schoolData/{id}/archive`
       // mirror is written any more.
-      if (canWriteCloud && canWriteTenant) {
-        runCloudSave(() => saveStudentPatch(
-          tenantRef,
-          year,
-          studentId,
-          { classId: 'archive', status: 'archived', previousClassId: existing.classId },
-          existing.classId,
-          existing,
-        ));
-      }
       updateDataset(
         (previous) => ({
           ...previous,
@@ -649,17 +653,51 @@ export function useStudents({
         }),
         { action: 'student.archive', detail: `${existing.name} আর্কাইভে পাঠানো হয়েছে`, actor: 'school_admin' },
       );
+      if (canWriteCloud && canWriteTenant) {
+        const result = await runCloudSave(() => saveStudentPatch(
+          tenantRef,
+          year,
+          studentId,
+          { classId: 'archive', status: 'archived', previousClassId: existing.classId },
+          existing.classId,
+          existing,
+        ));
+        if (result?.synced === false && !result?.timedOut && result?.partial !== true) {
+          // Definite failure — roll the pupil back to their class.
+          updateDataset((previous) => ({
+            ...previous,
+            students: previous.students.map((student) => (student.id === studentId ? existing : student)),
+          }));
+          return { ok: false, synced: false, reason: result?.reason ?? 'save-failed' };
+        }
+        return {
+          ok: true,
+          synced: result?.synced !== false,
+          pending: result?.timedOut === true,
+          reason: result?.timedOut === true ? 'pending' : undefined,
+        };
+      }
+      return { ok: true, synced: true };
     },
     [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
   );
 
+  /**
+   * Restores an archived pupil — same feedback + rollback contract as
+   * `archiveStudent`. The pupil returns to the শাখা they left (the default one
+   * when unknown) and is placed at the END of that class + শাখা list (max+1),
+   * so a restore never duplicates a roll that is already in use and never
+   * renumbers any existing pupil.
+   *
+   * @returns {Promise<{ok:boolean, synced:boolean, pending?:boolean, reason?:string, roll?:number}>}
+   *   reason: 'not-found' | 'not-archived' | 'invalid-class' | 'save-failed' | 'pending'
+   */
   const restoreStudent = useCallback(
-    (studentId, classId) => {
+    async (studentId, classId) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
-      if (!existing || existing.classId !== 'archive' || !CLASS_LEVELS.some((item) => item.id === classId)) return;
-      // The pupil returns to the শাখা they left (the default one when unknown) and is
-      // placed at the END of that class + শাখা list, so a restore never duplicates a
-      // roll that is already in use.
+      if (!existing) return { ok: false, synced: false, reason: 'not-found' };
+      if (existing.classId !== 'archive') return { ok: false, synced: false, reason: 'not-archived' };
+      if (!CLASS_LEVELS.some((item) => item.id === classId)) return { ok: false, synced: false, reason: 'invalid-class' };
       const section = toSectionId(existing.section ?? existing.previousSectionId ?? existing.previousSection);
       const roll = nextFreeRollInBucket(datasetRef.current.students, {
         classId,
@@ -667,16 +705,6 @@ export function useStudents({
         ignoreIds: [studentId],
       });
       const restored = { ...existing, classId, roll, section, status: 'active', previousClassId: null };
-      if (canWriteCloud && canWriteTenant) {
-        runCloudSave(() => saveStudentPatch(
-          tenantRef,
-          year,
-          studentId,
-          { classId, roll, section, status: 'active', previousClassId: null },
-          existing.classId,
-          existing,
-        ));
-      }
       updateDataset(
         (previous) => ({
           ...previous,
@@ -684,15 +712,37 @@ export function useStudents({
         }),
         { action: 'student.restore', detail: `${existing.name} ${classId} শ্রেণিতে ফিরিয়ে নেওয়া হয়েছে`, actor: 'school_admin' },
       );
+      if (canWriteCloud && canWriteTenant) {
+        const result = await runCloudSave(() => saveStudentPatch(
+          tenantRef,
+          year,
+          studentId,
+          { classId, roll, section, status: 'active', previousClassId: null },
+          existing.classId,
+          existing,
+        ));
+        if (result?.synced === false && !result?.timedOut && result?.partial !== true) {
+          updateDataset((previous) => ({
+            ...previous,
+            students: previous.students.map((student) => (student.id === studentId ? existing : student)),
+          }));
+          return { ok: false, synced: false, reason: result?.reason ?? 'save-failed' };
+        }
+        return {
+          ok: true,
+          synced: result?.synced !== false,
+          pending: result?.timedOut === true,
+          reason: result?.timedOut === true ? 'pending' : undefined,
+          roll,
+        };
+      }
+      return { ok: true, synced: true, roll };
     },
     [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
   );
 
   const removeStudent = useCallback(
-    (studentId) => {
-      const existing = datasetRef.current.students.find((student) => student.id === studentId);
-      if (existing) archiveStudent(studentId);
-    },
+    (studentId) => archiveStudent(studentId),
     [archiveStudent],
   );
 

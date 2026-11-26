@@ -23,6 +23,7 @@ import ExcelPreviewModal from '../components/results/ExcelPreviewModal.jsx';
 import ExcelDownloadWarningModal from '../components/results/ExcelDownloadWarningModal.jsx';
 import AIRemarkModal from '../components/results/AIRemarkModal.jsx';
 import Spinner from '../components/ui/Spinner.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
 import ResultMarksheetA4 from '../components/documents/ResultMarksheetA4.jsx';
 import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
@@ -75,6 +76,7 @@ export default function ResultsPage() {
     isHydrating,
   } = useSchoolData();
   const { canManageStudents, canEditMarks, canPrintDocuments } = useAuth();
+  const toast = useToast();
 
   const [classId, setClassId] = useState('c5');
   const [tabId, setTabId] = useState('term1');
@@ -188,6 +190,20 @@ export default function ResultsPage() {
     [getRemark, remarkTermId],
   );
   const weights = normalizedWeightPercent(config.weights);
+  /**
+   * Per-subject vs total full marks — the old subtitle printed the TOTAL (e.g. ৭০০)
+   * after "প্রতি বিষয়ে পূর্ণমান". Every subject normally carries ১০০, but a school
+   * may customise one subject, so keep every distinct value instead of assuming.
+   */
+  const totalFullMarks = useMemo(
+    () => config.subjects.reduce((sum, subject) => sum + (Number(subject.fullMarks) || 0), 0),
+    [config.subjects],
+  );
+  const perSubjectFullMarksLabel = useMemo(
+    () => [...new Set(config.subjects.map((subject) => Number(subject.fullMarks) || 0))]
+      .map((value) => toBanglaNumber(value)).join(' / '),
+    [config.subjects],
+  );
   const goldenCount = useMemo(
     () => classRows.filter((row) => row.result?.isGolden).length,
     [classRows],
@@ -370,6 +386,8 @@ export default function ResultsPage() {
   /**
    * Saves the previewed sheet in ONE multi-path database write (per class + term), so a
    * 40-pupil upload is a single atomic update inside this school's own year partition.
+   * The preview modal closes on success, so the toast is the visible confirmation;
+   * on failure the modal stays open with its own error and the toast floats above it.
    */
   const savePreview = async (mergedMarks) => {
     if (isConsolidated || !activeTab.termId) return { synced: false };
@@ -386,9 +404,18 @@ export default function ResultsPage() {
         termId: activeTab.termId,
         config,
       });
-      if (result?.synced === false) return result;
+      if (result?.synced === false) {
+        toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+        return result;
+      }
       setUploadInfo('এক্সেলের নম্বর সফলভাবে সংরক্ষণ হয়েছে।');
+      toast.success('সংরক্ষণ হয়েছে');
       return result ?? { synced: true };
+    } catch {
+      // The modal also shows its own inline error for this; returning
+      // `{ synced: false }` (instead of throwing) is what triggers it.
+      toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+      return { synced: false };
     } finally {
       setSavingPreview(false);
     }
@@ -431,9 +458,9 @@ export default function ResultsPage() {
       ))}
     </div>
 
-    <Card className="mb-4 no-print">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
+    <Card className="mb-4 min-w-0 no-print">
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-end gap-3">
           <label>
             <span className="label-base">শ্রেণি নির্বাচন</span>
             <select className="input-base w-44" value={classId} onChange={(event) => {
@@ -462,7 +489,7 @@ export default function ResultsPage() {
             </button>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Badge tone="brand">{toBanglaNumber(config.subjects.length)} বিষয় · {toBanglaNumber(config.subjects.reduce((sum, subject) => sum + subject.fullMarks, 0))} পূর্ণমান</Badge>
           <Badge tone={weightsAreClean(config.weights) ? 'emerald' : 'amber'}>পাস {toBanglaNumber(config.passMark)}</Badge>
           <Badge tone="amber">গোল্ডেন {toBanglaNumber(goldenCount)}</Badge>
@@ -512,13 +539,13 @@ export default function ResultsPage() {
       {uploadError ? <p role="alert" className="mt-2 rounded-lg bg-rose-50 p-2.5 text-[11px] font-semibold text-rose-800 dark:bg-rose-950/40 dark:text-rose-200"><b>আপলোড বাতিল:</b> {uploadError}</p> : null}
     </Card>
 
-    <Card padded={false} className="no-print">
-      <div className="relative p-4">
+    <Card padded={false} className="min-w-0 no-print">
+      <div className="relative min-w-0 p-3 sm:p-4">
         <CardHeader
           title={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name}`}
           subtitle={isConsolidated
             ? `১ম (${toBanglaNumber(weights.term1)}%) + ২য় (${toBanglaNumber(weights.term2)}%) + বার্ষিক (${toBanglaNumber(weights.annual)}%) অনুযায়ী চূড়ান্ত ফলাফল · মেধাক্রম ও নতুন রোল`
-            : `প্রতি বিষয়ে পূর্ণমান ${toBanglaNumber(config.subjects.reduce((sum, subject) => sum + subject.fullMarks, 0))} · পাস নম্বর ${toBanglaNumber(config.passMark)} · এই প্রান্তিকের পৃথক মেধাক্রম`}
+            : `প্রতি বিষয়ে পূর্ণমান ${perSubjectFullMarksLabel} · মোট পূর্ণমান ${toBanglaNumber(totalFullMarks)} · পাস নম্বর ${toBanglaNumber(config.passMark)} · এই প্রান্তিকের পৃথক মেধাক্রম`}
         />
         {switching || isHydrating ? (
           <p
@@ -562,9 +589,12 @@ export default function ResultsPage() {
         )}
       </div>
 
-      <div className="flex flex-wrap items-end justify-between gap-3 border-t border-slate-100 p-4 dark:border-slate-800">
-        <div className="flex flex-wrap gap-2">
-          {students.slice(0, 4).map((student) => (
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-3 border-t border-slate-100 p-3 sm:p-4 dark:border-slate-800">
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {/* Every row — not just the first 4. The grid's মন্তব্য column already opens
+              this same modal for every pupil, so these buttons reuse setRemarkTarget
+              and the single AIRemarkModal below; no second modal logic. */}
+          {students.map((student) => (
             <button key={student.id} className="btn-secondary btn-sm" onClick={() => setRemarkTarget(student)}>
               <Sparkles size={13} />{student.name} · মন্তব্য
             </button>
@@ -577,7 +607,7 @@ export default function ResultsPage() {
     </Card>
 
     {/* মার্কশিট প্রিন্ট / PDF — single pupil + whole class, two A4 layouts */}
-    <Card className="mt-4 no-print">
+    <Card className="mt-4 min-w-0 no-print">
       <CardHeader
         title="মার্কশিট প্রিন্ট ও PDF ডাউনলোড"
         subtitle={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name} · ${toBanglaNumber(marksheetRows.length)} জনের মার্কশিট প্রস্তুত`}
@@ -622,12 +652,12 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-2">
-          <label>
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-end gap-2">
+          <label className="min-w-0 max-w-full">
             <span className="label-base">প্রিন্টের শিক্ষার্থী</span>
             <select
-              className="input-base min-w-44"
+              className="input-base min-w-44 max-w-full"
               value={printTargetId || students[0]?.id || ''}
               onChange={(event) => setPrintTargetId(event.target.value)}
             >
@@ -648,7 +678,7 @@ export default function ResultsPage() {
             <Printer size={15} /> একক শিক্ষার্থীর প্রিন্ট
           </button>
         </div>
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="flex min-w-0 flex-wrap items-end gap-2">
           <button
             type="button"
             className="btn-emerald"
@@ -670,6 +700,8 @@ export default function ResultsPage() {
       </p>
     </Card>
 
+    {/* মার্কশিট প্রিভিউ: ১৮৬mm চওড়া A4 শিট — ছোট স্ক্রিনে পাশে স্ক্রল হবে (প্রিন্টে স্ক্রল থাকবে না)। */}
+    <div className="max-w-full overflow-x-auto scroll-thin print:overflow-visible">
     <div className={pageLayout === 'pair' ? 'print-root print-pair' : 'print-root print-single'}>
       {(bulkPrint ? marksheetRows : marksheetRows.filter((row) => row.student.id === printTarget?.id)).map((row) => (
         <ResultMarksheetA4
@@ -685,6 +717,7 @@ export default function ResultsPage() {
           verifyOrigin={verifyOrigin}
         />
       ))}
+    </div>
     </div>
 
     {remarkTarget && (

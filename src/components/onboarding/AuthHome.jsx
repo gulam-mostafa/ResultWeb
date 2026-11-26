@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { registerFirebaseAccount, loginFirebaseAccount } from '../../services/firebaseAuthService.js';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { BookOpen, Sparkles, Zap } from 'lucide-react';
-import { useAuth, isDemoLoginEnabled } from '../../context/AuthContext.jsx';
+import { BookOpen, Sparkles } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { buildSchoolId, subscribeSchools } from '../../services/database/index.js';
 import { findGeoNames } from '../../data/bdLocations.js';
 import { CLASS_LEVELS, ROLES } from '../../utils/constants.js';
@@ -14,7 +14,7 @@ const DEFAULT_DIR = { divisionId: 'dhaka', districtId: 'gazipur', upazilaId: 'ga
 
 export default function AuthHome() {
   const auth = useAuth() || {};
-  const { isAuthenticated = false, landingRouteFor, role = null, user, signInWithRole, registerTeacher, bypassLogin } = auth;
+  const { isAuthenticated = false, landingRouteFor, role = null, user, signInWithRole, registerTeacher } = auth;
   const navigate = useNavigate();
   const [tab, setTab] = useState('login');
   const [kind, setKind] = useState('teacher');
@@ -62,13 +62,9 @@ export default function AuthHome() {
     if (result?.ok) navigate(result.redirectTo || '/dashboard', { replace: true }); else setNotice(result?.message || 'প্রবেশ করা যায়নি।');
   };
 
-  const handleBypass = () => {
-    const res = bypassLogin?.(school, safeDirectory);
-    if (res?.ok) navigate(res.redirectTo || '/dashboard', { replace: true });
-    else if (res?.message) setNotice(res.message);
-  };
-  const demoEnabled = isDemoLoginEnabled();
-
+  // NOTE (2026-11-27): the passwordless bypass login was removed entirely
+  // (`bypassLogin` no longer exists in AuthContext). Admin access requires a
+  // real Firebase account + school membership — there is no demo bypass button.
   const handleKindChange = (nextKind) => { setKind(nextKind); setAdding(false); };
   const handleAddSchool = () => { setAdding(true); setDirectory((current) => ({ ...(current ?? DEFAULT_DIR), schoolId: '' })); };
 
@@ -146,7 +142,6 @@ export default function AuthHome() {
       <section className="flex items-center justify-center p-5 sm:p-9 lg:p-12"><div className="w-full max-w-xl">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-2">
           <div><h2 className="text-2xl font-extrabold text-slate-900 dark:text-white">আপনার অ্যাকাউন্টে প্রবেশ করুন</h2><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">চালিয়ে যেতে লগইন করুন অথবা নতুন নিবন্ধন করুন</p></div>
-          {demoEnabled ? <button type="button" onClick={handleBypass} className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-white shadow hover:bg-amber-600"><Zap size={14}/> সরাসরি প্রবেশ (ডেমো)</button> : null}
         </div>
         <div className="mb-6 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800"><button type="button" onClick={() => { setTab('login'); setNotice(''); setAdding(false); }} className={`rounded-lg px-3 py-2.5 text-sm font-bold ${tab === 'login' ? 'bg-white text-brand-800 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500'}`}>লগইন</button><button type="button" onClick={() => { setTab('signup'); setNotice(''); }} className={`rounded-lg px-3 py-2.5 text-sm font-bold ${tab === 'signup' ? 'bg-white text-brand-800 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500'}`}>সাইন আপ / নিবন্ধন</button></div>
         {tab === 'login' ? (
@@ -167,7 +162,6 @@ export default function AuthHome() {
             notice={notice}
             isSubmitting={isSubmitting}
             onSubmit={submit}
-            onBypass={handleBypass}
             schoolName={school?.name ?? 'বিদ্যালয় নির্বাচন করুন'}
           />
         ) : (
@@ -198,7 +192,6 @@ export default function AuthHome() {
             notice={notice}
             isSubmitting={isSubmitting}
             onSubmit={submit}
-            onBypass={handleBypass}
             schoolName={school?.name ?? 'বিদ্যালয় নির্বাচন করুন'}
           />
         )}

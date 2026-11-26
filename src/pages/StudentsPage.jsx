@@ -10,6 +10,8 @@ import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import { Card } from '../components/ui/Primitives.jsx';
 import Modal from '../components/ui/Modal.jsx';
+import Spinner from '../components/ui/Spinner.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
 import ClassTabs from '../components/students/ClassTabs.jsx';
 import SectionSelect from '../components/students/SectionSelect.jsx';
 import StudentTable from '../components/students/StudentTable.jsx';
@@ -25,8 +27,9 @@ import { buildImportPlan } from '../utils/studentImportPlan.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
 
 export default function StudentsPage() {
-  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, advanceAcademicYear, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection } = useSchoolData();
+  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, advanceAcademicYear, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection, isHydrating } = useSchoolData();
   const { canManageStudents } = useAuth();
+  const toast = useToast();
   const [tab, setTab] = useState('pre');
   const [section, setSection] = useState(DEFAULT_SECTION_ID);
   const [adding, setAdding] = useState(false);
@@ -94,7 +97,16 @@ export default function StudentsPage() {
     entries.forEach((student, index) => addStudent({ ...student, classId, section: targetSection, roll: firstRoll + index, isDemo: true }));
     setDemoMessage(`${entries.length} জন ডেমো শিক্ষার্থী ${classId === tab ? 'এই' : 'প্রাক-প্রাথমিক'} শ্রেণির ${targetSection} শাখায় যোগ হয়েছে।`);
   };
-  const saveStudent = (student) => student.id ? updateStudent(student.id, student) : addStudent(student);
+  /**
+   * New admission / edit save. `addStudent` / `updateStudent` apply the local
+   * roster write synchronously (the modal already closed on it); the cloud write
+   * runs fire-and-forget inside them and its state is shown by the sync badge —
+   * so the toast confirms the local save, it never claims the cloud is done.
+   */
+  const saveStudent = (student) => {
+    student.id ? updateStudent(student.id, student) : addStudent(student);
+    toast.success('সংরক্ষণ হয়েছে');
+  };
 
   /* ---------------------------------------------------------------- *
    * 6-sheet Excel workbook: download (warned) ➔ upload (validated) ➔ preview
@@ -191,30 +203,79 @@ export default function StudentsPage() {
     setSavingImport(true);
     try {
       const result = await importStudents(importPlan, { force });
-      if (result?.synced !== false) {
-        setExcelNotice({
-          tone: 'success',
-          text: `আমদানি সম্পন্ন — নতুন ${toBanglaNumber(result?.created ?? 0)} জন, হালনাগাদ ${toBanglaNumber(result?.updated ?? 0)} জন।`,
-        });
-        setImportPlan(null);
+      if (result?.synced === false) {
+        // The preview modal stays open on failure and shows its own error; the
+        // toast is the floating confirmation above it.
+        toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+        setExcelNotice({ tone: 'error', text: 'এক্সেল আমদানি ক্লাউডে সংরক্ষণ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।' });
+        return result;
       }
+      toast.success('সংরক্ষণ হয়েছে');
+      setExcelNotice({
+        tone: 'success',
+        text: `আমদানি সম্পন্ন — নতুন ${toBanglaNumber(result?.created ?? 0)} জন, হালনাগাদ ${toBanglaNumber(result?.updated ?? 0)} জন।`,
+      });
+      setImportPlan(null);
       return result;
     } finally {
       setSavingImport(false);
     }
   };
 
-  const confirmArchive = (student) => {
-    if (window.confirm(`${student.name} — আর্কাইভে পাঠালে সক্রিয় শ্রেণির তালিকা থেকে সরানো হবে। চালিয়ে যাবেন?`)) {
-      archiveStudent(student.id);
+  const confirmArchive = async (student) => {
+    if (!window.confirm(`${student.name} — আর্কাইভে পাঠালে সক্রিয় শ্রেণির তালিকা থেকে সরানো হবে। চালিয়ে যাবেন?`)) return;
+    const result = await archiveStudent(student.id);
+    if (result?.ok) {
+      setExcelNotice({
+        tone: 'success',
+        text: result?.pending
+          ? `${student.name} আর্কাইভে পাঠানো হচ্ছে — সংযোগ ধীর, কিছুক্ষণ পর যাচাই করুন।`
+          : `${student.name} আর্কাইভে পাঠানো হয়েছে।`,
+      });
       setEditing(null);
       setSelected(null);
+      return;
     }
+    // Definite failure: the pupil was rolled back to their class, so the modal
+    // stays open and the teacher can retry instead of losing the pupil.
+    setExcelNotice({
+      tone: 'error',
+      text: result?.reason === 'already-archived'
+        ? `${student.name} ইতিমধ্যেই আর্কাইভে আছে।`
+        : `${student.name} আর্কাইভ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
+    });
+  };
+
+  const confirmRestore = async () => {
+    if (!restoring) return;
+    const result = await restoreStudent(restoring.id, restoreClassId);
+    if (result?.ok) {
+      setExcelNotice({
+        tone: 'success',
+        text: result?.pending
+          ? `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া হচ্ছে — সংযোগ ধীর, কিছুক্ষণ পর যাচাই করুন।`
+          : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া হয়েছে।`,
+      });
+      setRestoring(null);
+      return;
+    }
+    setExcelNotice({
+      tone: 'error',
+      text: result?.reason === 'not-archived'
+        ? `${restoring.name} আর্কাইভে নেই, তাই ফিরিয়ে নেওয়া যাবে না।`
+        : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
+    });
   };
 
   return <>
     <div className="mb-5"><h2 className="text-xl font-extrabold">শিক্ষার্থী ব্যবস্থাপনা</h2><p className="text-xs text-slate-500">শ্রেণিভিত্তিক তালিকা, ভর্তি ও বার্ষিক উত্তরণ</p></div>
-    <div className="mb-4 flex flex-wrap justify-end gap-2">
+    {isHydrating ? (
+      <p role="status" className="mb-3 inline-flex items-center gap-2 rounded-lg bg-brand-50 px-2.5 py-1.5 text-[11px] font-bold text-brand-800 dark:bg-brand-900/40 dark:text-brand-200">
+        <Spinner size="xs" tone="rainbow" label="ডেটা লোড হচ্ছে…" />
+        ডেটা লোড হচ্ছে…
+      </p>
+    ) : null}
+    <div className="mb-4 flex min-w-0 flex-wrap justify-end gap-2">
       {canManageStudents && <>
         {isDemoLoginEnabled() ? (
           <button className="btn-secondary" onClick={addDemoStudents}><Sparkles size={15} /> ডেমো শিক্ষার্থী যোগ করুন</button>
@@ -253,7 +314,7 @@ export default function StudentsPage() {
         </button>
       </p>
     ) : null}
-    <Card>
+    <Card padded={false} className="min-w-0 p-4 sm:p-6">
       <ClassTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setSection(DEFAULT_SECTION_ID); setDemoMessage(''); }} counts={counts} />
       {sectioned && <SectionSelect
         value={activeSection}
@@ -282,7 +343,7 @@ export default function StudentsPage() {
     <Modal open={Boolean(restoring)} onClose={() => setRestoring(null)} title="শিক্ষার্থীকে শ্রেণিতে ফিরিয়ে নিন" subtitle={restoring?.name} icon={RotateCcw}>
       <div className="space-y-4">
         <label className="block"><span className="label-base">যে শ্রেণিতে ফিরিয়ে নেবেন</span><select className="input-base" value={restoreClassId} onChange={(event) => setRestoreClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setRestoring(null)}>বাতিল</button><button type="button" className="btn-primary" onClick={() => { if (restoring) restoreStudent(restoring.id, restoreClassId); setRestoring(null); }}>শ্রেণিতে ফিরিয়ে নিন</button></div>
+        <div className="flex flex-wrap justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setRestoring(null)}>বাতিল</button><button type="button" className="btn-primary" onClick={confirmRestore}>শ্রেণিতে ফিরিয়ে নিন</button></div>
       </div>
     </Modal>
     <AutoPromotionModal
