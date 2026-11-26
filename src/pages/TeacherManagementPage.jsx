@@ -20,6 +20,7 @@ import {
   subscribeMembers,
 } from '../services/database/index.js';
 import { Card, CardHeader, EmptyState } from '../components/ui/Primitives.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
 import { clsx } from '../utils/clsx.js';
 
 const asList = (record) => Object.values(record || {}).filter((member) => member?.uid);
@@ -62,6 +63,7 @@ function MemberMeta({ member }) {
 
 export default function TeacherManagementPage() {
   const { user, canApproveTeachers } = useAuth();
+  const toast = useToast();
   const [members, setMembers] = useState({});
   const [busyId, setBusyId] = useState('');
   const [notice, setNotice] = useState(null);
@@ -122,6 +124,8 @@ export default function TeacherManagementPage() {
           : 'পরিবর্তন সংরক্ষণ হয়েছে।'
         : 'পরিবর্তন সংরক্ষণ করা যায়নি; অনুমতি ও সংযোগ যাচাই করে আবার চেষ্টা করুন।',
     });
+    if (result?.synced) toast.success('সংরক্ষণ হয়েছে');
+    else toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
   };
 
   const confirmRemove = (member) => {

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Search, UserRound, Pencil, RotateCcw, BarChart3 } from 'lucide-react';
 import { EmptyState } from '../ui/Primitives.jsx';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
+import { matchesStudentSearch } from '../../utils/studentSearch.js';
 import PromotionBadge from './PromotionBadge.jsx';
 
 /**
@@ -17,10 +18,13 @@ import PromotionBadge from './PromotionBadge.jsx';
  */
 export default function StudentTable({ students = [], canEdit, isArchive = false, onSelect, onEdit, onRestore, onShowResult, getStudentResult }) {
   const [query, setQuery] = useState('');
-  const filtered = useMemo(() => students.filter((student) => [student.name, student.roll, student.fatherName, student.motherName, student.guardianPhone, student.fatherPhone, student.motherPhone].join(' ').toLowerCase().includes(query.toLowerCase())), [students, query]);
+  // নাম বা প্রোফাইলের যেকোনো তথ্য (পিতা/মাতার নাম, রোল, ফোন, জন্ম নিবন্ধন নম্বর,
+  // ঠিকানা, অভিভাবকের এনআইডি) দিয়ে খোঁজা — বাংলা সংখ্যা আগে ASCII-তে বদলে মেলানো
+  // হয়, তাই `০১৭…` আর `017…` একই নম্বর। একাধিক মিললে সবাই দেখায়।
+  const filtered = useMemo(() => students.filter((student) => matchesStudentSearch(student, query)), [students, query]);
   if (!students.length) return <EmptyState icon={UserRound} title={isArchive ? 'আর্কাইভে শিক্ষার্থী নেই' : 'এই শ্রেণিতে শিক্ষার্থী নেই'} message="শিক্ষার্থীর তালিকা এখানে দেখা যাবে।" />;
   return <div>
-    <div className="relative mb-3 w-full max-w-sm"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input className="input-base pl-9" placeholder="নাম, রোল বা অভিভাবক খুঁজুন" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+    <div className="relative mb-3 w-full max-w-sm"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input className="input-base pl-9" placeholder="নাম, রোল, ফোন, জন্ম নিবন্ধন, ঠিকানা বা এনআইডি দিয়ে খুঁজুন" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
     <div className="max-w-full overflow-x-auto scroll-thin"><table className="table-base min-w-[720px]"><thead><tr><th>রোল</th><th>শিক্ষার্থীর নাম</th><th>পিতা / মাতা</th><th>লিঙ্গ</th><th>ফলাফল · বার্ষিক (ওজনযুক্ত)</th><th>অভিভাবকের ফোন</th>{canEdit && <th>কার্যক্রম</th>}</tr></thead><tbody>
       {filtered.map((student) => {
         const result = getStudentResult?.(student.id) ?? null;

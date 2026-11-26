@@ -1,11 +1,14 @@
-import { useState } from 'react';
-import { Printer } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Download, Printer } from 'lucide-react';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { CLASS_TABS } from '../utils/constants.js';
 import { RESULT_TABS, tabById } from '../utils/resultConfig.js';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import { Card } from '../components/ui/Primitives.jsx';
+import Spinner from '../components/ui/Spinner.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
+import { downloadSheetsAsPdf } from '../utils/downloadPdf.js';
 import MarksheetA4 from '../components/documents/MarksheetA4.jsx';
 import TestimonialA4 from '../components/documents/TestimonialA4.jsx';
 import TransferCertificateA4 from '../components/documents/TransferCertificateA4.jsx';
@@ -22,13 +25,18 @@ import CompletionCertificateA4 from '../components/documents/CompletionCertifica
  *   instead of a blank sheet.
  */
 export default function DocumentsPage() {
-  const { studentsByClass, getStudentResult, getTermResult, getRemark, schoolProfile } = useSchoolData();
+  const { studentsByClass, getStudentResult, getTermResult, getRemark, schoolProfile, activeYear } = useSchoolData();
   const { canPrintDocuments } = useAuth();
+  const toast = useToast();
   const [classId, setClassId] = useState('c5');
   const [studentId, setStudentId] = useState('');
   const [type, setType] = useState('marksheet');
   /** Marksheet evaluation view (`consolidated` = বার্ষিক ফলাফল). */
   const [tabId, setTabId] = useState('consolidated');
+  /** সরাসরি PDF ডাউনলোড চলছে কি না (প্রিন্ট ডায়ালগ ছাড়া, jsPDF দিয়ে)। */
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  /** ডকুমেন্ট প্রিন্ট-রুট — সরাসরি PDF ডাউনলোড এই এলিমেন্টের `.print-sheet` রেন্ডার করে। */
+  const printRootRef = useRef(null);
 
   const students = studentsByClass[classId] ?? [];
   const student = students.find((item) => item.id === studentId) ?? students[0] ?? null;
@@ -41,6 +49,28 @@ export default function DocumentsPage() {
   const remark = student ? getRemark?.(student.id, isConsolidated ? 'annual' : activeTab.termId) : '';
   const markBlocked = Boolean(student) && type === 'marksheet' && !hasResult;
   const eligible = Boolean(student) && canPrintDocuments && (type !== 'marksheet' || hasResult);
+
+  /**
+   * সরাসরি PDF ডাউনলোড — প্রিন্ট ডায়ালগ খোলে না। `downloadSheetsAsPdf` নিচের
+   * ডকুমেন্ট শিটটিকে A4 PDF-এ রেন্ডার করে (০.৭৫ ইঞ্চি মার্জিন, ১টি/পেজে পুরো পেজ)
+   * এবং ফাইল ডাউনলোড করে। প্রিন্ট বোতাম আলাদাই থাকে।
+   */
+  const downloadPdf = async () => {
+    if (downloadingPdf || !eligible) return;
+    setDownloadingPdf(true);
+    try {
+      const typeLabel = type === 'marksheet' ? 'মার্কশিট' : type === 'testimonial' ? 'প্রত্যয়নপত্র' : type === 'tc' ? 'ছাড়পত্র' : 'সমাপ্তি-সনদ';
+      await downloadSheetsAsPdf(printRootRef.current, {
+        filename: `${schoolProfile?.name || 'বিদ্যালয়'}-${typeLabel}-${student?.name || ''}-রোল-${student?.roll ?? ''}-${activeYear || ''}.pdf`,
+        sheetsPerPage: 1,
+      });
+      toast.success('PDF ডাউনলোড হয়েছে');
+    } catch {
+      toast.error('PDF তৈরি করা যায়নি — আবার চেষ্টা করুন');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   return <>
     <div className="app-toolbar mb-4">
@@ -77,9 +107,14 @@ export default function DocumentsPage() {
               {RESULT_TABS.map((tab) => <option key={tab.id} value={tab.id}>{tab.name}</option>)}
             </select>
           </label>
-          <div className="flex items-end">
+          <div className="flex items-end gap-2">
             <button className="btn-primary w-full" onClick={() => window.print()} disabled={!eligible}>
               <Printer size={15} /> প্রিন্ট / PDF
+            </button>
+            <button className="btn-emerald w-full" onClick={downloadPdf} disabled={!eligible || downloadingPdf}>
+              {downloadingPdf
+                ? <><Spinner size="xs" tone="white" label="PDF তৈরি হচ্ছে…" /> PDF তৈরি হচ্ছে…</>
+                : <><Download size={15} /> PDF ডাউনলোড</>}
             </button>
           </div>
         </div>
@@ -97,12 +132,13 @@ export default function DocumentsPage() {
           </p>
         ) : null}
         <p className="mt-2 rounded-xl bg-slate-50 p-2.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-          প্রিন্ট ডায়ালগে <b>Save as PDF</b> নির্বাচন করলেই PDF ডাউনলোড হবে।
+          <b>PDF ডাউনলোড</b> বোতামে চাপলেই সরাসরি PDF ফাইল ডাউনলোড হবে — প্রিন্ট ডায়ালগ খুলবে না।
+          প্রিন্ট করতে চাইলে <b>প্রিন্ট / PDF</b> বোতাম ব্যবহার করুন, সেখানে Save as PDF-ও বেছে নেওয়া যাবে।
         </p>
       </Card>
     </div>
 
-    <div className="print-root print-stage">
+    <div ref={printRootRef} className="print-root print-stage">
       {!students.length || !student ? (
         <Card className="no-print"><p className="p-8 text-center">নির্বাচিত শ্রেণিতে শিক্ষার্থী নেই।</p></Card>
       ) : type === 'marksheet' ? (

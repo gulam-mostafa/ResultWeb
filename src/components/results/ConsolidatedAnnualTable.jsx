@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { AlertTriangle, ArrowDownUp, Crown, Info, ListOrdered } from 'lucide-react';
 import { toBanglaNumber, formatBanglaDecimal } from '../../utils/banglaNumberFormatter.js';
 import { TERMS } from '../../utils/constants.js';
+import StickyScrollBar from '../ui/StickyScrollBar.jsx';
 
 /**
  * বার্ষিক ফলাফল টেবিল — consolidated annual result WITHOUT subject columns.
@@ -15,6 +16,12 @@ import { TERMS } from '../../utils/constants.js';
  * Every number comes from the SAME engine the marksheet and the promotion flow use
  * (`getClassRows(classId, 'consolidated')`), so the screen and the printed sheet can
  * never disagree. Sorting switches between বর্তমান রোল and মেধাক্রম.
+ *
+ * Each term cell shows ONLY its weighted MARKS (e.g. ৬০ / ৭৫ / ৩১৫) — no small
+ * "ওজনযুক্ত %" / "কাঁচা %" print below the marks. The LAST column is মন্তব্য, the
+ * same inline remark cell the term tabs have: clicking it opens the remark editor
+ * (`onShowRemark`), which saves through the same term-scoped `setRemark` flow
+ * (annual remark), so the text appears on the marksheet/profile too.
  */
 const TONE_BY_GRADE = {
   'A+': 'bg-emerald-100 text-emerald-800',
@@ -26,10 +33,16 @@ const TONE_BY_GRADE = {
   F: 'bg-rose-100 text-rose-800',
 };
 
-const percentCell = (value) => (value === null || value === undefined ? '—' : `${formatBanglaDecimal(value, 2)}%`);
-
-/** Term label of the annual table (১ম প্রান্তিক / ২য় প্রান্তিক / বার্ষিক মূল্যায়ন). */
 const termLabel = (term) => (term.id === 'annual' ? 'বার্ষিক মূল্যায়ন' : `${term.shortName} প্রান্তিক`);
+
+/** A remark preview: one sentence, trimmed, or the `মন্তব্য লিখুন` prompt. */
+const remarkPreview = (text) => {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const sentences = clean.match(/[^।]+।?/g) ?? [clean];
+  const first = (sentences[0] ?? clean).trim();
+  return first.length > 34 ? `${first.slice(0, 32)}…` : first;
+};
 
 /**
  * Weighted MARKS contribution of each term of ONE consolidated result.
@@ -43,8 +56,8 @@ const termLabel = (term) => (term.id === 'annual' ? 'বার্ষিক ম�
  *
  * The three `weightedMarks` add up to the engine's `result.totalMarks`, apart
  * from the engine's own per-subject rounding (≤ ০.০১ × বিষয় সংখ্যা). `weighted`
- * (weighted %) and `percent` (raw term %) are kept as the small print below
- * the marks; they are average-percent based, as before.
+ * (weighted %) and `percent` (raw term %) are still computed for the engine's
+ * own use, but they are NOT rendered — each term cell shows only the marks.
  */
 export function termCellsOf(result) {
   return TERMS.map((term) => {
@@ -83,10 +96,22 @@ export default function ConsolidatedAnnualTable({
   onSortModeChange,
   onShowStudent,
   onShowResult,
+  /** `(studentId) => string` — the saved ANNUAL remark (same flow as the term tabs). */
+  getRemark,
+  /** Click on the মন্তব্য cell → the editable remark modal (same as the term tabs). */
+  onShowRemark,
   isHydrating = false,
   switching = false,
 }) {
   const weightText = `${toBanglaNumber(weights?.term1 ?? 0)}% + ${toBanglaNumber(weights?.term2 ?? 0)}% + ${toBanglaNumber(weights?.annual ?? 0)}%`;
+  /** The desktop table's horizontal scroll container (the sticky bottom bar syncs with it). */
+  const tableWrapRef = useRef(null);
+
+  /** Saved remark of a pupil for the ANNUAL term (undefined when the caller has none). */
+  const remarkOf = (studentId) => {
+    if (typeof getRemark !== 'function') return '';
+    return String(getRemark(studentId) ?? '');
+  };
 
   /** One row per pupil, carrying the consolidated result + its ranked position. */
   const visibleRows = useMemo(() => {
@@ -138,8 +163,8 @@ export default function ConsolidatedAnnualTable({
         </p>
       ) : null}
 
-      <div className="hidden max-w-full overflow-x-auto scroll-thin md:block">
-        <table className="table-base min-w-[900px]">
+      <div ref={tableWrapRef} className="hidden max-w-full overflow-x-auto scroll-thin md:block">
+        <table className="table-base min-w-[1020px]">
           <thead>
             <tr>
               <th className="sticky left-0 top-0 z-20">শিক্ষার্থী</th>
@@ -158,6 +183,7 @@ export default function ConsolidatedAnnualTable({
               <th className="text-center">মেধাক্রম</th>
               <th className="text-center">বর্তমান রোল</th>
               <th className="text-center">নতুন রোল</th>
+              <th className="text-center">মন্তব্য</th>
             </tr>
           </thead>
           <tbody>
@@ -185,11 +211,7 @@ export default function ConsolidatedAnnualTable({
                   {cells.map((cell, index) => (
                     <td key={TERMS[index].id} className="text-center">
                       {cell ? (
-                        <>
-                          <span className="font-semibold">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
-                          <span className="block text-[10px] text-slate-400">ওজনযুক্ত {percentCell(cell.weighted)}</span>
-                          <span className="block text-[10px] text-slate-400">কাঁচা {percentCell(cell.percent)}</span>
-                        </>
+                        <span className="font-semibold">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
                       ) : '—'}
                     </td>
                   ))}
@@ -217,12 +239,31 @@ export default function ConsolidatedAnnualTable({
                   <td className="text-center font-bold text-brand-700 dark:text-brand-300">
                     {toBanglaNumber(newRoll ?? '—')}
                   </td>
+                  {/* মন্তব্য — শেষ কলাম, প্রান্তিক ট্যাবগুলোর মতোই: ক্লিক করলে মন্তব্য
+                      সম্পাদনার মোডাল খোলে; বার্ষিক মন্তব্য হিসেবে সংরক্ষিত হয়। */}
+                  <td className="min-w-32 align-top">
+                    <button
+                      type="button"
+                      onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                      className="w-full rounded-lg px-1.5 py-1 text-left text-[11px] font-semibold leading-snug text-slate-600 transition hover:bg-brand-50 hover:text-brand-800 dark:text-slate-300 dark:hover:bg-slate-800"
+                      title="মন্তব্য দেখুন ও সম্পাদনা করুন"
+                      aria-label={`${student.name} এর মন্তব্য`}
+                    >
+                      {remarkOf(student.id)
+                        ? remarkPreview(remarkOf(student.id))
+                        : <span className="text-slate-400 underline decoration-dotted underline-offset-2">মন্তব্য লিখুন</span>}
+                    </button>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      {/* পর্দার নিচে আটকে থাকা স্ক্রল বার — এই কার্ডের DIRECT child হতে হবে, নইলে
+          sticky কাজ করে না (ছোট wrapper-এর ভেতরে আটকে যায়)। মোবাইলে টেবিল লুকানো
+          থাকে বলে বার নিজেই লুকিয়ে যায়। */}
+      <StickyScrollBar targetRef={tableWrapRef} label="বার্ষিক ফলাফল টেবিল পাশে স্ক্রল করুন" />
 
       {/* Mobile: one card per pupil, same columns, still no subject list. */}
       <div className="divide-y divide-slate-100 md:hidden dark:divide-slate-800">
@@ -264,12 +305,7 @@ export default function ConsolidatedAnnualTable({
                     </span>
                     <span className="text-right">
                       {cell ? (
-                        <>
-                          <span className="block">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
-                          <span className="block text-[10px] font-normal text-slate-400">
-                            ওজনযুক্ত {percentCell(cell.weighted)} · কাঁচা {percentCell(cell.percent)}
-                          </span>
-                        </>
+                        <span className="block">{formatBanglaDecimal(cell.weightedMarks, 2)}</span>
                       ) : '—'}
                     </span>
                   </p>
@@ -291,6 +327,19 @@ export default function ConsolidatedAnnualTable({
                   <span>নতুন রোল</span>
                   <span className="text-brand-700 dark:text-brand-300">{toBanglaNumber(newRoll ?? '—')}</span>
                 </p>
+                <button
+                  type="button"
+                  onClick={() => (onShowRemark ?? onShowStudent)?.(student)}
+                  className="mt-1 flex w-full items-center justify-between rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 transition hover:border-brand-300 hover:bg-brand-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                  aria-label={`${student.name} এর মন্তব্য`}
+                >
+                  <span className="text-slate-400">মন্তব্য</span>
+                  <span>
+                    {remarkOf(student.id)
+                      ? remarkPreview(remarkOf(student.id))
+                      : <span className="text-slate-400">মন্তব্য লিখুন</span>}
+                  </span>
+                </button>
               </div>
             </div>
           );

@@ -63,8 +63,9 @@ export function useAttendance({ schoolId, schoolRef = null, activeYear = '', use
   const statusOf = (studentId) =>
     hasOwn(drafts, studentId) ? drafts[studentId] : records[studentId]?.status || '';
 
+  /** Saves the pending drafts; returns the cloud result so callers can toast it. */
   const save = async () => {
-    if (!canWriteTenant || !canWriteCloud || !resolvedSchoolId || !Object.keys(drafts).length || saving) return;
+    if (!canWriteTenant || !canWriteCloud || !resolvedSchoolId || !Object.keys(drafts).length || saving) return { synced: false };
     setSaving(true);
     setNotice('');
     const changes = { ...drafts };
@@ -96,10 +97,12 @@ export function useAttendance({ schoolId, schoolRef = null, activeYear = '', use
         setNotice('উপস্থিতি সংরক্ষণ হয়েছে।');
       } else setNotice('উপস্থিতি সংরক্ষণ করা যায়নি; সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।');
     } catch {
+      result = { synced: false };
       setNotice('উপস্থিতি সংরক্ষণ করা যায়নি; সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।');
     } finally {
       setSaving(false);
     }
+    return result;
   };
 
   return {

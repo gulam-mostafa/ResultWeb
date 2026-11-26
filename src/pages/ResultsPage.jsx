@@ -29,6 +29,7 @@ import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 import { downloadResultExcel, parseResultWorkbook, templateSpec } from '../services/excel/resultExcel.js';
+import { downloadSheetsAsPdf } from '../utils/downloadPdf.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
 
@@ -101,6 +102,10 @@ export default function ResultsPage() {
   const [downloadWarningOpen, setDownloadWarningOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [parsingUpload, setParsingUpload] = useState(false);
+  /** সরাসরি PDF ডাউনলোড চলছে কি না (প্রিন্ট ডায়ালগ ছাড়া, jsPDF দিয়ে)। */
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  /** মার্কশিট প্রিন্ট-রুট — সরাসরি PDF ডাউনলোড এই এলিমেন্টের `.print-sheet` গুলো রেন্ডার করে। */
+  const printRootRef = useRef(null);
   /** Short-lived overlay while a class/শাখা/tab switch recalculates the grid. */
   const [switching, setSwitching] = useState(false);
   /** Bangla feedback of the year-end rollover (`নতুন শিক্ষাবর্ষ শুরু`). */
@@ -254,6 +259,35 @@ export default function ResultsPage() {
   };
 
   /**
+   * সরাসরি PDF ডাউনলোড — প্রিন্ট ডায়ালগ খোলে না। `downloadSheetsAsPdf` মার্কশিট
+   * এলিমেন্টগুলোকে A4 PDF-এ রেন্ডার করে (০.৭৫ ইঞ্চি মার্জিন; ১টি/পেজে পুরো পেজ,
+   * ২টি/পেজে অর্ধেক-অর্ধেক) এবং ফাইল ডাউনলোড করে। প্রিন্ট বোতাম আলাদাই থাকে।
+   */
+  const downloadMarksheetPdf = async ({ bulk }) => {
+    if (downloadingPdf || !marksheetRows.length) return;
+    const previousBulk = bulkPrint;
+    setDownloadingPdf(true);
+    try {
+      if (bulk !== bulkPrint) {
+        setBulkPrint(bulk);
+        // React-কে শিটগুলো মাউন্ট করার সময় দেওয়া — তারপরেই ক্যাপচার।
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      const namePart = bulk ? 'সব-শিক্ষার্থী' : (printTarget?.name ?? 'মার্কশিট');
+      await downloadSheetsAsPdf(printRootRef.current, {
+        filename: `${schoolProfile?.name || 'বিদ্যালয়'}-${CLASS_LABEL_MAP[classId]}-${activeTab.name}-${namePart}-${activeYear}.pdf`,
+        sheetsPerPage: pageLayout === 'pair' ? 2 : 1,
+      });
+      toast.success('PDF ডাউনলোড হয়েছে');
+    } catch {
+      toast.error('PDF তৈরি করা যায়নি — আবার চেষ্টা করুন');
+    } finally {
+      if (bulk !== previousBulk) setBulkPrint(previousBulk);
+      setDownloadingPdf(false);
+    }
+  };
+
+  /**
    * Year-end rollover confirmed in the promotion modal.
    *
    * `advanceAcademicYear` writes the NEW year's roster (same `studentMasterId`s, empty
@@ -299,12 +333,14 @@ export default function ResultsPage() {
           ? 'ক্লাউড সংযোগ সময় শেষ হয়ে গেছে — নতুন শিক্ষাবর্ষ শুরু হয়নি; আবার চেষ্টা করুন।'
           : 'নতুন শিক্ষাবর্ষ শুরু করা যায়নি — ক্লাউডে সংরক্ষণ ব্যর্থ হয়েছে; আবার চেষ্টা করুন।';
       setYearNotice({ tone: 'error', text: reason });
+      toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       return result;
     }
     setYearNotice({
       tone: 'success',
       text: `${toBanglaNumber(result.nextYear)} শিক্ষাবর্ষ শুরু হয়েছে — উত্তীর্ণ ${toBanglaNumber(result.promoted)} জন, একই শ্রেণিতে ${toBanglaNumber(result.retained)} জন, আর্কাইভ ${toBanglaNumber(result.graduated)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।`,
     });
+    toast.success('সংরক্ষণ হয়েছে');
     return result;
   }, [advanceAcademicYear, activeYear, allStudents, getStudentResult]);
 
@@ -564,6 +600,8 @@ export default function ResultsPage() {
             onSortModeChange={setSortMode}
             onShowStudent={setProfileTarget}
             onShowResult={setResultTarget}
+            getRemark={getTermRemark}
+            onShowRemark={setRemarkTarget}
             switching={switching}
             isHydrating={isHydrating}
           />
@@ -677,24 +715,35 @@ export default function ResultsPage() {
           >
             <Printer size={15} /> একক শিক্ষার্থীর প্রিন্ট
           </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => downloadMarksheetPdf({ bulk: false })}
+            disabled={!printTarget || !canPrintDocuments || downloadingPdf}
+          >
+            {downloadingPdf
+              ? <><Spinner size="xs" tone="brand" label="PDF তৈরি হচ্ছে…" /> PDF তৈরি হচ্ছে…</>
+              : <><Download size={15} /> একক শিক্ষার্থীর PDF ডাউনলোড</>}
+          </button>
         </div>
         <div className="flex min-w-0 flex-wrap items-end gap-2">
           <button
             type="button"
             className="btn-emerald"
-            onClick={() => {
-              setBulkPrint(true);
-              printSheets();
-            }}
-            disabled={!marksheetRows.length || !canPrintDocuments}
+            onClick={() => downloadMarksheetPdf({ bulk: true })}
+            disabled={!marksheetRows.length || !canPrintDocuments || downloadingPdf}
           >
-            <Download size={15} /> সব শিক্ষার্থীর একসাথে PDF ডাউনলোড
+            {downloadingPdf
+              ? <><Spinner size="xs" tone="white" label="PDF তৈরি হচ্ছে…" /> PDF তৈরি হচ্ছে…</>
+              : <><Download size={15} /> সব শিক্ষার্থীর একসাথে PDF ডাউনলোড</>}
           </button>
         </div>
       </div>
 
       <p className="mt-2 rounded-xl bg-slate-50 p-2.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-        প্রিন্ট ডায়ালগে <b>Save as PDF</b> নির্বাচন করলেই PDF ডাউনলোড হবে। নির্বাচিত লেআউট:{' '}
+        <b>PDF ডাউনলোড</b> বোতামে চাপলেই সরাসরি PDF ফাইল ডাউনলোড হবে — প্রিন্ট ডায়ালগ খুলবে না।
+        প্রিন্ট করতে চাইলে <b>প্রিন্ট</b> বোতাম ব্যবহার করুন, সেখানে Save as PDF-ও বেছে নেওয়া যাবে।
+        নির্বাচিত লেআউট:{' '}
         <b>{PAGE_LAYOUTS.find((layout) => layout.id === pageLayout)?.name}</b>
         {pageLayout === 'pair' ? ' — দুই মার্কশিট এক পেজে উপর-নিচে অর্ধেক-অর্ধেক করে বসবে।' : ' — প্রতিটি মার্কশিট আলাদা পেজে যাবে।'}
       </p>
@@ -702,7 +751,7 @@ export default function ResultsPage() {
 
     {/* মার্কশিট প্রিভিউ: ১৮৬mm চওড়া A4 শিট — ছোট স্ক্রিনে পাশে স্ক্রল হবে (প্রিন্টে স্ক্রল থাকবে না)। */}
     <div className="max-w-full overflow-x-auto scroll-thin print:overflow-visible">
-    <div className={pageLayout === 'pair' ? 'print-root print-pair' : 'print-root print-single'}>
+    <div ref={printRootRef} className={pageLayout === 'pair' ? 'print-root print-pair' : 'print-root print-single'}>
       {(bulkPrint ? marksheetRows : marksheetRows.filter((row) => row.student.id === printTarget?.id)).map((row) => (
         <ResultMarksheetA4
           key={row.student.id}
@@ -731,7 +780,10 @@ export default function ResultsPage() {
         termId={remarkTermId}
         termName={isConsolidated ? 'বার্ষিক ফলাফল' : activeTab.name}
         initialRemark={getTermRemark(remarkTarget.id)}
-        onSave={(text) => setRemark(remarkTarget.id, text, remarkTermId)}
+        onSave={(text) => {
+          setRemark(remarkTarget.id, text, remarkTermId);
+          toast.success('সংরক্ষণ হয়েছে');
+        }}
       />
     )}
 
@@ -809,7 +861,12 @@ export default function ResultsPage() {
       getSectionsOfClass={getSectionsOfClass}
       getResultConfig={getResultConfig}
       getRemark={getRemark}
-      onExecute={executePromotion}
+      onExecute={(decisions, options) => {
+        // In-year promotion writes locally (cloud write runs inside the store) —
+        // the toast confirms the local save, the sync badge shows the cloud state.
+        executePromotion(decisions, options);
+        toast.success('সংরক্ষণ হয়েছে');
+      }}
       currentYear={activeYear}
       nextYear={nextSessionYear(activeYear)}
       onAdvanceYear={handleAdvanceYear}

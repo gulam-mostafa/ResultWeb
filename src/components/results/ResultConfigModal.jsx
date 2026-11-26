@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Plus, RotateCcw, Save, Settings2, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 import Spinner from '../ui/Spinner.jsx';
+import { useToast } from '../ui/Toast.jsx';
 import { Badge } from '../ui/Primitives.jsx';
 import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import {
@@ -32,6 +33,7 @@ const numberValue = (value, fallback = 0) => {
 };
 
 export default function ResultConfigModal({ open, onClose, classId, config, onSave, onReset, canEdit = true }) {
+  const toast = useToast();
   const [draft, setDraft] = useState(() => normalizeResultConfig(config, classId));
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -90,9 +92,12 @@ export default function ResultConfigModal({ open, onClose, classId, config, onSa
     setBusy(false);
     if (result?.synced === false) {
       setNotice('সেটিংস এই ব্রাউজারে রাখা হয়েছে, কিন্তু ক্লাউডে সংরক্ষণ ব্যর্থ — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।');
+      toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       return;
     }
     setNotice('শ্রেণির রেজাল্ট সেটিংস সংরক্ষিত হয়েছে।');
+    // মোডাল বন্ধ হলে ইনলাইন নোটিশ আর দেখা যায় না — তাই টোস্টই নিশ্চিতকরণ।
+    toast.success('সংরক্ষণ হয়েছে');
     onClose?.();
   };
 
@@ -105,6 +110,8 @@ export default function ResultConfigModal({ open, onClose, classId, config, onSa
     setNotice(result?.synced === false
       ? 'ডিফল্ট ফিরিয়ে আনা লোকালি হয়েছে।'
       : 'ডিফল্ট বিষয় ও নম্বর ফিরিয়ে আনা হয়েছে।');
+    if (result?.synced === false) toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+    else toast.success('সংরক্ষণ হয়েছে');
   };
 
   return <Modal

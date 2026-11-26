@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAttendance } from '../hooks/useAttendance.js';
 import { Card, CardHeader } from '../components/ui/Primitives.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -12,6 +13,7 @@ const STATUS_LABELS = { present: 'উপস্থিত', absent: 'অনুপ�
 export default function AttendancePage() {
   const { user, canManageStudents } = useAuth();
   const { studentsByClass } = useSchoolData();
+  const toast = useToast();
   const [classId, setClassId] = useState('pre');
   const [date, setDate] = useState(today);
   const students = useMemo(() => studentsByClass[classId] || [], [studentsByClass, classId]);
@@ -38,7 +40,18 @@ export default function AttendancePage() {
           <label><span className="label-base">তারিখ</span><input type="date" className="input-base" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <label><span className="label-base">শ্রেণি</span><select className="input-base" value={classId} onChange={(event) => setClassId(event.target.value)}>{Object.entries(studentsByClass).filter(([id]) => id !== 'archive').map(([id, list]) => <option key={id} value={id}>{list?.[0]?.className || id.toUpperCase()}</option>)}</select></label>
         </div>
-        <button type="button" className="btn-primary" disabled={saving || !canManageStudents || !draftCount} onClick={save}><Save size={15}/>{saving ? 'সংরক্ষণ হচ্ছে…' : `উপস্থিতি সংরক্ষণ (${draftCount})`}</button>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={saving || !canManageStudents || !draftCount}
+          onClick={async () => {
+            const result = await save();
+            if (result?.synced) toast.success('সংরক্ষণ হয়েছে');
+            else toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+          }}
+        >
+          <Save size={15}/>{saving ? 'সংরক্ষণ হচ্ছে…' : `উপস্থিতি সংরক্ষণ (${draftCount})`}
+        </button>
       </div>
       {notice && <p role="status" className="mt-3 rounded-lg bg-brand-50 p-3 text-sm text-brand-800 dark:bg-brand-900/30 dark:text-brand-200">{notice}</p>}
     </Card>

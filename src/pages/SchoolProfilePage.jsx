@@ -5,6 +5,7 @@ import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { BD_LOCATIONS, findGeoNames } from '../data/bdLocations.js';
 import { normalizeSchoolProfile, pickProfileFields } from '../utils/schoolProfile.js';
 import { Card } from '../components/ui/Primitives.jsx';
+import { useToast } from '../components/ui/Toast.jsx';
 
 const FIELD_DEFS = [
   ['name','বিদ্যালয়ের নাম','text'],['nameEn','বিদ্যালয়ের নাম (ইংরেজি)','text'],
@@ -17,6 +18,7 @@ const FIELD_DEFS = [
 export default function SchoolProfilePage() {
   const { user, canManageStudents } = useAuth();
   const { schoolProfile, saveProfile } = useSchoolData();
+  const toast = useToast();
   const [form, setForm] = useState(() => normalizeSchoolProfile(schoolProfile));
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
@@ -80,6 +82,8 @@ export default function SchoolProfilePage() {
         new Promise((resolve) => setTimeout(() => resolve({ synced: false, timedOut: true }), 3000)),
       ]);
       setNotice(result.synced ? 'বিদ্যালয়ের প্রোফাইল সংরক্ষিত হয়েছে।' : 'প্রোফাইল সংরক্ষণ করা যায়নি। সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।');
+      if (result.synced) toast.success('সংরক্ষণ হয়েছে');
+      else toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       if (result.synced) {
         Object.keys(patch).forEach((field) => {
           if (editRevision.current === revision || !dirtyFields.current.has(field)) dirtyFields.current.delete(field);
@@ -93,6 +97,7 @@ export default function SchoolProfilePage() {
       }
     } catch {
       setNotice('প্রোফাইল সংরক্ষণ করা যায়নি। সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।');
+      toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
     } finally {
       setSaving(false);
     }

@@ -24,6 +24,7 @@ import StudentExcelPreviewModal from '../components/students/StudentExcelPreview
 import { downloadStudentWorkbook } from '../services/excel/studentExcel.js';
 import { parseStudentWorkbook } from '../services/excel/studentExcel.js';
 import { buildImportPlan } from '../utils/studentImportPlan.js';
+import { matchesStudentSearch } from '../utils/studentSearch.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
 
 export default function StudentsPage() {
@@ -62,21 +63,16 @@ export default function StudentsPage() {
   const visibleStudents = sectioned ? getStudentsOfSection(tab, activeSection) : classStudents;
   /**
    * Roster search (topbar ➔ `/students?q=…`). It filters the current class + শাখা list
-   * by name, roll or birth-certificate number, so the topbar search box is a real,
-   * working entry point instead of a decorative input.
+   * by name OR any profile field — father's/mother's name, roll, phone (father/mother/
+   * guardian), birth registration no., address, guardian NID — with Bangla digits
+   * normalised first, so `০১৭…` and `017…` match the same pupil. Several pupils can
+   * match at once; all of them are shown. Class/শাখা filtering still applies first.
    */
   const [searchParams, setSearchParams] = useSearchParams();
   const query = String(searchParams.get('q') ?? '').trim();
   const searchedStudents = useMemo(() => {
     if (!query) return visibleStudents;
-    const needle = query.toLowerCase();
-    return visibleStudents.filter((student) => [
-      student?.name,
-      student?.roll,
-      student?.birthCertificateNo,
-      student?.fatherName,
-      student?.motherName,
-    ].some((field) => String(field ?? '').toLowerCase().includes(needle)));
+    return visibleStudents.filter((student) => matchesStudentSearch(student, query));
   }, [visibleStudents, query]);
   const visibleCount = searchedStudents.length;
 
@@ -188,12 +184,14 @@ export default function StudentsPage() {
           ? 'ইন্টারনেট সংযোগ নেই — নতুন শিক্ষাবর্ষ শুরু করা যায়নি।'
           : 'নতুন শিক্ষাবর্ষ শুরু করা যায়নি — আবার চেষ্টা করুন।',
       });
+      toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       return result;
     }
     setExcelNotice({
       tone: 'success',
       text: `${toBanglaNumber(result?.nextYear ?? '')} শিক্ষাবর্ষ শুরু হয়েছে — উত্তীর্ণ ${toBanglaNumber(result?.promoted ?? 0)} জন, আর্কাইভ ${toBanglaNumber(result?.graduated ?? 0)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।`,
     });
+    toast.success('সংরক্ষণ হয়েছে');
     return result;
   };
 
@@ -232,6 +230,7 @@ export default function StudentsPage() {
           ? `${student.name} আর্কাইভে পাঠানো হচ্ছে — সংযোগ ধীর, কিছুক্ষণ পর যাচাই করুন।`
           : `${student.name} আর্কাইভে পাঠানো হয়েছে।`,
       });
+      toast.success('সংরক্ষণ হয়েছে');
       setEditing(null);
       setSelected(null);
       return;
@@ -244,6 +243,7 @@ export default function StudentsPage() {
         ? `${student.name} ইতিমধ্যেই আর্কাইভে আছে।`
         : `${student.name} আর্কাইভ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
     });
+    toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
   };
 
   const confirmRestore = async () => {
@@ -256,6 +256,7 @@ export default function StudentsPage() {
           ? `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া হচ্ছে — সংযোগ ধীর, কিছুক্ষণ পর যাচাই করুন।`
           : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া হয়েছে।`,
       });
+      toast.success('সংরক্ষণ হয়েছে');
       setRestoring(null);
       return;
     }
@@ -265,6 +266,7 @@ export default function StudentsPage() {
         ? `${restoring.name} আর্কাইভে নেই, তাই ফিরিয়ে নেওয়া যাবে না।`
         : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
     });
+    toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
   };
 
   return <>
@@ -362,7 +364,12 @@ export default function StudentsPage() {
       getRemark={getRemark}
       schoolId={schoolId}
       activeYear={activeYear}
-      onExecute={executePromotion}
+      onExecute={(decisions, options) => {
+        // In-year promotion writes locally (cloud write runs inside the store) —
+        // the toast confirms the local save, the sync badge shows the cloud state.
+        executePromotion(decisions, options);
+        toast.success('সংরক্ষণ হয়েছে');
+      }}
       currentYear={activeYear}
       nextYear={nextSessionYear(activeYear)}
       onAdvanceYear={advanceYear}

@@ -5,6 +5,7 @@ import { configEntryFields } from '../../utils/resultConfig.js';
 import { rankClassRows, subjectTermEntry } from '../../utils/resultEngine.js';
 import { clsx } from '../../utils/clsx.js';
 import Spinner from '../ui/Spinner.jsx';
+import StickyScrollBar from '../ui/StickyScrollBar.jsx';
 
 /**
  * Excel-like marks grid (one evaluation tab).
@@ -143,6 +144,8 @@ export default function SpreadsheetMarksGrid({
   const pendingRef = useRef({});
   const editingKey = useRef(null);
   const gridRef = useRef(null);
+  /** The desktop table's horizontal scroll container (the sticky bottom bar syncs with it). */
+  const tableWrapRef = useRef(null);
 
   /**
    * Brief "সংরক্ষণ হয়েছে" confirmation after the "সংরক্ষণ হচ্ছে…" spinner clears.
@@ -473,7 +476,7 @@ export default function SpreadsheetMarksGrid({
       ) : null}
 
       {/* Desktop / tablet: one spreadsheet row per pupil. */}
-      <div className="hidden max-w-full overflow-x-auto scroll-thin md:block">
+      <div ref={tableWrapRef} className="hidden max-w-full overflow-x-auto scroll-thin md:block">
         <table className="table-base min-w-[980px]">
           <thead>
             <tr>
@@ -595,6 +598,10 @@ export default function SpreadsheetMarksGrid({
           </tbody>
         </table>
       </div>
+
+      {/* পর্দার নিচে আটকে থাকা স্ক্রল বার — এই গ্রিডের DIRECT child হতে হবে, নইলে
+          sticky কাজ করে না। মোবাইলে ডেস্কটপ টেবিল লুকানো থাকে বলে বার নিজেই লুকিয়ে যায়। */}
+      <StickyScrollBar targetRef={tableWrapRef} label="নম্বর গ্রিড পাশে স্ক্রল করুন" />
 
       {/* Mobile: each pupil is a card; গাঠনিক and সামষ্টিক stay in their own tinted areas. */}
       <div className="divide-y divide-slate-100 md:hidden dark:divide-slate-800">
