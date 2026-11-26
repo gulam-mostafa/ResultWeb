@@ -109,6 +109,62 @@ export const CLASS_LABEL_MAP = Object.freeze(
 export const getClassName = (classId) => CLASS_LABEL_MAP[classId] ?? 'অজানা শ্রেণি';
 
 /* ------------------------------------------------------------------ *
+ * 3b. 6-class Excel workbook (শিক্ষার্থী আমদানি/রপ্তানি)
+ *    ছয়টি শ্রেণি = ছয়টি শিট; শিটের নামই শ্রেণি নির্ধারণ করে, তাই
+ *    শিটের ভেতরে কোনো "শ্রেণি" কলাম নেই।
+ * ------------------------------------------------------------------ */
+
+/** The six active classes, in tab order — one worksheet each. */
+export const STUDENT_SHEET_CLASS_IDS = Object.freeze(CLASS_LEVELS.map((level) => level.id));
+
+/**
+ * `classId ➔ worksheet name`. The sheet name IS the class label, so renaming a sheet
+ * (or adding a class column inside it) is detectable and rejected on upload.
+ */
+export const STUDENT_SHEET_NAME_MAP = Object.freeze(
+  CLASS_LEVELS.reduce((acc, level) => {
+    acc[level.id] = level.name;
+    return acc;
+  }, {}),
+);
+
+/** Reverse lookup: worksheet name ➔ classId (`null` when the name is unknown). */
+export const studentClassOfSheet = (sheetName) => {
+  const wanted = String(sheetName ?? '').trim();
+  if (!wanted) return null;
+  return STUDENT_SHEET_CLASS_IDS.find((classId) => STUDENT_SHEET_NAME_MAP[classId] === wanted) ?? null;
+};
+
+/**
+ * Column headers of a student sheet, in their fixed order.
+ *
+ * A section is NOT a class column — it is a row value (`শাখা`), so a teacher may add
+ * rows in any section order and every row is routed to its own শাখা on import.
+ */
+export const STUDENT_IMPORT_COLUMNS = Object.freeze([
+  { header: 'রোল', key: 'roll', type: 'roll', required: false },
+  { header: 'শাখা', key: 'section', type: 'section', required: false },
+  { header: 'শিক্ষার্থীর নাম', key: 'name', type: 'text', required: true },
+  { header: 'পিতার নাম', key: 'fatherName', type: 'text', required: false },
+  { header: 'মাতার নাম', key: 'motherName', type: 'text', required: false },
+  { header: 'লিঙ্গ', key: 'gender', type: 'gender', required: false },
+  { header: 'জন্ম নিবন্ধন নম্বর', key: 'birthCertificateNo', type: 'number', required: false },
+  { header: 'অভিভাবকের এনআইডি', key: 'guardianNid', type: 'number', required: false },
+  { header: 'পিতার ফোন', key: 'fatherPhone', type: 'phone', required: false },
+  { header: 'মাতার ফোন', key: 'motherPhone', type: 'phone', required: false },
+  { header: 'ভর্তির সাল', key: 'admissionYear', type: 'year', required: false },
+  { header: 'জন্ম তারিখ', key: 'birthDate', type: 'date', required: false },
+  { header: 'ঠিকানা', key: 'address', type: 'text', required: false },
+]);
+
+/** Header labels only (what the exported sheet writes in its header row). */
+export const STUDENT_IMPORT_HEADERS = Object.freeze(STUDENT_IMPORT_COLUMNS.map((column) => column.header));
+
+/** The template's identification stamp (row 1 of every sheet). */
+export const STUDENT_TEMPLATE_MAGIC = 'RESULTWEB STUDENT TEMPLATE v1';
+
+
+/* ------------------------------------------------------------------ *
  * 4. Subjects, class-wise curriculum & evaluation (বিষয় ও মূল্যায়ন)
  * ------------------------------------------------------------------ */
 

@@ -27,6 +27,7 @@ import {
   unregisterSectionCloud,
   subscribeSectionRegistry,
   ensureSchoolYearBuckets,
+  importStudentsCloud,
 } from '../services/database/index.js';
 import { promoteSession, nextSessionYear } from '../services/database/sessionService.js';
 
@@ -460,6 +461,77 @@ export function useStudents({
     [dataset.meta, updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
   );
 
+  /**
+   * Bulk Excel import save (`শিক্ষার্থী আমদানি`).
+   *
+   * The plan was already built and reviewed in the preview modal, so this only
+   * (a) mirrors the same rows locally (instant roster paint) and (b) commits the whole
+   * file with ONE atomic multi-path database update.
+   *
+   * `force` is only passed by Warning #2 of the preview: without it, rows whose roll
+   * conflicts with another pupil are skipped instead of creating a duplicate.
+   */
+  const importStudents = useCallback(
+    async (plan, { force = false } = {}) => {
+      const rows = Array.isArray(plan?.rows) ? plan.rows : [];
+      if (!rows.length) return { synced: true, written: 0, skipped: 0 };
+
+      // Local mirror first: the roster shows the imported pupils immediately.
+      updateDataset(
+        (prev) => {
+          const byId = new Map(prev.students.map((student) => [student.studentMasterId || student.id, student]));
+          let created = 0;
+          rows.forEach((row) => {
+            if (row.status === 'conflict' && !force) return;
+            const values = row.values ?? {};
+            const existing = row.existing;
+            if (existing) {
+              const key = existing.studentMasterId || existing.id;
+              byId.set(key, {
+                ...existing,
+                ...values,
+                classId: row.classId,
+                section: row.section,
+                roll: row.resolvedRoll,
+                id: existing.id,
+              });
+              return;
+            }
+            created += 1;
+            const localId = `stu-import-${row.classId}-${row.section}-${row.line}`;
+            byId.set(localId, {
+              ...values,
+              id: localId,
+              classId: row.classId,
+              section: row.section,
+              roll: row.resolvedRoll,
+              status: 'active',
+              isDemo: false,
+            });
+          });
+          const students = [...byId.values()];
+          const marks = { ...prev.marks };
+          students.forEach((student) => {
+            if (!marks[student.id]) marks[student.id] = createEmptyMarks();
+          });
+          return { ...prev, students, marks };
+        },
+        {
+          action: 'student.import',
+          detail: `এক্সেল থেকে ${rows.length} সারি আমদানি হয়েছে`,
+          actor: 'school_admin',
+        },
+      );
+
+      if (!canWriteCloud || !canWriteTenant) return { synced: false, written: 0, skipped: 0 };
+      return runCloudSave(
+        () => importStudentsCloud(tenantRef, year, plan, { force }),
+        { timeoutMs: PROMOTION_SAVE_TIMEOUT_MS },
+      );
+    },
+    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave],
+  );
+
   const updateStudent = useCallback(
     (studentId, patch) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
@@ -867,6 +939,13 @@ export function useStudents({
               status: archived ? 'archived' : 'active',
               graduatedYear: archived ? (prev.meta?.session ?? DEMO_SESSION) : student.graduatedYear,
               previousClassId: archived || move.action === 'promote' ? student.classId : null,
+              // A pupil who moves to a NEW class starts with no published result: the old
+              // merit/GPA/grade belong to the class they left, so the new class shows `০০`
+              // / `ফলাফল নেই` until its own marks exist. Nothing is deleted — the
+              // historical result rows stay under the previous class.
+              ...(move.action === 'promote' && !archived
+                ? { meritPosition: null, gpa: null, grade: '', grandTotal: null }
+                : {}),
               ...origin,
             };
           });
@@ -1075,6 +1154,7 @@ export function useStudents({
     renameSection,
     removeSection,
     addStudent,
+    importStudents,
     updateStudent,
     archiveStudent,
     restoreStudent,

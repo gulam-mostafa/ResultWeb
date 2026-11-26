@@ -1,7 +1,7 @@
 ﻿import { ref, runTransaction } from 'firebase/database';
 import { db } from '../../firebase/firebaseConfig.js';
-import { cleanForCloud, safeRead, safeSubscribe, safeUpdate } from './dbFallback.js';
-import { DEFAULT_SECTION_ID, dbPaths, normalizeSessionYear, sectionSegment } from './dbPaths.js';
+import { cleanForCloud, safeMultiPathUpdate, safeRead, safeSubscribe, safeUpdate } from './dbFallback.js';
+import { DEFAULT_SECTION_ID, dbPaths, normalizeSessionYear, schoolIdOf, sectionSegment } from './dbPaths.js';
 import { resolveClassKey } from '../../utils/constants.js';
 import { ensureSchoolYear } from './centralSchoolStore.js';
 
@@ -755,6 +755,215 @@ export function subscribeStudents(schoolId, callback, onStatus, year = '') {
  * this year's enrollment row in one atomic multi-path update. The legacy flat node
  * is mirrored so readers that have not migrated yet keep seeing the pupil.
  */
+/**
+ * Writes ONE planned import row into the shared patch.
+ *
+ * Extracted so `importStudentsCloud` stays readable; it only mutates the `state`
+ * object it is given (`patch`, `sections`, counters) and never touches the network —
+ * the whole file therefore leaves as ONE atomic multi-path update.
+ */
+function writeImportRow(row, { reference, schoolId, yearKey, force, masters, state, mintMasterId }) {
+  const values = row?.values ?? {};
+  const classId = toDbClassId(row?.classId);
+  const section = toSectionId(row?.section);
+  const roll = Number(row?.resolvedRoll) || 0;
+
+  // A row with no usable class/roll, or an unconfirmed duplicate roll, is skipped.
+  if (!classId || classId === 'archive' || !roll) {
+    state.skipped += 1;
+    return;
+  }
+  if (row.status === 'conflict' && !force) {
+    state.skipped += 1;
+    return;
+  }
+  state.sections.add(`${classId}/${section}`);
+
+  const existing = row?.existing ?? null;
+  const masterId = String(existing?.studentMasterId || existing?.id || '').trim();
+
+  if (masterId) {
+    // Only the fields the sheet actually changed reach the permanent identity; a blank
+    // cell never wipes a stored value.
+    const personal = Object.keys(row?.changes ?? {}).reduce((acc, key) => {
+      if (values[key] !== undefined && String(values[key]).trim() !== '') acc[key] = values[key];
+      return acc;
+    }, {});
+    const sameBucket = toAppClassId(existing.classId) === toAppClassId(row.classId)
+      && toSectionId(existing.section) === section;
+    const rollChanged = Number(existing.roll) !== roll;
+    if (!Object.keys(personal).length && sameBucket && !rollChanged) {
+      state.skipped += 1; // nothing new — an unchanged row is never rewritten
+      return;
+    }
+    const currentMaster = asRecord(masters[masterId]);
+    state.patch[dbPaths.studentMasterEntry(reference, masterId)] = cleanForCloud({
+      ...currentMaster,
+      ...personal,
+      studentMasterId: masterId,
+      legacyId: currentMaster.legacyId || existing.legacyId || existing.id || masterId,
+      updatedAt: nowISO(),
+    });
+    if (!sameBucket) {
+      // The row MOVED (class or শাখা): the old folder is cleared in the same update.
+      state.patch[dbPaths.yearSectionStudent(
+        reference, yearKey, toDbClassId(existing.classId), toSectionId(existing.section), masterId,
+      )] = null;
+    }
+    state.patch[dbPaths.yearSectionStudent(reference, yearKey, classId, section, masterId)] = cleanForCloud({
+      studentMasterId: masterId,
+      legacyId: existing.legacyId || existing.id || masterId,
+      classId,
+      section,
+      roll,
+      status: 'active',
+      year: yearKey,
+      updatedAt: nowISO(),
+    });
+    const legacyId = String(existing.legacyId || existing.id || masterId);
+    state.patch[dbPaths.student(schoolId, legacyId)] = cleanForCloud({
+      ...existing,
+      ...personal,
+      id: legacyId,
+      legacyId,
+      studentMasterId: masterId,
+      classId,
+      section,
+      roll,
+      status: 'active',
+      updatedAt: nowISO(),
+    });
+    state.updated += 1;
+    return;
+  }
+
+  // New admission: mint a permanent id, then write identity + enrollment together.
+  const newMasterId = mintMasterId();
+  const record = {
+    ...values,
+    id: newMasterId,
+    classId,
+    section,
+    roll,
+    status: 'active',
+    admissionYear: values.admissionYear || yearKey,
+  };
+  const master = buildStudentMasterRecord(record, { studentMasterId: newMasterId, year: yearKey });
+  const enrollment = buildEnrollmentRecord(record, {
+    studentMasterId: newMasterId, year: yearKey, classId, section,
+  });
+  state.patch[dbPaths.studentMasterEntry(reference, newMasterId)] = master;
+  state.patch[dbPaths.yearSectionStudent(reference, yearKey, classId, section, newMasterId)] = enrollment;
+  state.patch[dbPaths.student(schoolId, newMasterId)] = cleanForCloud({
+    ...record,
+    ...master,
+    ...enrollment,
+    id: newMasterId,
+    legacyId: newMasterId,
+    studentMasterId: newMasterId,
+  });
+  // A later row of the same file must never receive this id again.
+  masters[newMasterId] = master;
+  state.created += 1;
+}
+
+/**
+ * Bulk Excel import (`শিক্ষার্থী আমদানি`) — ONE atomic multi-path write.
+ *
+ * Every planned row of the preview is committed together:
+ *
+ * ```text
+ * studentMaster/{studentMasterId}                       ← identity (new + changed fields)
+ * sessions/{year}/students/{classId}/{section}/{id}     ← enrollment (roll / শাখা / class)
+ * sessions/{year}/meta/sections/{classId}/{section}     ← declared শাখা registry
+ * schoolData/{schoolId}/students/{legacyId}             ← legacy flat mirror
+ * ```
+ *
+ * Rules (they mirror `buildImportPlan`, which the preview shows):
+ *  - a row scoring ≥80 against a stored pupil keeps the DATABASE roll and only updates
+ *    the fields that really changed (a blank cell never wipes a stored value);
+ *  - a new row keeps a free roll, otherwise it is appended at the end of its bucket —
+ *    existing rolls are never renumbered by an import;
+ *  - a `conflict` row is written only when the caller passes `force` (the modal's
+ *    Warning #2), so an accidental click can never create a duplicate roll.
+ *
+ * @param {string|object} reference tenant location or bare `schoolId`
+ * @param {string} year active academic year
+ * @param {{rows?:Array<object>}} plan `buildImportPlan()` result
+ * @param {{force?:boolean}} [options]
+ * @returns {Promise<{synced:boolean, written:number, skipped:number,
+ *   created:number, updated:number}>}
+ */
+export async function importStudentsCloud(reference, year, plan = {}, { force = false } = {}) {
+  const yearKey = normalizeSessionYear(year);
+  const schoolId = schoolIdOf(reference);
+  if (!schoolId || !yearKey) {
+    return { synced: false, written: 0, skipped: 0, created: 0, updated: 0 };
+  }
+
+  const rows = Array.isArray(plan?.rows) ? plan.rows : [];
+  if (!rows.length) return { synced: true, written: 0, skipped: 0, created: 0, updated: 0 };
+
+  // The year skeleton must exist before the first admission lands inside it.
+  await ensureSchoolYear(schoolId, yearKey);
+  const schoolRoot = studentSchoolBasePath(reference);
+  if (!schoolRoot) return { synced: false, written: 0, skipped: 0, created: 0, updated: 0 };
+
+  const masters = asRecord(await safeRead(dbPaths.studentMaster(reference), {}));
+  let sequence = nextMasterSequence(masters, yearKey);
+  const mintMasterId = () => {
+    let candidate = formatStudentMasterId(yearKey, sequence);
+    while (masters[candidate]) {
+      sequence += 1;
+      candidate = formatStudentMasterId(yearKey, sequence);
+    }
+    sequence += 1;
+    return candidate;
+  };
+
+  const state = {
+    patch: {},
+    sections: new Set(),
+    created: 0,
+    updated: 0,
+    skipped: 0,
+  };
+
+  rows.forEach((row) => {
+    writeImportRow(row, {
+      reference, schoolId, yearKey, force, masters, state, mintMasterId,
+    });
+  });
+
+  // A declared শাখা survives a refresh even before its first pupil lands in it.
+  state.sections.forEach((key) => {
+    state.patch[`${dbPaths.yearMetaSections(reference, yearKey)}/${key}`] = true;
+  });
+
+  const result = Object.keys(state.patch).length
+    ? await safeMultiPathUpdate(state.patch)
+    : { synced: true };
+  invalidateStudentMasterIndex(schoolId);
+  return {
+    synced: result?.synced !== false,
+    written: state.created + state.updated,
+    skipped: state.skipped,
+    created: state.created,
+    updated: state.updated,
+  };
+}
+
+/**
+ * New admission: mints a permanent `studentMasterId`, writes the identity node and
+ * this year's enrollment row in one atomic multi-path update, and mirrors the pupil
+ * into the legacy flat roster in the SAME update.
+ *
+ * All three leaves live under the tenant root but under different parents
+ * (`studentMaster/…`, `sessions/{year}/students/…`, `schoolData/{schoolId}/students/…`),
+ * so a root-relative `update()` is what makes them one indivisible write: a reader can
+ * never see the pupil in the year roster without the identity row (or vice versa),
+ * and an offline failure is queued as ONE unit instead of half an admission.
+ */
 export async function addStudentCloud(schoolId, student, year = '') {
   const record = cleanForCloud(student);
   if (!schoolId || !record) return { synced: false, studentMasterId: '' };
@@ -775,20 +984,16 @@ export async function addStudentCloud(schoolId, student, year = '') {
   // teachers, students/results class buckets) before the row lands in it.
   await ensureSchoolYear(schoolId, yearKey);
 
-  const base = studentSchoolBasePath(schoolId);
-  const primary = await safeUpdate(base, {
-    [relativeKey(base, dbPaths.studentMasterEntry(schoolId, studentMasterId))]: master,
-    [relativeKey(base, enrollmentNodePath(schoolId, yearKey, classId, studentMasterId, enrollment.section))]: enrollment,
-  });
-
   const legacyId = enrollment.legacyId || record.id || studentMasterId;
-  invalidateStudentMasterIndex(schoolId);
   const workspace = dbPaths.workspace(schoolId);
   const mirrorPath = classId === 'archive'
     ? dbPaths.archivedStudent(schoolId, legacyId)
     : dbPaths.student(schoolId, legacyId);
-  await safeUpdate(workspace, {
-    [relativeKey(workspace, mirrorPath)]: cleanForCloud({
+
+  const primary = await safeMultiPathUpdate({
+    [dbPaths.studentMasterEntry(schoolId, studentMasterId)]: master,
+    [enrollmentNodePath(schoolId, yearKey, classId, studentMasterId, enrollment.section)]: enrollment,
+    [mirrorPath]: cleanForCloud({
       ...record,
       ...master,
       ...enrollment,
@@ -797,6 +1002,8 @@ export async function addStudentCloud(schoolId, student, year = '') {
       studentMasterId,
     }),
   });
+
+  invalidateStudentMasterIndex(schoolId);
 
   return {
     synced: primary?.synced !== false,
@@ -893,11 +1100,9 @@ export async function updateStudentCloud(schoolId, studentId, patch, previousCla
     ));
   }
 
-  const primary = Object.keys(patchPaths).length
-    ? await safeUpdate(base, patchPaths)
-    : { synced: true };
-
-  // Legacy flat mirror keeps the flat roster accurate for older readers.
+  // Legacy flat mirror keeps the flat roster accurate for older readers. It travels
+  // in the SAME atomic update as the tenant patch, so a rename can never land on
+  // `studentMaster` while the legacy mirror still shows the old value.
   const workspace = dbPaths.workspace(schoolId);
   const legacyId = String(existingStudent?.legacyId || existingStudent?.id || studentId);
   const legacyPatch = {};
@@ -906,7 +1111,7 @@ export async function updateStudentCloud(schoolId, studentId, patch, previousCla
     const mirrorPath = targetClassId === 'archive'
       ? dbPaths.archivedStudent(schoolId, legacyId)
       : dbPaths.student(schoolId, legacyId);
-    legacyPatch[relativeKey(workspace, mirrorPath)] = cleanForCloud({
+    legacyPatch[mirrorPath] = cleanForCloud({
       ...existingStudent,
       ...clean,
       id: legacyId,
@@ -920,10 +1125,18 @@ export async function updateStudentCloud(schoolId, studentId, patch, previousCla
       const previousPath = prevClassId === 'archive'
         ? dbPaths.archivedStudent(schoolId, legacyId)
         : dbPaths.student(schoolId, legacyId);
-      if (previousPath !== mirrorPath) legacyPatch[relativeKey(workspace, previousPath)] = null;
+      if (previousPath !== mirrorPath) legacyPatch[previousPath] = null;
     }
   }
-  if (Object.keys(legacyPatch).length) await safeUpdate(workspace, legacyPatch);
+
+  // One root-relative update: identity patch + enrollment patch + legacy mirror.
+  const absolutePatch = {};
+  Object.entries(patchPaths).forEach(([key, value]) => { absolutePatch[`${base}/${key}`] = value; });
+  Object.entries(legacyPatch).forEach(([key, value]) => { absolutePatch[key] = value; });
+  const primary = Object.keys(absolutePatch).length
+    ? await safeMultiPathUpdate(absolutePatch)
+    : { synced: true };
+
   invalidateStudentMasterIndex(schoolId);
   return { ...primary, studentMasterId, year: yearKey, classId: targetClassId || prevClassId, legacyId };
 }
@@ -1309,6 +1522,7 @@ export default {
   readYearRoster,
   readStudentMaster,
   addStudentCloud,
+  importStudentsCloud,
   updateStudentCloud,
   deleteStudentCloud,
   archiveStudentCloud,

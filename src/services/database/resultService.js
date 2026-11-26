@@ -317,7 +317,11 @@ export function subscribeTermResults(schoolId, termId, callback, onStatus, year 
   const requestedYear = normalizeSessionYear(year);
   let legacyTerm = {};
   let yearTerm = {};
-  const emit = () => callback({ ...asRecord(legacyTerm), ...asRecord(yearTerm) });
+  let active = true;
+  const emit = () => {
+    if (!active) return;
+    callback({ ...asRecord(legacyTerm), ...asRecord(yearTerm) });
+  };
 
   /** `/results/{term}/{classId}/{studentId}` ➔ `{classId: {studentId: row}}`. */
   const readLegacyTerm = (value) => Object.entries(asRecord(value)).reduce((acc, [classId, rows]) => {
@@ -338,9 +342,10 @@ export function subscribeTermResults(schoolId, termId, callback, onStatus, year 
   }, {}, onStatus)];
 
   const bindYear = (yearKey) => {
+    if (!active) return;
     const normalized = normalizeSessionYear(yearKey);
     if (!normalized) return;
-    unsubs.push(safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
+    const listener = safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
       const perClass = {};
       Object.entries(asRecord(value)).forEach(([classId, terms]) => {
         // Stored key first (`final`), plus the app spelling as a legacy alias.
@@ -361,16 +366,34 @@ export function subscribeTermResults(schoolId, termId, callback, onStatus, year 
       });
       yearTerm = perClass;
       emit();
-    }, {}, onStatus));
+    }, {}, onStatus);
+    if (!active) {
+      // Unsubscribed while the listener was being created ➔ detach immediately.
+      listener?.();
+      return;
+    }
+    unsubs.push(listener);
   };
 
   if (requestedYear) bindYear(requestedYear);
   else resolveActiveYear(schoolId).then(bindYear).catch(() => {});
 
-  return () => unsubs.forEach((unsub) => unsub?.());
+  return () => {
+    active = false;
+    unsubs.forEach((unsub) => unsub?.());
+    unsubs.length = 0;
+  };
 }
 
-/** Live subscription to one academic year's results (merged with the legacy root). */
+/**
+ * Live subscription to one academic year's results (merged with the legacy root).
+ *
+ * The year partition is resolved ASYNCHRONOUSLY when the caller passes no year
+ * (`resolveActiveYear`). `unsubscribe()` may therefore run before that promise settles —
+ * without a guard the late `safeSubscribe()` would register a listener that NOTHING ever
+ * detaches (a real leak that also kept a stale school's data alive). The `active` flag
+ * makes a late bind a no-op and detaches anything it just created.
+ */
 export function subscribeResults(schoolId, callback, onStatus, year = '') {
   if (!schoolId) {
     callback(flatten({}));
@@ -381,8 +404,10 @@ export function subscribeResults(schoolId, callback, onStatus, year = '') {
   let legacyTree = {};
   let yearTree = {};
   let aliasOf = (id) => id;
+  let active = true;
 
   const emit = () => {
+    if (!active) return;
     // Year-partitioned classes win over a same-named legacy node.
     const merged = { ...asRecord(legacyTree), ...asRecord(yearTree) };
     callback(flatten(merged, aliasOf));
@@ -395,25 +420,36 @@ export function subscribeResults(schoolId, callback, onStatus, year = '') {
   }, {}, onStatus));
 
   const bindYear = (yearKey) => {
+    if (!active) return;
     const normalized = normalizeSessionYear(yearKey);
     if (!normalized) return;
     // Stored rows are keyed by `studentMasterId`; the UI addresses pupils by their
     // roster id, so the alias index is loaded once per subscription.
     readStudentMasterIndex(schoolId).then(({ masters }) => {
-      if (!Object.keys(masters).length) return;
+      if (!active || !Object.keys(masters).length) return;
       aliasOf = (id) => (masters[id]?.legacyId ? masters[id].legacyId : id);
       emit();
     }).catch(() => {});
-    unsubs.push(safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
+    const yearListener = safeSubscribe(dbPaths.yearResults(schoolId, normalized), (value) => {
       yearTree = asRecord(value);
       emit();
-    }, {}, onStatus));
+    }, {}, onStatus);
+    if (!active) {
+      // `unsubscribe()` ran while this listener was being created ➔ detach it now.
+      yearListener?.();
+      return;
+    }
+    unsubs.push(yearListener);
   };
 
   if (requestedYear) bindYear(requestedYear);
   else resolveActiveYear(schoolId).then(bindYear).catch(() => {});
 
-  return () => unsubs.forEach((unsub) => unsub?.());
+  return () => {
+    active = false;
+    unsubs.forEach((unsub) => unsub?.());
+    unsubs.length = 0;
+  };
 }
 
 /** One-shot read of a past year's flattened results (cross-year history). */

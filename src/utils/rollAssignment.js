@@ -24,6 +24,50 @@ export const cleanSectionLabel = (section, fallback = DEFAULT_SECTION_LABEL) =>
   String(section ?? '').trim() || fallback;
 
 /**
+ * Canonical শাখা order: `ক`, `খ`, `গ`, `ঘ` …, then any custom label in Bangla
+ * alphabetical order. The Excel export walks the same order, so a downloaded sheet
+ * reads exactly like the roster screen.
+ */
+export const SECTION_ORDER = Object.freeze(['ক', 'খ', 'গ', 'ঘ', 'ঙ', 'চ', 'ছ', 'জ']);
+
+/** Sort weight of a শাখা label (`0` for `ক`, `1` for `খ`, …). */
+export function sectionRank(section) {
+  const label = cleanSectionLabel(section);
+  const index = SECTION_ORDER.indexOf(label);
+  // A custom label sorts after the canonical ones, alphabetically among themselves.
+  return index >= 0 ? index : SECTION_ORDER.length + label.codePointAt(0) / 1000;
+}
+
+/** Comparator of two শাখা labels (`ক` first, custom ones last). */
+export function compareSections(left, right) {
+  const delta = sectionRank(left) - sectionRank(right);
+  if (delta !== 0) return delta;
+  return cleanSectionLabel(left).localeCompare(cleanSectionLabel(right), 'bn');
+}
+
+/** Every distinct শাখা label of a roster, in canonical order. */
+export const orderSections = (sections = []) => [...new Set(
+  (Array.isArray(sections) ? sections : []).map((section) => cleanSectionLabel(section)),
+)].sort(compareSections);
+
+/**
+ * Roster rows ordered for the 6-sheet Excel export: শাখা (`ক` ➔ `খ` ➔ `গ` ➔ …), then
+ * roll/merit order inside each শাখা. PURE — the roster screen, the export and the
+ * import plan all use it, so a round-trip never reorders a class.
+ *
+ * @param {Array<object>} students rows of ONE class
+ * @returns {Array<object>} a NEW sorted array
+ */
+export function sortRosterForExport(students = []) {
+  return [...(Array.isArray(students) ? students : [])].filter(Boolean).sort((left, right) => (
+    compareSections(left.section, right.section)
+    || normalizeRoll(left.roll) - normalizeRoll(right.roll)
+    || String(left.name ?? '').localeCompare(String(right.name ?? ''), 'bn')
+  ));
+}
+
+
+/**
  * Positive integer roll of a stored row, or `0` when it is not a plain number
  * (`''`, `null`, `1-1`, `২-২` …). Bangla digits are understood.
  */
@@ -266,6 +310,11 @@ export function planPromotionRolls({ entries = [], roster = [], movingIds = [], 
 export default {
   DEFAULT_SECTION_LABEL,
   cleanSectionLabel,
+  SECTION_ORDER,
+  sectionRank,
+  compareSections,
+  orderSections,
+  sortRosterForExport,
   normalizeRoll,
   rollBucketKey,
   isInRollBucket,

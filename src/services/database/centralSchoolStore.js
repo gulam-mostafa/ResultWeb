@@ -559,13 +559,25 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
   // archive). SECONDARY writes = permanent identity + the profile's active year.
   // Only the primary verdict decides `synced`, so a blocked/failed identity or
   // profile write can NEVER report the promotion itself as failed.
-  const primaryOperations = [];
+  //
+  // Both primary targets live under `sessions/`, so they travel as ONE atomic
+  // multi-path update: a pupil can never be enrolled in the next year while still
+  // missing from the leaver archive (or vice versa).
+  const primaryPatch = {};
   if (Object.keys(nextYearClassUpdates).length > 0) {
-    primaryOperations.push(safeUpdate(`${toYearPath}/students`, nextYearClassUpdates));
+    Object.entries(nextYearClassUpdates).forEach(([key, value]) => {
+      primaryPatch[`${toYear}/students/${key}`] = value;
+    });
   }
   if (Object.keys(archiveUpdates).length > 0) {
-    primaryOperations.push(safeUpdate(`${fromYearPath}/passedArchive`, archiveUpdates));
+    Object.entries(archiveUpdates).forEach(([key, value]) => {
+      primaryPatch[`${fromYear}/passedArchive/${key}`] = value;
+    });
   }
+  const primaryResults = Object.keys(primaryPatch).length
+    ? [await safeUpdate(`${basePath}/sessions`, primaryPatch)]
+    : [];
+  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
 
   const secondaryWrites = [];
   if (Object.keys(masterUpdates).length > 0) {
@@ -580,9 +592,6 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       patch: { academicYear: toYear, activeYear: toYear, updatedAt: now },
     });
   }
-
-  const primaryResults = await Promise.all(primaryOperations);
-  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
 
   const secondaryResults = await Promise.all(secondaryWrites.map(async ({ path, patch: value }) => {
     const first = await safeUpdate(path, value).catch(() => ({ synced: false }));
@@ -896,6 +905,12 @@ async function writeClassPromotion({
       archivePatch[`${yearKey}/${entry.studentMasterId}`] = archivedRecord;
     } else {
       // `উত্তীর্ণ`: the next class, inside the SAME year partition.
+      //
+      // The NEW class row must NOT inherit the previous class's published result
+      // stamps (`meritPosition` / `gpa` / `grade` / `grandTotal`): that figure belongs
+      // to the class the pupil just left. Until the new class has its own marks, the
+      // UI therefore shows `০০` / `ফলাফল নেই` — nothing is deleted, the old year/class
+      // result row stays exactly where it is.
       promotedCount += 1;
       patch[`${nextClassId}/${section}/${entry.studentMasterId}`] = cleanForCloud({
         ...entry.record,
@@ -911,9 +926,10 @@ async function writeClassPromotion({
         promotedFromYear: yearKey,
         academicYear: yearKey,
         isNewPromotion: true,
-        meritPosition: merit.meritPosition,
-        gpa: merit.gpa,
-        grade: merit.grade,
+        meritPosition: null,
+        gpa: null,
+        grade: '',
+        grandTotal: null,
         promotedAt: now,
         updatedAt: now,
       });
@@ -1000,11 +1016,28 @@ async function writeClassPromotion({
    * Secondary writes are still attempted (and retried once), but only the PRIMARY
    * verdict decides `synced`.
    * ------------------------------------------------------------------ */
-  const primaryOperations = [];
-  if (Object.keys(patch).length > 0) primaryOperations.push(safeUpdate(`${yearPath}/students`, patch));
-  if (Object.keys(archivePatch).length > 0) {
-    primaryOperations.push(safeUpdate(`${yearPath}/passedArchive`, archivePatch));
-  }
+  /* ------------------------------------------------------------------ *
+   * PRIMARY writes — ONE atomic multi-path update.
+   *
+   * The promotion itself is the pair of roster writes
+   * (`sessions/{year}/students` + `sessions/{year}/passedArchive`). They are sent as
+   * a SINGLE root-relative `update()` on `sessions/{year}`, so a promoted pupil can
+   * never be listed in the next class while still sitting in the old one (or vanish
+   * from both if the connection drops mid-write).
+   *
+   * If that write succeeds the movement really happened, so the save MUST NOT be
+   * reported as failed just because one of the non-critical side writes below
+   * (permanent identity, শাখা registry, year audit log) hit a permission rule or a
+   * transient network hiccup.
+   * ------------------------------------------------------------------ */
+  const primaryPatch = {};
+  Object.entries(patch).forEach(([key, value]) => { primaryPatch[`students/${key}`] = value; });
+  Object.entries(archivePatch).forEach(([key, value]) => { primaryPatch[`passedArchive/${key}`] = value; });
+
+  const primaryResults = Object.keys(primaryPatch).length
+    ? [await safeUpdate(yearPath, primaryPatch)]
+    : [];
+  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
 
   /** `[{ path, patch }]` — non-critical side writes, ranked after the roster. */
   const secondaryWrites = [];
@@ -1041,9 +1074,6 @@ async function writeClassPromotion({
       updatedAt: now,
     }),
   });
-
-  const primaryResults = await Promise.all(primaryOperations);
-  const primarySynced = primaryResults.every((entry) => entry?.synced !== false);
 
   // Secondary writes never flip the save verdict. A single retry keeps a transient
   // hiccup from leaving the permanent identity / registry / audit log stale.

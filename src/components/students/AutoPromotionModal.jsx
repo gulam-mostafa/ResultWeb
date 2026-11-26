@@ -145,6 +145,9 @@ export default function AutoPromotionModal({
   currentYear = '',
   nextYear = '',
   onAdvanceYear = null,
+  /** Tenant id + active year — enables the read-only cross-year history viewer. */
+  schoolId = '',
+  activeYear = '',
   // Optional read-only context for the two drill-down popups (result + profile).
   // Without it the popups still open, they just show the marks-free view.
   allStudents = [],
@@ -615,6 +618,8 @@ export default function AutoPromotionModal({
       getStudentResult={getStudentResult}
       getClassAnalytics={getClassAnalytics}
       getResultConfig={getResultConfig}
+      schoolId={schoolId}
+      activeYear={activeYear}
     />
     <StudentResultModal
       open={Boolean(resultTarget)}

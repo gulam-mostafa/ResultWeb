@@ -370,6 +370,7 @@ export function SchoolDataProvider({ children }) {
     getStudentsOfClass,
     getStudentById,
     addStudent,
+    importStudents,
     updateStudent,
     archiveStudent,
     restoreStudent,
@@ -553,6 +554,7 @@ export function SchoolDataProvider({ children }) {
       saveResultConfig,
       resetResultConfig,
       // mutations
+      importStudents,
       addStudent,
       updateStudent,
       removeStudent,
@@ -605,6 +607,7 @@ export function SchoolDataProvider({ children }) {
       resultConfigs,
       saveResultConfig,
       resetResultConfig,
+      importStudents,
       addStudent,
       updateStudent,
       removeStudent,

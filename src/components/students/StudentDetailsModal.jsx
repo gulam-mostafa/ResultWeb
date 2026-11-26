@@ -116,6 +116,41 @@ export default function StudentDetailsModal({
     () => (history?.years ?? []).find((entry) => entry.year === historyYear) ?? null,
     [history, historyYear],
   );
+  /**
+   * Every distinct শ্রেণি the pupil was enrolled in, newest year first — the শ্রেণি
+   * selector's options. Picking one narrows the শিক্ষাবর্ষ list below to that class, so
+   * a past marksheet can be found by class instead of by scrolling years.
+   */
+  const historyClassOptions = useMemo(() => {
+    const seen = new Map();
+    (history?.years ?? []).forEach((entry) => {
+      const key = entry.classId || '';
+      if (!key || seen.has(key)) return;
+      seen.set(key, { classId: key, label: CLASS_LABEL_MAP[key] ?? key, latestYear: entry.year });
+    });
+    return [...seen.values()];
+  }, [history]);
+  const [historyClassId, setHistoryClassId] = useState('');
+  useEffect(() => {
+    // Follow the selected year's class unless the teacher pinned another one.
+    const selected = historyEntry?.classId ?? '';
+    if (!selected) return;
+    setHistoryClassId((current) => (current && historyClassOptions.some((option) => option.classId === current)
+      ? current
+      : selected));
+  }, [historyEntry?.classId, historyClassOptions]);
+  /** Years of the pinned শ্রেণি (every year when nothing is pinned). */
+  const visibleHistoryYears = useMemo(
+    () => (historyClassId ? historyYears.filter((entry) => entry.classId === historyClassId) : historyYears),
+    [historyYears, historyClassId],
+  );
+  useEffect(() => {
+    // Pinning a শ্রেণি whose years exclude the current selection must not leave the
+    // শিক্ষাবর্ষ select on a value that is no longer in its own option list.
+    if (!visibleHistoryYears.length) return;
+    if (visibleHistoryYears.some((entry) => entry.year === historyYear)) return;
+    setHistoryYear(visibleHistoryYears[0].year);
+  }, [visibleHistoryYears, historyYear]);
   const historyRow = historyEntry?.terms?.[historyTerm] ?? null;
   /** Subject rows of the frozen snapshot, using the class's own (current) subject names. */
   const historySubjects = useMemo(() => {
@@ -156,8 +191,19 @@ export default function StudentDetailsModal({
           <h3 className="inline-flex items-center gap-1.5 text-sm font-bold"><History size={15} aria-hidden="true" /> ঐতিহাসিক ফলাফল (রিড-অনলি)</h3>
           <div className="flex flex-wrap items-end gap-2">
             <label className="text-xs font-semibold"><span className="label-base mb-0">শিক্ষাবর্ষ</span>
-              <select className="input-base py-1.5 text-xs" value={historyYear} onChange={(event) => setHistoryYear(event.target.value)} disabled={!historyYears.length} aria-label="ঐতিহাসিক শিক্ষাবর্ষ">
-                {historyYears.length ? historyYears.map((entry) => <option key={entry.year} value={entry.year}>{toBanglaNumber(entry.year)}{entry.classId ? ` · ${CLASS_LABEL_MAP[entry.classId] ?? entry.classId}` : ''}</option>) : <option value="">—</option>}
+              <select className="input-base py-1.5 text-xs" value={historyYear} onChange={(event) => setHistoryYear(event.target.value)} disabled={!visibleHistoryYears.length} aria-label="ঐতিহাসিক শিক্ষাবর্ষ">
+                {visibleHistoryYears.length ? visibleHistoryYears.map((entry) => <option key={entry.year} value={entry.year}>{toBanglaNumber(entry.year)}{entry.classId ? ` · ${CLASS_LABEL_MAP[entry.classId] ?? entry.classId}` : ''}</option>) : <option value="">—</option>}
+              </select>
+            </label>
+            <label className="text-xs font-semibold"><span className="label-base mb-0">শ্রেণি</span>
+              <select className="input-base py-1.5 text-xs" value={historyClassId} onChange={(event) => {
+                const nextClass = event.target.value;
+                setHistoryClassId(nextClass);
+                // Jump to that class's newest year so the sheet is never blank.
+                const newest = (history?.years ?? []).find((entry) => entry.classId === nextClass);
+                if (newest) setHistoryYear(newest.year);
+              }} disabled={!historyClassOptions.length} aria-label="ঐতিহাসিক শ্রেণি">
+                {historyClassOptions.length ? historyClassOptions.map((entry) => <option key={entry.classId} value={entry.classId}>{entry.label}</option>) : <option value="">—</option>}
               </select>
             </label>
             <label className="text-xs font-semibold"><span className="label-base mb-0">প্রান্তিক</span>

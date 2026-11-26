@@ -36,7 +36,9 @@ export default function StudentTable({ students = [], canEdit, isArchive = false
         <td>{student.fatherName || '—'}<div className="text-[10px] text-slate-400">{student.motherName || '—'}</div></td><td>{student.gender === 'female' ? 'ছাত্রী' : 'ছাত্র'}</td>
         <td onClick={(event) => event.stopPropagation()}>
           <button type="button" className="inline-flex items-center gap-1 text-xs font-bold text-brand-700 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-700" onClick={() => onShowResult?.(student)} aria-label={`${student.name} এর ফলাফল`} disabled={!onShowResult}>
-            <BarChart3 size={12} /> {result?.hasAnyMark ? `মোট ${toBanglaNumber(result.totalMarks ?? 0)} · GPA ${result.gpa == null ? '—' : Number(result.gpa).toFixed(2)}` : 'ফলাফল নেই'}
+            <BarChart3 size={12} /> {result?.hasAnyMark
+              ? `মোট ${toBanglaNumber(result.totalMarks ?? 0)} · GPA ${result.gpa == null ? '—' : Number(result.gpa).toFixed(2)}`
+              : `মোট ${toBanglaNumber(0)} · ফলাফল নেই`}
           </button>
         </td>
         <td>{student.fatherPhone || student.guardianPhone || '—'}</td>
