@@ -904,6 +904,19 @@ assert.ok(indexCss.includes('scrollbar-width: none'), 'the hiding rule removes t
 assert.ok(!gridHtml.includes('পাশে স্ক্রল করুন ▶'), 'the old bottom bar hint is gone from the marks grid');
 assert.ok(annualSrc.includes('StickyScrollBar'), 'the annual table still uses its own bottom scroll bar');
 
+// 5h — the fade-in keyframes must not retain a transform: `both` fill mode
+// kept `translateY(0)` on <main> forever, and any computed transform on an
+// ancestor makes `position: fixed` descendants (the pinned header bar)
+// position relative to <main> instead of the viewport — so the header
+// scrolled away with the page. Opacity-only keyframes keep the fade look
+// and leave no transform behind.
+const tailwindConfigSrc = readFileSync(path.join(process.cwd(), 'tailwind.config.js'), 'utf8');
+const fadeInAt = tailwindConfigSrc.indexOf("'fade-in': {");
+assert.ok(fadeInAt >= 0, 'the fade-in keyframes are defined in the Tailwind config');
+const fadeInBlock = tailwindConfigSrc.slice(fadeInAt, tailwindConfigSrc.indexOf('},', fadeInAt) + 2);
+assert.ok(!fadeInBlock.includes('transform'), 'the fade-in keyframes keep no transform on <main> after the animation');
+assert.ok(fadeInBlock.includes('opacity'), 'the fade-in animation still fades in');
+
 // PDF slot geometry: a sheet whose aspect matches the slot fills it exactly
 // (no centring gap); a genuinely short sheet still centres (nothing cut).
 const { fitSheetIntoSlot } = await import('../../src/utils/downloadPdf.js');

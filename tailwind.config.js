@@ -42,9 +42,15 @@ export default {
         float: '0 12px 32px -8px rgb(16 24 40 / 0.18)',
       },
       keyframes: {
+        // শুধু opacity — কোনো transform নয়: `both` fill mode-এ 100%
+        // keyframe-এর transform চিরদিন লেগে থাকত, আর <main>-এর উপর
+        // লেগে-থাকা transform `position: fixed` ছেলেমেয়েদের (পিনড
+        // হেডার বার) ভিউপোর্টের বদলে <main>-এর সাপেক্ষে বসাত — তাই
+        // হেডার স্ক্রল করলে উপরে আটকাত না (ব্যাচ ৫h)। শুধু ফেড থাকলে
+        // চেহারা একই রকম থাকে, কোনো transform ধরে রাখা হয় না।
         'fade-in': {
-          '0%': { opacity: '0', transform: 'translateY(6px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' },
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
         },
         'slide-in': {
           '0%': { opacity: '0', transform: 'translateX(-12px)' },
