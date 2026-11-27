@@ -6,7 +6,7 @@ import {
 
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { CLASS_LEVELS, CLASS_LABEL_MAP } from '../utils/constants.js';
+import { CLASS_LEVELS, CLASS_LABEL_MAP, getClassName } from '../utils/constants.js';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import {
   RESULT_TABS,
@@ -70,7 +70,11 @@ export default function ResultsPage() {
     getClassRankMap,
     getSectionsOfClass,
     executePromotion,
-    advanceAcademicYear,
+    advanceClassYear,
+    undoClassPromotion,
+    promotionState,
+    isReadOnly,
+    isClassLocked,
     saveResultConfig,
     resetResultConfig,
     syncState,
@@ -288,61 +292,48 @@ export default function ResultsPage() {
   };
 
   /**
-   * Year-end rollover confirmed in the promotion modal.
+   * Year-end rollover confirmed in the promotion modal — ONE class at a time.
    *
-   * `advanceAcademicYear` writes the NEW year's roster (same `studentMasterId`s, empty
-   * results) and clears the old year's GPA/grade/merit stamps from the new rows. The
-   * finished year stays frozen, and a failure surfaces a clear Bangla error — never a
-   * silent "synced".
-   *
-   * Every pupil is carried into the new year: the modal's decisions are used for the
-   * class it was opened on, and each remaining pupil follows their OWN consolidated
-   * annual result (`isPass`). A pupil with no annual marks is RETAINED — never
-   * auto-promoted without an explicit teacher decision.
+   * `advanceClassYear` writes the NEW year's roster for that class only (same
+   * `studentMasterId`s, empty results) and records the completion, which locks
+   * the class. The finished year stays frozen, the year activates only when
+   * all six classes are done, and a failure surfaces a clear Bangla error —
+   * never a silent "synced". The other classes are NOT touched here: the
+   * modal's decisions cover exactly the class it was opened on.
    */
   const handleAdvanceYear = useCallback(async (payload = {}) => {
     setYearNotice(null);
-    const decidedIds = new Set(
-      (payload.decisions ?? []).map((item) => String(item.studentId ?? item.studentMasterId ?? '')),
-    );
-    const decisions = [...(payload.decisions ?? [])];
-    allStudents
-      .filter((student) => student?.id && student.classId && student.classId !== 'archive')
-      .forEach((student) => {
-        if (decidedIds.has(String(student.id))) return;
-        const annual = getStudentResult?.(student.id) ?? null;
-        // No annual marks ⇒ same class (the teacher must decide explicitly).
-        const pass = annual?.hasAnyMark === true && annual?.isPass === true;
-        decisions.push({
-          studentId: student.id,
-          studentMasterId: student.studentMasterId || student.id,
-          action: pass ? 'promote' : 'retain',
-          section: student.section || '',
-        });
-      });
-
-    const result = await advanceAcademicYear?.({
+    const result = await advanceClassYear?.({
       year: payload.year || activeYear,
       nextYear: payload.nextYear || nextSessionYear(activeYear),
-      decisions,
+      decisions: payload.decisions ?? [],
+      fromClassId: payload.fromClassId || '',
     });
     if (!result?.synced) {
       const reason = result?.reason === 'offline'
-        ? 'ইন্টারনেট সংযোগ নেই — নতুন শিক্ষাবর্ষ শুরু করা যায়নি।'
-        : result?.reason === 'timeout'
-          ? 'ক্লাউড সংযোগ সময় শেষ হয়ে গেছে — নতুন শিক্ষাবর্ষ শুরু হয়নি; আবার চেষ্টা করুন।'
-          : 'নতুন শিক্ষাবর্ষ শুরু করা যায়নি — ক্লাউডে সংরক্ষণ ব্যর্থ হয়েছে; আবার চেষ্টা করুন।';
+        ? 'ইন্টারনেট সংযোগ নেই — প্রমোশন করা যায়নি।'
+        : result?.reason === 'already-complete'
+          ? 'এই শ্রেণির প্রমোশন ইতিমধ্যেই সম্পূর্ণ হয়েছে।'
+          : result?.reason === 'read-only'
+            ? 'এই সালটি লক করা — প্রমোশন করা যাবে না।'
+            : result?.reason === 'timeout'
+              ? 'ক্লাউড সংযোগ সময় শেষ হয়ে গেছে — প্রমোশন হয়নি; আবার চেষ্টা করুন।'
+              : 'প্রমোশন করা যায়নি — ক্লাউডে সংরক্ষণ ব্যর্থ হয়েছে; আবার চেষ্টা করুন।';
       setYearNotice({ tone: 'error', text: reason });
       toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       return result;
     }
     setYearNotice({
       tone: 'success',
-      text: `${toBanglaNumber(result.nextYear)} শিক্ষাবর্ষ শুরু হয়েছে — উত্তীর্ণ ${toBanglaNumber(result.promoted)} জন, একই শ্রেণিতে ${toBanglaNumber(result.retained)} জন, আর্কাইভ ${toBanglaNumber(result.graduated)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।`,
+      text: `${getClassName(payload.fromClassId)} শ্রেণির প্রমোশন সম্পন্ন — উত্তীর্ণ ${toBanglaNumber(result.promoted)} জন, একই শ্রেণিতে ${toBanglaNumber(result.retained)} জন, আর্কাইভ ${toBanglaNumber(result.graduated)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।${
+        result?.yearActivated
+          ? ` সব শ্রেণি শেষ হয়েছে, তাই ${toBanglaNumber(result.nextYear)} শিক্ষাবর্ষ এখন সক্রিয়।`
+          : ' এই শ্রেণির তথ্য এখন লক।'
+      }`,
     });
     toast.success('সংরক্ষণ হয়েছে');
     return result;
-  }, [advanceAcademicYear, activeYear, allStudents, getStudentResult]);
+  }, [advanceClassYear, activeYear]);
 
   /* ---------------------------------------------------------------- *
    * Excel: download (direct — 6 sheets, all classes) / upload (strict, all
@@ -515,7 +506,9 @@ export default function ResultsPage() {
         });
         lastResult = result ?? { synced: true };
         if (result?.synced === false) {
-          toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+          toast.error(result?.reason === 'class-locked'
+            ? `${getClassName(previewClassId)} শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — নম্বর সংরক্ষণ করা যাবে না`
+            : 'সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
           return result;
         }
         savedAny = true;
@@ -597,7 +590,7 @@ export default function ResultsPage() {
             <Settings2 size={15} /> বিষয় ও নম্বর সেটিংস
           </button>
           {canManageStudents && (
-            <button type="button" className="btn-secondary" onClick={() => setPromoting(true)}>
+            <button type="button" className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly} title={isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined}>
               <ArrowUpRight size={15} /> বার্ষিক শ্রেণি উত্তরণ
             </button>
           )}
@@ -702,7 +695,7 @@ export default function ResultsPage() {
             getResult={getRowResult}
             onEntry={setMark}
             setMark={setMark}
-            canEdit={!isConsolidated && canEditMarks}
+            canEdit={!isConsolidated && canEditMarks && !isReadOnly && !isClassLocked(classId)}
             onShowStudent={setProfileTarget}
             onShowRemark={setRemarkTarget}
             onShowResult={setResultTarget}
@@ -880,7 +873,7 @@ export default function ResultsPage() {
       onClose={() => setSettingsOpen(false)}
       classId={classId}
       config={config}
-      canEdit={canManageStudents || Boolean(saveResultConfig)}
+      canEdit={(canManageStudents || Boolean(saveResultConfig)) && !isReadOnly && !isClassLocked(classId)}
       onSave={saveResultConfig}
       onReset={resetResultConfig}
     />
@@ -949,6 +942,8 @@ export default function ResultsPage() {
       currentYear={activeYear}
       nextYear={nextSessionYear(activeYear)}
       onAdvanceYear={handleAdvanceYear}
+      promotionState={promotionState}
+      onUndoClass={undoClassPromotion}
     />
   </>;
 }

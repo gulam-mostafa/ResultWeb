@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Bar } from 'react-chartjs-2';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
+import PromotionJanuaryWarning from '../components/students/PromotionJanuaryWarning.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
 import { academicYearOf, addressLine, schoolDisplayName } from '../utils/schoolProfile.js';
@@ -8,8 +9,8 @@ import { Card, CardHeader, StatCard, Badge } from '../components/ui/Primitives.j
 import { Users, School, GraduationCap, FileText, ArrowRight } from 'lucide-react';
 
 export default function Dashboard() {
-  const { summary, getClassAnalytics, getResultConfig, schoolProfile } = useSchoolData();
-  const { user } = useAuth();
+  const { summary, getClassAnalytics, getResultConfig, schoolProfile, viewYear, januaryWarning, autoPromotionNotice, isReadOnly } = useSchoolData();
+  const { user, canManageStudents } = useAuth();
   const analytics = getClassAnalytics('c5');
   // Subject labels/colours come from this school's own class configuration, so a
   // customised subject list is reflected on the dashboard too.
@@ -32,8 +33,11 @@ export default function Dashboard() {
   return <>
     <div className="mb-5">
       <h2 className="text-xl font-extrabold">ড্যাশবোর্ড</h2>
-      <p className="text-xs text-slate-500">শিক্ষাবর্ষ {academicYearOf(schoolProfile)} · {schoolDisplayName(schoolProfile)} · বিদ্যালয়ের সার্বিক চিত্র</p>
+      <p className="text-xs text-slate-500">শিক্ষাবর্ষ {viewYear || academicYearOf(schoolProfile)} · {schoolDisplayName(schoolProfile)} · বিদ্যালয়ের সার্বিক চিত্র</p>
     </div>
+    {(januaryWarning || autoPromotionNotice) && canManageStudents && !isReadOnly ? (
+      <PromotionJanuaryWarning warning={januaryWarning} autoNotice={autoPromotionNotice} className="mb-4" />
+    ) : null}
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard label="মোট শিক্ষার্থী" value={toBanglaNumber(summary.activeStudents)} hint="সক্রিয় শিক্ষার্থী" icon={Users} tone="brand" />
       <StatCard label="শ্রেণি" value={toBanglaNumber(summary.classCount)} hint="প্রাক-প্রাথমিক থেকে ৫ম" icon={School} tone="emerald" />

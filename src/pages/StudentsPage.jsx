@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { isDemoLoginEnabled } from '../context/AuthContext.jsx';
-import { CLASS_LEVELS, CLASS_TABS } from '../utils/constants.js';
+import { CLASS_LEVELS, CLASS_TABS, getClassName } from '../utils/constants.js';
 import { createDemoStudents } from '../utils/demoSeedData.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
 import { toBanglaNumber } from '../utils/banglaNumberFormatter.js';
@@ -18,6 +18,7 @@ import StudentTable from '../components/students/StudentTable.jsx';
 import AddStudentModal from '../components/students/AddStudentModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
 import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
+import PromotionJanuaryWarning from '../components/students/PromotionJanuaryWarning.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 import ExcelDownloadWarningModal from '../components/results/ExcelDownloadWarningModal.jsx';
 import StudentExcelPreviewModal from '../components/students/StudentExcelPreviewModal.jsx';
@@ -28,7 +29,7 @@ import { matchesStudentSearch } from '../utils/studentSearch.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
 
 export default function StudentsPage() {
-  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, advanceAcademicYear, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection, isHydrating } = useSchoolData();
+  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, viewYear, isReadOnly, isClassLocked, promotionState, promotionPending, promotionCompleted, januaryWarning, autoPromotionNotice, advanceClassYear, undoClassPromotion, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection, isHydrating } = useSchoolData();
   const { canManageStudents } = useAuth();
   const toast = useToast();
   const [tab, setTab] = useState('pre');
@@ -98,9 +99,20 @@ export default function StudentsPage() {
    * roster write synchronously (the modal already closed on it); the cloud write
    * runs fire-and-forget inside them and its state is shown by the sync badge —
    * so the toast confirms the local save, it never claims the cloud is done.
+   * A frozen class refuses the write (`null` / `class-locked`) — the teacher
+   * hears that instead of a false "সংরক্ষণ হয়েছে".
    */
   const saveStudent = (student) => {
-    student.id ? updateStudent(student.id, student) : addStudent(student);
+    if (student.id) {
+      const result = updateStudent(student.id, student);
+      if (result?.reason === 'class-locked') {
+        toast.error('এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — তথ্য বদলানো যাবে না');
+        return;
+      }
+    } else if (!addStudent(student)) {
+      toast.error('এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — নতুন ভর্তি নেওয়া যাবে না');
+      return;
+    }
     toast.success('সংরক্ষণ হয়েছে');
   };
 
@@ -114,7 +126,7 @@ export default function StudentsPage() {
     setDownloading(true);
     setExcelNotice({ tone: '', text: '' });
     try {
-      const { name } = await downloadStudentWorkbook({ students, suffix: activeYear });
+      const { name } = await downloadStudentWorkbook({ students, suffix: viewYear });
       setExcelNotice({ tone: 'success', text: `ফাইল ডাউনলোড হয়েছে: ${name}` });
       setDownloadWarningOpen(false);
     } catch {
@@ -164,32 +176,44 @@ export default function StudentsPage() {
   };
 
   /**
-   * Year-end rollover (`বার্ষিক শিক্ষাবর্ষ উত্তরণ`), reachable from the roster screen.
+   * Year-end rollover (`বার্ষিক শিক্ষাবর্ষ উত্তরণ`), reachable from the roster screen —
+   * ONE class at a time.
    *
-   * `promoteSession()` only WRITES the destination year, files Class-5 leavers into the
-   * finished year's `passedArchive` and moves `profile.activeYear`; the finished year
-   * itself (roster, results, attendance, remarks) is never modified. The new class's
+   * `advanceClassYear` moves only that class's decided pupils into the next year,
+   * files Class-5 leavers into the finished year's `passedArchive`, records the
+   * completion, and activates the next year ONLY when all six classes are done.
+   * The finished year itself (roster, results, attendance, remarks) is never
+   * modified, and the promoted class is locked from then on. The new class's
    * result therefore starts empty and displays `০০` / `ফলাফল নেই`.
    */
   const advanceYear = async (payload = {}) => {
-    const result = await advanceAcademicYear?.({
+    const result = await advanceClassYear?.({
       year: payload.year || activeYear,
       nextYear: payload.nextYear || nextSessionYear(activeYear),
       decisions: payload.decisions ?? [],
+      fromClassId: payload.fromClassId || '',
     });
     if (result?.synced === false) {
       setExcelNotice({
         tone: 'error',
         text: result?.reason === 'offline'
-          ? 'ইন্টারনেট সংযোগ নেই — নতুন শিক্ষাবর্ষ শুরু করা যায়নি।'
-          : 'নতুন শিক্ষাবর্ষ শুরু করা যায়নি — আবার চেষ্টা করুন।',
+          ? 'ইন্টারনেট সংযোগ নেই — প্রমোশন করা যায়নি।'
+          : result?.reason === 'already-complete'
+            ? 'এই শ্রেণির প্রমোশন ইতিমধ্যেই সম্পূর্ণ হয়েছে।'
+            : result?.reason === 'read-only'
+              ? 'এই সালটি লক করা — প্রমোশন করা যাবে না।'
+              : 'প্রমোশন করা যায়নি — আবার চেষ্টা করুন।',
       });
       toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
       return result;
     }
     setExcelNotice({
       tone: 'success',
-      text: `${toBanglaNumber(result?.nextYear ?? '')} শিক্ষাবর্ষ শুরু হয়েছে — উত্তীর্ণ ${toBanglaNumber(result?.promoted ?? 0)} জন, আর্কাইভ ${toBanglaNumber(result?.graduated ?? 0)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।`,
+      text: `${getClassName(payload.fromClassId)} শ্রেণির প্রমোশন সম্পন্ন — উত্তীর্ণ ${toBanglaNumber(result?.promoted ?? 0)} জন, আর্কাইভ ${toBanglaNumber(result?.graduated ?? 0)} জন। নতুন ক্লাসের রেজাল্ট ০০ থেকে শুরু হয়েছে।${
+        result?.yearActivated
+          ? ` সব শ্রেণি শেষ হয়েছে, তাই ${toBanglaNumber(result?.nextYear ?? '')} শিক্ষাবর্ষ এখন সক্রিয়।`
+          : ' এই শ্রেণির তথ্য এখন লক।'
+      }`,
     });
     toast.success('সংরক্ষণ হয়েছে');
     return result;
@@ -205,13 +229,22 @@ export default function StudentsPage() {
         // The preview modal stays open on failure and shows its own error; the
         // toast is the floating confirmation above it.
         toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
-        setExcelNotice({ tone: 'error', text: 'এক্সেল আমদানি ক্লাউডে সংরক্ষণ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।' });
+        setExcelNotice({
+          tone: 'error',
+          text: result?.reason === 'class-locked'
+            ? 'লক করা শ্রেণির সারিগুলো আমদানি করা যাবে না — ওই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে।'
+            : 'এক্সেল আমদানি ক্লাউডে সংরক্ষণ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।',
+        });
         return result;
       }
       toast.success('সংরক্ষণ হয়েছে');
       setExcelNotice({
         tone: 'success',
-        text: `আমদানি সম্পন্ন — নতুন ${toBanglaNumber(result?.created ?? 0)} জন, হালনাগাদ ${toBanglaNumber(result?.updated ?? 0)} জন।`,
+        text: `আমদানি সম্পন্ন — নতুন ${toBanglaNumber(result?.created ?? 0)} জন, হালনাগাদ ${toBanglaNumber(result?.updated ?? 0)} জন।${
+          result?.lockedSkipped
+            ? ` লক করা শ্রেণির ${toBanglaNumber(result.lockedSkipped)} সারি বাদ গেছে।`
+            : ''
+        }`,
       });
       setImportPlan(null);
       return result;
@@ -241,7 +274,9 @@ export default function StudentsPage() {
       tone: 'error',
       text: result?.reason === 'already-archived'
         ? `${student.name} ইতিমধ্যেই আর্কাইভে আছে।`
-        : `${student.name} আর্কাইভ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
+        : result?.reason === 'class-locked'
+          ? `${student.name}-এর শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — আর্কাইভ করা যাবে না।`
+          : `${student.name} আর্কাইভ করা যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
     });
     toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
   };
@@ -264,7 +299,9 @@ export default function StudentsPage() {
       tone: 'error',
       text: result?.reason === 'not-archived'
         ? `${restoring.name} আর্কাইভে নেই, তাই ফিরিয়ে নেওয়া যাবে না।`
-        : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
+        : result?.reason === 'class-locked'
+          ? `${getClassName(restoreClassId)} শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — ওই শ্রেণিতে ফিরিয়ে নেওয়া যাবে না।`
+          : `${restoring.name} শ্রেণিতে ফিরিয়ে নেওয়া যায়নি — ইন্টারনেট সংযোগ দেখে আবার চেষ্টা করুন।`,
     });
     toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
   };
@@ -280,19 +317,32 @@ export default function StudentsPage() {
     <div className="mb-4 flex min-w-0 flex-wrap justify-end gap-2">
       {canManageStudents && <>
         {isDemoLoginEnabled() ? (
-          <button className="btn-secondary" onClick={addDemoStudents}><Sparkles size={15} /> ডেমো শিক্ষার্থী যোগ করুন</button>
+          <button className="btn-secondary" onClick={addDemoStudents} disabled={isReadOnly || isClassLocked(tab)}><Sparkles size={15} /> ডেমো শিক্ষার্থী যোগ করুন</button>
         ) : null}
         <button className="btn-secondary" onClick={() => { setExcelNotice({ tone: '', text: '' }); setDownloadWarningOpen(true); }} disabled={downloading}>
           <Download size={15} /> এক্সেল ডাউনলোড
         </button>
-        <label className={`btn-secondary cursor-pointer ${parsing ? 'pointer-events-none opacity-60' : ''}`}>
+        <label className={`btn-secondary cursor-pointer ${parsing || isReadOnly ? 'pointer-events-none opacity-60' : ''}`}>
           <Upload size={15} /> {parsing ? 'যাচাই হচ্ছে…' : 'এক্সেল আপলোড'}
-          <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={parsing} aria-label="শিক্ষার্থী এক্সেল আপলোড" />
+          <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={parsing || isReadOnly} aria-label="শিক্ষার্থী এক্সেল আপলোড" />
         </label>
-        <button className="btn-secondary" onClick={() => setPromoting(true)}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
-        <button className="btn-primary" onClick={() => setAdding(true)}><UserPlus size={15} /> নতুন ভর্তি</button>
+        <button className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly} title={isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
+        <button className="btn-primary" onClick={() => setAdding(true)} disabled={isReadOnly || isClassLocked(tab)} title={isClassLocked(tab) ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — নতুন ভর্তি নেওয়া যাবে না' : undefined}><UserPlus size={15} /> নতুন ভর্তি</button>
       </>}
     </div>
+    {(januaryWarning || autoPromotionNotice) && canManageStudents && !isReadOnly ? (
+      <PromotionJanuaryWarning warning={januaryWarning} autoNotice={autoPromotionNotice} className="mb-3" />
+    ) : null}
+    {!isReadOnly && promotionCompleted.length > 0 ? (
+      <p role="status" className="mb-3 flex flex-wrap items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+        <span>বার্ষিক উত্তরণ: {toBanglaNumber(promotionCompleted.length)}/৬ শ্রেণি সম্পূর্ণ</span>
+        {promotionPending.length ? (
+          <span>— বাকি: {promotionPending.map(getClassName).join(' · ')}</span>
+        ) : (
+          <span>— সব শ্রেণি সম্পূর্ণ</span>
+        )}
+      </p>
+    ) : null}
     {excelNotice.text ? (
       <p
         role={excelNotice.tone === 'error' ? 'alert' : 'status'}
@@ -324,12 +374,12 @@ export default function StudentsPage() {
         options={sections}
         counts={sectionCounts[tab] ?? {}}
         total={visibleCount}
-        canManage={canManageStudents}
+        canManage={canManageStudents && !isReadOnly && !isClassLocked(tab)}
         onAddSection={(label) => addSection(tab, label)}
         onRenameSection={(from, to) => renameSection(tab, from, to)}
         onRemoveSection={(label) => removeSection(tab, label)}
       />}
-      <StudentTable students={searchedStudents} canEdit={canManageStudents} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
+      <StudentTable students={searchedStudents} canEdit={canManageStudents && !isReadOnly && !isClassLocked(tab)} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
         onShowResult={setResultTarget} getStudentResult={getStudentResult}
         onRestore={(student) => { setRestoring(student); setRestoreClassId(CLASS_LEVELS.some((item) => item.id === student.previousClassId) ? student.previousClassId : 'pre'); }} />
     </Card>
@@ -338,7 +388,7 @@ export default function StudentsPage() {
     <StudentDetailsModal open={Boolean(selected)} onClose={() => setSelected(null)} student={selected ? (students.find((item) => item.id === selected.id) ?? selected) : null}
       marks={marks} allStudents={students} getTermResult={getTermResult} getStudentResult={getStudentResult} getClassAnalytics={getClassAnalytics} getResultConfig={getResultConfig}
       schoolId={schoolId} activeYear={activeYear}
-      onEdit={canManageStudents ? (student) => { setSelected(null); setEditing(student); } : null} />
+      onEdit={canManageStudents && !isReadOnly ? (student) => { setSelected(null); setEditing(student); } : null} />
     <StudentResultModal open={Boolean(resultTarget)} onClose={() => setResultTarget(null)}
       student={resultTarget ? (students.find((item) => item.id === resultTarget.id) ?? resultTarget) : null}
       marks={marks} getStudentResult={getStudentResult} getTermResult={getTermResult} getClassAnalytics={getClassAnalytics} getRemark={getRemark} />
@@ -373,6 +423,8 @@ export default function StudentsPage() {
       currentYear={activeYear}
       nextYear={nextSessionYear(activeYear)}
       onAdvanceYear={advanceYear}
+      promotionState={promotionState}
+      onUndoClass={undoClassPromotion}
     />
     <ExcelDownloadWarningModal
       open={downloadWarningOpen}
@@ -380,7 +432,7 @@ export default function StudentsPage() {
       onConfirm={handleExport}
       downloading={downloading}
       variant="students"
-      subtitle={`ছয় শ্রেণির শিক্ষার্থী তালিকা · ${activeYear} শিক্ষাবর্ষ`}
+      subtitle={`ছয় শ্রেণির শিক্ষার্থী তালিকা · ${viewYear} শিক্ষাবর্ষ`}
     />
     <StudentExcelPreviewModal
       open={Boolean(importPlan)}

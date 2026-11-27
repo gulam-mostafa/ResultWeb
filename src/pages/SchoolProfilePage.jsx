@@ -17,7 +17,7 @@ const FIELD_DEFS = [
 
 export default function SchoolProfilePage() {
   const { user, canManageStudents } = useAuth();
-  const { schoolProfile, saveProfile } = useSchoolData();
+  const { schoolProfile, saveProfile, isReadOnly } = useSchoolData();
   const toast = useToast();
   const [form, setForm] = useState(() => normalizeSchoolProfile(schoolProfile));
   const [saving, setSaving] = useState(false);
@@ -113,7 +113,7 @@ export default function SchoolProfilePage() {
         {FIELD_DEFS.map(([key,label,type]) => <label key={key}><span className="label-base">{label}</span><input className="input-base" data-profile-field={key} type={type} value={form[key] || ''} onChange={(event) => setField(key, event.target.value)} /></label>)}
       </div>
       {notice && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">{notice}</p>}
-      <button type="submit" className="btn-primary" disabled={saving || !canManageStudents}><Save size={16}/>{saving ? 'সংরক্ষণ হচ্ছে…' : 'প্রোফাইল সংরক্ষণ করুন'}</button>
+      <button type="submit" className="btn-primary" disabled={saving || !canManageStudents || isReadOnly} title={isReadOnly ? 'এই সালটি লক করা — প্রোফাইল এডিট করা যাবে না' : undefined}><Save size={16}/>{saving ? 'সংরক্ষণ হচ্ছে…' : 'প্রোফাইল সংরক্ষণ করুন'}</button>
     </form></Card>
   </div>;
 }

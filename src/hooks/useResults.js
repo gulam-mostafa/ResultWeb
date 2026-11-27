@@ -40,6 +40,8 @@ export function useResults({
   runCloudSave,
   getStudentsOfClass,
   resultConfigs = {},
+  /** `(classId) => boolean` — a class frozen by a completed year-end promotion. */
+  isClassLocked = null,
 }) {
   // Marks/remarks are stored in `…/schools/{schoolId}/sessions/{year}/results/…`,
   // so both the tenant reference and the academic year are always explicit.
@@ -48,6 +50,16 @@ export function useResults({
   const tenantRef = schoolRef ?? null;
   const canWriteCloud = Boolean(tenantRef && isCompleteSchoolRef(tenantRef));
   const year = normalizeSessionYear(activeYear, DEFAULT_ACTIVE_YEAR);
+  /**
+   * A frozen class takes no marks or remarks — the grid disables its inputs too;
+   * this is the defence-in-depth that makes a stray call a no-op instead of a
+   * silent write into frozen history. (The archive pseudo-class is never locked
+   * by promotion; its own rules apply.)
+   */
+  const classLocked = useCallback((classId) => {
+    if (!classId || classId === 'archive') return false;
+    return typeof isClassLocked === 'function' ? isClassLocked(classId) === true : false;
+  }, [isClassLocked]);
 
   /** The active school's configuration of one class (factory defaults when unset). */
   const getResultConfig = useCallback(
@@ -244,6 +256,9 @@ export function useResults({
       const classId = student?.classId && student.classId !== 'archive'
         ? student.classId
         : (student?.previousClassId || '');
+      // A frozen class takes no marks — the grid disables the inputs too, so a
+      // keystroke here can only come from a stale render or a paste flow.
+      if (classLocked(classId)) return;
       const config = normalizeResultConfig(resultConfigs?.[classId] ?? null, classId || 'c3');
       const subject = config.subjects.find((item) => item.id === subjectId) ?? null;
       const isComponent = component === 'formative' || component === 'summative';
@@ -294,7 +309,7 @@ export function useResults({
         return { ...prev, marks: { ...prev.marks, [studentId]: nextMarks } };
       });
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, resultConfigs],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, resultConfigs, classLocked],
   );
 
 
@@ -307,6 +322,7 @@ export function useResults({
     (studentId, marksObject) => {
       const next = { ...createEmptyMarks(), ...(marksObject ?? {}) };
       const student = datasetRef.current.students.find((item) => item.id === studentId);
+      if (classLocked(student?.classId)) return;
       if (canWriteCloud && canWriteTenant && student && student.classId !== 'archive') {
         TERMS.forEach((term) => {
           const perSubject = {};
@@ -336,7 +352,7 @@ export function useResults({
         marks: { ...prev.marks, [studentId]: next },
       }));
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /** Saves each field of a bulk payload through the single-cell writer. */
@@ -365,6 +381,9 @@ export function useResults({
       const fieldEntries = entries ?? {};
       const studentIds = Object.keys(fieldEntries);
       if (!studentIds.length || !meta.classId || !meta.termId) return { synced: false };
+      // A frozen class takes no uploaded marks — the whole file for that class is
+      // refused before any local or cloud write happens.
+      if (classLocked(meta.classId)) return { synced: false, reason: 'class-locked' };
       const config = normalizeResultConfig(
         meta.config ?? resultConfigs?.[meta.classId] ?? null,
         meta.classId,
@@ -402,7 +421,7 @@ export function useResults({
         { timeoutMs: 15000 },
       );
     },
-    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, resultConfigs],
+    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, resultConfigs, classLocked],
   );
 
   /**
@@ -416,6 +435,7 @@ export function useResults({
       const text = String(remark ?? '');
       const term = TERMS.some((item) => item.id === termId) ? termId : 'annual';
       const student = datasetRef.current.students.find((item) => item.id === studentId);
+      if (classLocked(student?.classId)) return;
       if (canWriteCloud && canWriteTenant && student && student.classId !== 'archive') {
         runCloudSave(() => saveRemarkCloud(tenantRef, term, student.classId, studentId, text, year));
       }
@@ -432,7 +452,7 @@ export function useResults({
         { action: 'remark.save', detail: 'শিক্ষকের মন্তব্য সংরক্ষণ হয়েছে', actor: 'school_admin' },
       );
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /**

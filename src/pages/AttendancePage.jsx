@@ -12,11 +12,15 @@ const STATUS_LABELS = { present: 'উপস্থিত', absent: 'অনুপ�
 
 export default function AttendancePage() {
   const { user, canManageStudents } = useAuth();
-  const { studentsByClass } = useSchoolData();
+  const { studentsByClass, viewYear, isReadOnly, isClassLocked } = useSchoolData();
   const toast = useToast();
   const [classId, setClassId] = useState('pre');
   const [date, setDate] = useState(today);
   const students = useMemo(() => studentsByClass[classId] || [], [studentsByClass, classId]);
+  // A past year — or a class whose promotion is complete — is view-only: the
+  // hook's cloud write is refused and the selects/save below are disabled.
+  const classLocked = isClassLocked(classId);
+  const canWriteAttendance = canManageStudents && !isReadOnly && !classLocked;
   const {
     setStatus,
     statusOf,
@@ -28,7 +32,8 @@ export default function AttendancePage() {
     schoolId: user?.schoolId || '',
     user,
     date,
-    canWriteTenant: canManageStudents,
+    activeYear: viewYear,
+    canWriteTenant: canWriteAttendance,
   });
 
   const options = Object.entries(STATUS_LABELS);
@@ -43,7 +48,8 @@ export default function AttendancePage() {
         <button
           type="button"
           className="btn-primary"
-          disabled={saving || !canManageStudents || !draftCount}
+          disabled={saving || !canWriteAttendance || !draftCount}
+          title={classLocked ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — উপস্থিতি সংরক্ষণ করা যাবে না' : undefined}
           onClick={async () => {
             const result = await save();
             if (result?.synced) toast.success('সংরক্ষণ হয়েছে');
@@ -59,7 +65,7 @@ export default function AttendancePage() {
       <CardHeader title="শিক্ষার্থী তালিকা" subtitle={`${toBanglaNumber(students.length)} জন`} icon={CalendarCheck} className="p-4 pb-0" />
       {!students.length ? <p className="p-5 text-sm text-slate-500">এই শ্রেণিতে শিক্ষার্থী নেই।</p> : <div className="overflow-x-auto"><table className="table-base"><thead><tr><th>রোল</th><th>শিক্ষার্থীর নাম</th><th>উপস্থিতি</th></tr></thead><tbody>{students.map((student) => {
         const selected = statusOf(student.id);
-        return <tr key={student.id}><td>{toBanglaNumber(student.roll)}</td><td className="font-semibold">{student.name}</td><td><select className="input-base max-w-48" value={selected} disabled={!canManageStudents} onChange={(event) => setStatus(student.id, event.target.value)}><option value="">নির্বাচন করুন</option>{options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td></tr>;
+        return <tr key={student.id}><td>{toBanglaNumber(student.roll)}</td><td className="font-semibold">{student.name}</td><td><select className="input-base max-w-48" value={selected} disabled={!canWriteAttendance} onChange={(event) => setStatus(student.id, event.target.value)}><option value="">নির্বাচন করুন</option>{options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td></tr>;
       })}</tbody></table></div>}
     </Card>
   </div>;

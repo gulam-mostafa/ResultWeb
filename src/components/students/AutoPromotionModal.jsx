@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, GraduationCap } from 'lucide-react';
+import { ArrowUpRight, GraduationCap, Undo2 } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 import { Badge } from '../ui/Primitives.jsx';
 import { CLASS_LEVELS, NEXT_CLASS_MAP, getClassName } from '../../utils/constants.js';
-import { toBanglaNumber, toBanglaOrdinal, toEnglishNumber } from '../../utils/banglaNumberFormatter.js';
+import { formatOfficialBanglaDate, toBanglaNumber, toBanglaOrdinal, toEnglishNumber } from '../../utils/banglaNumberFormatter.js';
 import { DEFAULT_SECTION_ID } from '../../services/database/dbPaths.js';
 import PromotionBadge from './PromotionBadge.jsx';
 import StudentDetailsModal from './StudentDetailsModal.jsx';
@@ -156,6 +156,14 @@ export default function AutoPromotionModal({
   getClassAnalytics,
   getResultConfig,
   getRemark,
+  /**
+   * Annual promotion state (বার্ষিক উত্তরণ): one year's log from the provider.
+   * A class with a completion record shows a "সম্পূর্ণ" panel with an undo
+   * action instead of the execute flow — it can never be promoted twice.
+   */
+  promotionState = null,
+  /** `async (classId) => {synced, message?}` — undoes one class's promotion. */
+  onUndoClass = null,
 }) {
   const [classId, setClassId] = useState('c5');
   const [overrides, setOverrides] = useState({});     // {studentId: 'promote' | 'retain'}
@@ -173,6 +181,38 @@ export default function AutoPromotionModal({
 
   const nextClassId = NEXT_CLASS_MAP[classId];
   const isGraduating = nextClassId === 'archive';
+  /**
+   * Completion record of the selected class (`sessions/{year}/meta/promotion`).
+   * While it exists the class is FROZEN: no execute, no decision change — only
+   * the undo below, which the provider refuses when it would destroy newer data.
+   */
+  const completion = promotionState?.classes?.[classId] ?? null;
+  const isClassComplete = Boolean(completion?.completedAt);
+  const isClassCompleteFor = useCallback(
+    (otherClassId) => Boolean(promotionState?.classes?.[otherClassId]?.completedAt),
+    [promotionState],
+  );
+  /** Undo flow state: first click arms the confirm step, second click runs it. */
+  const [undoArmed, setUndoArmed] = useState(false);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoMessage, setUndoMessage] = useState('');
+  const requestUndo = async () => {
+    if (!isClassComplete || undoBusy || !onUndoClass) return;
+    if (!undoArmed) {
+      setUndoArmed(true);
+      setUndoMessage('');
+      return;
+    }
+    setUndoBusy(true);
+    const result = await onUndoClass(classId);
+    setUndoBusy(false);
+    setUndoArmed(false);
+    if (result?.synced) {
+      setUndoMessage('প্রমোশন ফেরানো হয়েছে — শ্রেণিটি আবার "প্রমোশন হয়নি" অবস্থায় ফিরেছে, পরের সালের ভর্তি ও আর্কাইভ মুছে গেছে। সক্রিয় সাল যেমন ছিল তেমনই আছে।');
+    } else {
+      setUndoMessage(result?.message || 'প্রমোশন ফেরানো যায়নি — আবার চেষ্টা করুন।');
+    }
+  };
   const classStudents = useMemo(
     () => students.filter((student) => student.classId === classId),
     [students, classId],
@@ -225,6 +265,8 @@ export default function AutoPromotionModal({
     setTopCount('');
     setSplitMode('top');
     setMonthFilter('');
+    setUndoArmed(false);
+    setUndoMessage('');
   }, [classId]);
 
   // Opening the modal starts on the class the caller came from (the Results page
@@ -406,7 +448,9 @@ export default function AutoPromotionModal({
    * আর্কাইভ.
    */
   const requestExecute = () => {
-    if (!ranked.length || running) return;
+    // A completed class can never be promoted again — the panel above offers
+    // the undo instead. (The button is disabled too; this is the second lock.)
+    if (!ranked.length || running || isClassComplete) return;
     setConfirmed(true);
   };
 
@@ -471,13 +515,74 @@ export default function AutoPromotionModal({
     <Modal open={open} onClose={closeParent} title="বার্ষিক শ্রেণি উত্তরণ" subtitle="মেধাক্রম অনুযায়ী উত্তীর্ণ / একই শ্রেণিতে রাখুন এবং শাখা বণ্টন" icon={GraduationCap} size="xl">
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
-        <label><span className="label-base mb-0">শ্রেণি</span><select className="input-base max-w-xs" value={classId} onChange={(event) => setClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label><span className="label-base mb-0">শ্রেণি</span><select className="input-base max-w-xs" value={classId} onChange={(event) => setClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}{isClassCompleteFor(item.id) ? ' ✓ সম্পূর্ণ' : ''}</option>)}</select></label>
         <label><span className="label-base mb-0">পরবর্তী শ্রেণি</span><p className="input-base max-w-xs bg-slate-50 text-xs font-bold dark:bg-slate-800">{isGraduating ? 'আর্কাইভ (পাসড আর্কাইভ)' : getClassName(nextClassId)}</p></label>
         <Badge tone="emerald">উত্তীর্ণ: {toBanglaNumber(passedCount)}</Badge>
         <Badge tone="rose">এই ক্লাসেই থাকুক: {toBanglaNumber(failedCount)}</Badge>
         <Badge tone="sky">{PROMOTION_ORIGIN_LABELS[PROMOTION_ORIGIN.PROMOTED]}: {toBanglaNumber(promotedOriginCount)}</Badge>
         <Badge tone="slate">{PROMOTION_ORIGIN_LABELS[PROMOTION_ORIGIN.EXISTING]}: {toBanglaNumber(existingOriginCount)}</Badge>
       </div>
+
+      {/* A completed class is frozen: what happened, and the safe way back. */}
+      {isClassComplete ? (
+        <div
+          role="status"
+          className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-900/20"
+        >
+          <p className="text-base font-extrabold text-emerald-900 dark:text-emerald-100">
+            এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে ✓
+          </p>
+          <div className="mt-2 space-y-1 text-[12px] font-semibold leading-relaxed text-emerald-900 dark:text-emerald-100">
+            <p>
+              {completion.completedAt ? `${formatOfficialBanglaDate(new Date(completion.completedAt))} · ` : ''}
+              উত্তীর্ণ: <b>{toBanglaNumber(completion.promoted ?? 0)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(completion.retained ?? 0)}</b> জন
+              {completion.graduated ? <> · আর্কাইভ: <b>{toBanglaNumber(completion.graduated)}</b> জন</> : null}
+              {completion.auto ? ' · (অটো-প্রমোশন)' : ''}
+              {completion.completedByName ? ` · করেছেন: ${completion.completedByName}` : ''}
+            </p>
+            <p className="text-[11px] font-normal">
+              এই শ্রেণির {toBanglaNumber(currentYear)} সালের তথ্য এখন লক — দেখা যাবে, এডিট করা যাবে না। আবার প্রমোশন করা যাবে না।
+            </p>
+          </div>
+          {onUndoClass ? (
+            <div className="mt-3">
+              {undoArmed ? (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[12px] leading-relaxed text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+                  <p className="font-bold">প্রমোশন ফেরাবেন?</p>
+                  <p className="mt-1">
+                    পরের সালে ({toBanglaNumber(nextYear)}) এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে যাবে, আর শ্রেণিটি আবার "প্রমোশন হয়নি" হবে। সক্রিয় সাল যেমন আছে তেমনই থাকবে।
+                    পরের সালে নতুন ভর্তি হয়ে থাকলে বা কারো নম্বর/উপস্থিতি লেখা হয়ে থাকলে ফেরানো যাবে না।
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" className="btn-primary btn-sm" onClick={requestUndo} disabled={undoBusy}>
+                      <Undo2 size={14} /> {undoBusy ? 'ফেরানো হচ্ছে…' : 'হ্যাঁ, প্রমোশন ফেরান'}
+                    </button>
+                    <button type="button" className="btn-secondary btn-sm" onClick={() => setUndoArmed(false)} disabled={undoBusy}>
+                      না, থাক
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button type="button" className="btn-secondary btn-sm" onClick={requestUndo} disabled={undoBusy}>
+                  <Undo2 size={14} /> প্রমোশন ফেরান
+                </button>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {undoMessage ? (
+        <p
+          role="status"
+          className={`rounded-lg p-2.5 text-[12px] font-semibold ${
+            undoMessage.startsWith('প্রমোশন ফেরানো হয়েছে')
+              ? 'bg-emerald-50 text-emerald-800'
+              : 'bg-rose-50 text-rose-700'
+          }`}
+        >
+          {undoMessage}
+        </p>
+      ) : null}
 
       <div className="grid gap-3 rounded-xl border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-4">
         <label><span className="label-base">বণ্টন পদ্ধতি</span><select className="input-base py-1.5 text-xs" value={splitMode} onChange={(event) => setSplitMode(event.target.value)}><option value="top">প্রথম যতজন → {cleanSection(targetSection)}</option><option value="rest">প্রথম যতজন {DEFAULT_SECTION_ID}-তে থাকবে, বাকিরা অন্য শাখায়</option></select></label>
@@ -532,8 +637,8 @@ export default function AutoPromotionModal({
                   aria-label={`${row.student.name} এর ফলাফল`}
                 >{result.hasAnyMark ? `${result.grade} · GPA ${result.gpa?.toFixed(2)}` : 'ফলাফল নেই'}</button>
               </td>
-              <td><select className="input-base min-w-40 py-1.5 text-xs" value={status} onChange={(event) => setOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}><option value={STATUS_PASS}>{isGraduating ? 'উত্তীর্ণ (আর্কাইভ)' : 'উত্তীর্ণ'}</option><option value={STATUS_FAIL}>এই ক্লাসেই থাকুক</option></select></td>
-              <td><select className="input-base min-w-28 py-1.5 text-xs" value={sectionOf(row.student)} aria-label={`${row.student.name} এর নতুন শাখা`} onChange={(event) => setSectionOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}>{sectionOptionsFor(sectionOf(row.student)).map((option) => <option key={option} value={option}>{option}</option>)}</select></td>
+              <td><select className="input-base min-w-40 py-1.5 text-xs" value={status} disabled={isClassComplete} onChange={(event) => setOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}><option value={STATUS_PASS}>{isGraduating ? 'উত্তীর্ণ (আর্কাইভ)' : 'উত্তীর্ণ'}</option><option value={STATUS_FAIL}>এই ক্লাসেই থাকুক</option></select></td>
+              <td><select className="input-base min-w-28 py-1.5 text-xs" value={sectionOf(row.student)} disabled={isClassComplete} aria-label={`${row.student.name} এর নতুন শাখা`} onChange={(event) => setSectionOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}>{sectionOptionsFor(sectionOf(row.student)).map((option) => <option key={option} value={option}>{option}</option>)}</select></td>
             </tr>;
           })}</tbody>
         </table>
@@ -545,7 +650,7 @@ export default function AutoPromotionModal({
 
       <div className="flex justify-end gap-2">
         <button className="btn-secondary" onClick={onClose}>বাতিল</button>
-        <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running}><ArrowUpRight size={15}/> উত্তরণ কার্যকর ({toBanglaNumber(ranked.length)} জন)</button>
+        <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running || isClassComplete} title={isClassComplete ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — আবার করা যাবে না' : undefined}><ArrowUpRight size={15}/> {isClassComplete ? 'প্রমোশন সম্পূর্ণ ✓' : `উত্তরণ কার্যকর (${toBanglaNumber(ranked.length)} জন)`}</button>
       </div>
 
       {/* একক ব্যাচ নিশ্চিতকরণ — কোনো লেখার আগে একটি বাংলা ডায়ালগ। */}

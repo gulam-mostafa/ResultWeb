@@ -30,10 +30,17 @@ const write = (path, value) => {
   else cursor[leaf] = clean(value);
 };
 
-/** RTDB multi-path update: every key is a relative path inside `path`. */
+/** RTDB multi-path update: every key is a relative path inside `path`. Nested
+ * objects are flattened into leaf paths — real RTDB merges them, it never
+ * replaces the whole node (so a `{studentMaster/X: {currentClassId}}` patch
+ * keeps the pupil's `name`). Arrays are written whole, like the real SDK's
+ * numeric-keyed storage read back as an array. */
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const applyPatch = (base, patch) => {
   Object.entries(patch ?? {}).forEach(([key, value]) => {
-    write(`${base}/${key}`, value);
+    const path = `${base}/${key}`;
+    if (isPlainObject(value)) applyPatch(path, value);
+    else write(path, value);
   });
 };
 

@@ -32,7 +32,7 @@ const ROUTE_TITLES = Object.freeze({
 export default function AppLayout({ title, subtitle }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
-  const { schoolProfile } = useSchoolData();
+  const { schoolProfile, isReadOnly, viewYear, activeYear, setViewYear } = useSchoolData();
   const pageTitle = title ?? ROUTE_TITLES[location.pathname] ?? 'ড্যাশবোর্ড';
 
   return (
@@ -45,6 +45,23 @@ export default function AppLayout({ title, subtitle }) {
           title={pageTitle}
           subtitle={subtitle}
         />
+        {isReadOnly ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-center justify-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-bold text-amber-900"
+          >
+            <span>
+              {viewYear} সালের তথ্য দেখছেন — এই সালটি লক করা, শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।
+            </span>
+            <button
+              type="button"
+              onClick={() => setViewYear(activeYear)}
+              className="rounded-lg bg-amber-600 px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-amber-700"
+            >
+              সক্রিয় সালে ({activeYear}) ফিরুন
+            </button>
+          </div>
+        ) : null}
         <main
           key={location.pathname}
           className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6"

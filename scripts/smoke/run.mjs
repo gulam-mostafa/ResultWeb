@@ -15,6 +15,7 @@ const stub = (file) => path.join(here, file).replaceAll('\\', '/');
 /** Smoke entry points run in order; each keeps its own assertions. */
 const ENTRIES = [
   'promotion.smoke.mjs',
+  'promotion-year.smoke.mjs',
   'rolls.smoke.mjs',
   'render.smoke.mjs',
   'results.smoke.mjs',

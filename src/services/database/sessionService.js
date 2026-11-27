@@ -230,10 +230,13 @@ export function orderByMerit(students = [], merits = {}) {
  *  - Class-5 leavers are filed into `sessions/{currentYear}/passedArchive/{id}` and
  *    their permanent `studentMaster/{id}/overallStatus` becomes `'graduated'`.
  *
- * @param {{year?:string, nextYear?:string, decisions?:Array<{studentId?:string, studentMasterId?:string, action?:'promote'|'retain'|'demote'}>}} options
+ * @param {{year?:string, nextYear?:string, decisions?:Array<{studentId?:string, studentMasterId?:string, action?:'promote'|'retain'|'demote'}>, advanceProfileYear?:boolean}} options
+ *   `advanceProfileYear` (default `true`) moves `profile.activeYear` to the
+ *   destination year. Per-class promotion passes `false`: the year only advances
+ *   when EVERY class is complete, decided by the caller — never by one class.
  * @returns {Promise<{synced:boolean, year:string, nextYear:string, promoted:number, graduated:number, retained:number, demoted:number}>}
  */
-export async function promoteSession(schoolId, { year = '', nextYear = '', decisions = [] } = {}) {
+export async function promoteSession(schoolId, { year = '', nextYear = '', decisions = [], advanceProfileYear = true } = {}) {
   const fromYear = normalizeSessionYear(year, currentSessionYear());
   const empty = {
     synced: false, year: fromYear, nextYear: '', promoted: 0, graduated: 0, retained: 0, demoted: 0,
@@ -269,9 +272,13 @@ export async function promoteSession(schoolId, { year = '', nextYear = '', decis
   if (!location) return { ...empty, reason: 'missing-location' };
 
   const promotedAt = new Date().toISOString();
+  // `advanceProfileYear: false` is the per-class promotion: the roster moves but the
+  // school's active year stays put — it only advances when EVERY class is done, and
+  // that is decided (and written) by the caller, never here by surprise.
   const result = await promoteStudentsToNextYear(location, fromYear, toYear, {
     decisions,
     students: roster.students,
+    advanceProfileYear,
   });
   if (result?.synced === false) return { ...empty, nextYear: toYear, reason: result?.reason ?? 'write-failed' };
 
@@ -281,7 +288,10 @@ export async function promoteSession(schoolId, { year = '', nextYear = '', decis
     synced: true,
     year: fromYear,
     nextYear: toYear,
-    promoted: result.promotedCount ?? 0,
+    // `promotedCount` counts every non-graduate move — promoted, retained AND
+    // demoted — so the truly-promoted figure subtracts the other two, otherwise
+    // the "উত্তীর্ণ X জন" message would count retained pupils as promoted.
+    promoted: Math.max(0, (result.promotedCount ?? 0) - retained - demoted),
     graduated: result.archivedCount ?? 0,
     retained,
     demoted,

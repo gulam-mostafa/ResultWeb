@@ -424,10 +424,12 @@ console.log('PASS — section-aware annual promotion + origin metadata + badge w
   assert.equal(nextRow.classId, 'class-3');
   assert.equal(nextRow.year, dstYear, 'the row is stamped with the NEW year');
   // P0-3: the new year starts clean — no last-year GPA / grade / merit stamped on it.
-  assert.equal(nextRow.gpa, null, 'no carried GPA on the new row');
+  // (`?? null`: real RTDB deletes a `null` leaf on update, so the key reads back
+  // missing — the app treats both as "no value".)
+  assert.equal(nextRow.gpa ?? null, null, 'no carried GPA on the new row');
   assert.equal(nextRow.grade, '', 'no carried grade on the new row');
-  assert.equal(nextRow.meritPosition, null, 'no carried merit on the new row');
-  assert.equal(nextRow.grandTotal, null, 'no carried total on the new row');
+  assert.equal(nextRow.meritPosition ?? null, null, 'no carried merit on the new row');
+  assert.equal(nextRow.grandTotal ?? null, null, 'no carried total on the new row');
   assert.equal(nextRow.promotedFromYear, srcYear, 'the source year is recorded');
   // P0-3: the new year has NO result rows at all → the new class's result starts at ০০.
   const noRows = Object.values(at(`${dstPath}/results`) ?? {})

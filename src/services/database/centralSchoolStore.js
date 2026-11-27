@@ -436,6 +436,23 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       .filter(([id]) => Boolean(id)),
   );
   /**
+   * The teacher's শাখা choice travels with the decision (the promotion modal lets
+   * the teacher move a pupil to another শাখা of the destination class). It used to
+   * be dropped here — every pupil silently kept their old শাখা — even though the
+   * modal promises the new শাখা is saved. A blank/omitted section still falls back
+   * to the pupil's own শাখা.
+   */
+  const decisionSectionMap = new Map(
+    (options?.decisions ?? [])
+      .map((item) => [String(item?.studentMasterId || item?.studentId || '').trim(), String(item?.section ?? '').trim()])
+      .filter(([id, section]) => Boolean(id) && Boolean(section)),
+  );
+  const decisionSectionFor = (studentMasterId, record) => (
+    decisionSectionMap.get(studentMasterId)
+    || decisionSectionMap.get(String(record?.legacyId ?? ''))
+    || ''
+  );
+  /**
    * When the caller supplies decisions, ONLY the pupils it decided are moved.
    *
    * A pupil with no explicit teacher decision is skipped entirely — never auto-promoted
@@ -463,7 +480,13 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
         : (action === 'demote'
           ? (previousClassOf(sourceClassId) || sourceClassId)
           : (nextClassOf(sourceClassId) || 'archive'));
-      moves.push({ studentMasterId, record, sourceClassId, targetClassId });
+      moves.push({
+        studentMasterId,
+        record,
+        sourceClassId,
+        targetClassId,
+        section: decisionSectionFor(studentMasterId, record),
+      });
     });
   });
 
@@ -481,7 +504,8 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
     if (inClass.length === 0) return;
     const bySection = new Map();
     inClass.forEach((move) => {
-      const section = sectionSegment(move.record?.section);
+      // The teacher's chosen শাখা wins; otherwise the pupil keeps their own শাখা.
+      const section = sectionSegment(move.section || move.record?.section);
       bySection.set(section, [...(bySection.get(section) ?? []), move]);
     });
     bySection.forEach((bucket, section) => {

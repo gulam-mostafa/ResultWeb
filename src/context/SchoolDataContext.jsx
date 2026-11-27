@@ -25,7 +25,25 @@ import {
   resetClassResultConfig,
   saveSchoolProfile,
   syncSchoolProfileRegistry,
+  readYearRoster,
 } from '../services/database/index.js';
+import { nextSessionYear } from '../services/database/sessionService.js';
+import {
+  normalizePromotionState,
+  isClassPromotionComplete,
+  completedClassIds,
+  classStudentCounts,
+  pendingPromotionClasses,
+  isPromotionCompleteForYear,
+  januaryStatus,
+  buildAutoDecisions,
+  destinationClassOf,
+  subscribePromotionState,
+  readPromotionState,
+  markClassPromotionComplete,
+  markAutoPromotionDone,
+  undoClassPromotion as undoClassPromotionService,
+} from '../services/database/promotionService.js';
 import { normalizeResultConfig, defaultResultConfig } from '../utils/resultConfig.js';
 import { flushOfflineQueue, pendingOfflineCount } from '../services/database/dbFallback.js';
 import { useStudents } from '../hooks/useStudents.js';
@@ -102,6 +120,64 @@ export function SchoolDataProvider({ children }) {
    */
   const [hydrating, setHydrating] = useState(false);
   const hydrationTimer = useRef(null);
+  const hydratingRef = useRef(false);
+  hydratingRef.current = hydrating;
+
+  /**
+   * View year vs active year (বার্ষিক উত্তরণ):
+   *
+   * - `activeYear` is the school's WORKING year (`profile.academicYear`) — the
+   *   only year anything may be written into;
+   * - `viewYear` is the year on screen. By default it follows the active year;
+   *   picking a past year in the Topbar pins the view there, and the whole app
+   *   becomes read-only (`isReadOnly`) until the user returns.
+   *
+   * `viewYearOverride === null` means "follow the active year". No year is ever
+   * hard-coded here — the next year always derives from `activeYear`.
+   */
+  const [viewYearOverride, setViewYearOverride] = useState(null);
+  const viewYear = viewYearOverride ?? activeYear;
+  const setViewYear = useCallback((year) => {
+    const next = normalizeSessionYear(year);
+    // Picking the active year (or an empty value) clears the pin — the view
+    // follows the school again instead of staying stuck on a stale year.
+    setViewYearOverride(next && next !== activeYear ? next : null);
+  }, [activeYear]);
+  // When the active year moves onto the pinned year, the pin dissolves.
+  useEffect(() => {
+    if (viewYearOverride && viewYearOverride === activeYear) setViewYearOverride(null);
+  }, [viewYearOverride, activeYear]);
+  const isReadOnly = viewYear !== activeYear;
+  const isReadOnlyRef = useRef(isReadOnly);
+  isReadOnlyRef.current = isReadOnly;
+
+  /**
+   * One year's promotion log (`sessions/{activeYear}/meta/promotion`), live:
+   * which classes are complete, when, by whom, and who moved where. The viewed
+   * year never matters here — a past year is read-only, so every class is
+   * locked by `isReadOnly` alone.
+   */
+  const [promotionState, setPromotionState] = useState(() => normalizePromotionState(null));
+  const [promotionStateLoaded, setPromotionStateLoaded] = useState(false);
+  const promotionStateRef = useRef(promotionState);
+  promotionStateRef.current = promotionState;
+  const [autoPromotionNotice, setAutoPromotionNotice] = useState(null);
+  const autoPromotionRanRef = useRef(false);
+
+  /**
+   * `true` when a class is frozen: the whole year is read-only, or this class's
+   * year-end promotion is recorded as complete. The archive pseudo-class is
+   * never locked by promotion (its own rules apply).
+   */
+  const isClassLocked = useCallback((classId) => {
+    if (!classId || classId === 'archive') return false;
+    if (isReadOnly) return true;
+    return isClassPromotionComplete(promotionState, classId);
+  }, [isReadOnly, promotionState]);
+  const isClassLockedRef = useRef(isClassLocked);
+  isClassLockedRef.current = isClassLocked;
+  /** Writes are allowed only for a manager in the ACTIVE year. */
+  const effectiveCanWriteTenant = canWriteTenant && !isReadOnly;
 
   const saveTimer = useRef(null);
   const lastSavedAt = useRef(null);
@@ -124,11 +200,11 @@ export function SchoolDataProvider({ children }) {
    * write back to RTDB, which is what previously caused the sync loop.
    * ---------------------------------------------------------------- */
   useEffect(() => {
-    // The partition key is school + academic year: switching either one must drop
+    // The partition key is school + VIEWED year: switching either one must drop
     // the previous partition's rows and re-subscribe to the new subtree. The
     // profile belongs to the SCHOOL, so a year switch must not clobber it (that
     // would feed back into `activeYear`, which is derived from the profile).
-    const partitionKey = `${schoolRefKey}@${activeYear}`;
+    const partitionKey = `${schoolRefKey}@${viewYear}`;
     if (activePartitionRef.current !== partitionKey) {
       activePartitionRef.current = partitionKey;
       dirtyRef.current.clear();
@@ -175,7 +251,7 @@ export function SchoolDataProvider({ children }) {
         if (JSON.stringify(previous.students) === JSON.stringify(remote)) return previous;
         return { ...previous, students: remote, meta: { ...asRecord(previous.meta), schoolId } };
       });
-    }, undefined, activeYear);
+    }, undefined, viewYear);
     const unsubResults = subscribeResults(schoolRef, (results) => {
       if (!results) return;
       isRemoteUpdate.current = true;
@@ -199,7 +275,7 @@ export function SchoolDataProvider({ children }) {
         ) return previous;
         return { ...previous, marks, remarks, termRemarks };
       });
-    }, undefined, activeYear);
+    }, undefined, viewYear);
     const unsubProfile = subscribeSchoolProfile(schoolId, (profile) => {
       isRemoteUpdate.current = true;
       const normalized = normalizeSchoolProfile(profile);
@@ -211,7 +287,7 @@ export function SchoolDataProvider({ children }) {
     });
     // The class-wise Results configuration is a per-school node; a change saved on one
     // device is picked up live here (and purged when the year/school partition flips).
-    const unsubConfigs = subscribeAllResultConfigs(schoolRef, activeYear, (configs) => {
+    const unsubConfigs = subscribeAllResultConfigs(schoolRef, viewYear, (configs) => {
       setResultConfigs(configs && typeof configs === 'object' ? configs : {});
     });
     hydratedRef.current.add(subscriptionKey);
@@ -224,7 +300,26 @@ export function SchoolDataProvider({ children }) {
       hydrationTimer.current = null;
       hydratedRef.current.delete(subscriptionKey);
     };
-  }, [schoolId, schoolRef, schoolRefKey, activeYear, canWriteTenant]);
+  }, [schoolId, schoolRef, schoolRefKey, viewYear, canWriteTenant]);
+
+  /* ---------------------------------------------------------------- *
+   * Promotion state — one year's log, live from the ACTIVE year.
+   * The viewed year never matters here: a past year is read-only, so every
+   * class is locked by `isReadOnly` alone. The location is remembered again
+   * here so the promotion path resolves even if this effect runs first.
+   * ---------------------------------------------------------------- */
+  useEffect(() => {
+    if (!schoolRef || !schoolId) {
+      setPromotionState(normalizePromotionState(null));
+      setPromotionStateLoaded(false);
+      return undefined;
+    }
+    rememberSchoolLocation(schoolRef);
+    return subscribePromotionState(schoolId, activeYear, (state) => {
+      setPromotionState(state);
+      setPromotionStateLoaded(true);
+    });
+  }, [schoolRef, schoolId, activeYear]);
 
   /* ---------------------------------------------------------------- *
    * Online / offline listener
@@ -291,6 +386,11 @@ export function SchoolDataProvider({ children }) {
    * Generic mutator – every action funnels through this
    * ---------------------------------------------------------------- */
   const updateDataset = useCallback((recipe, auditEntry, dirtyKey = null) => {
+    // A past (locked) year is view-only: local mutations are refused at the
+    // single funnel every action goes through, so no hook or page can write
+    // into frozen history even if its button was missed. Remote snapshots use
+    // `setDataset` directly and are unaffected by this gate.
+    if (isReadOnlyRef.current) return;
     localMutationVersion.current += 1;
     if (dirtyKey) dirtyRef.current.add(dirtyKey);
     setDataset((prev) => {
@@ -397,7 +497,11 @@ export function SchoolDataProvider({ children }) {
 
 
   const saveProfile = useCallback(async (patch) => {
-    if (!schoolId || !canWriteTenant) return { synced: false };
+    // The profile belongs to the school, but its `academicYear` IS the active
+    // year — so in a read-only (past-year) view no profile write is allowed at
+    // all. The one caller that changes the year (`advanceClassYear`) only runs
+    // in the active view, where this gate is open.
+    if (!schoolId || !canWriteTenant || isReadOnlyRef.current) return { synced: false };
     const previousProfile = schoolProfile;
     const nextProfile = normalizeSchoolProfile({ ...previousProfile, ...patch }, previousProfile);
     const result = await runCloudSave(async () => {
@@ -441,10 +545,14 @@ export function SchoolDataProvider({ children }) {
     updateDataset,
     schoolId,
     schoolRef,
-    activeYear,
-    canWriteTenant,
+    // The hooks read and write the VIEWED year; in a past year the effective
+    // write right is off, so every cloud write is refused at the hook level
+    // and every local write at the `updateDataset` gate above.
+    activeYear: viewYear,
+    canWriteTenant: effectiveCanWriteTenant,
     runCloudSave,
     markSynced,
+    isClassLocked,
   });
 
   const {
@@ -469,11 +577,12 @@ export function SchoolDataProvider({ children }) {
     updateDataset,
     schoolId,
     schoolRef,
-    activeYear,
-    canWriteTenant,
+    activeYear: viewYear,
+    canWriteTenant: effectiveCanWriteTenant,
     runCloudSave,
     getStudentsOfClass,
     resultConfigs,
+    isClassLocked,
   });
 
   /* ---------------------------------------------------------------- *
@@ -488,29 +597,32 @@ export function SchoolDataProvider({ children }) {
   const saveResultConfig = useCallback(
     async (classId, config) => {
       const normalized = normalizeResultConfig(config, classId);
-      if (!classId || !canWriteTenant || !schoolRef) return { synced: false };
+      // A frozen class (or a past year) takes no configuration change.
+      if (!classId || !canWriteTenant || !schoolRef || isReadOnly || isClassLocked(classId)) return { synced: false };
       setResultConfigs((previous) => ({ ...previous, [classId]: normalized }));
       return runCloudSave(
-        () => saveClassResultConfig(schoolRef, activeYear, classId, normalized),
+        () => saveClassResultConfig(schoolRef, viewYear, classId, normalized),
         { timeoutMs: 8000 },
       );
     },
-    [canWriteTenant, schoolRef, activeYear, runCloudSave],
+    [canWriteTenant, schoolRef, viewYear, runCloudSave, isReadOnly, isClassLocked],
   );
 
   /** Restores a class to the factory configuration (subjects + split + pass mark). */
   const resetResultConfig = useCallback(
     async (classId) => {
       if (!classId) return { synced: false };
+      // A frozen class (or a past year) takes no configuration change.
+      if (isReadOnly || isClassLocked(classId)) return { synced: false };
       const fallback = defaultResultConfig(classId);
       setResultConfigs((previous) => ({ ...previous, [classId]: fallback }));
       if (!canWriteTenant || !schoolRef) return { synced: false };
       return runCloudSave(
-        () => resetClassResultConfig(schoolRef, activeYear, classId),
+        () => resetClassResultConfig(schoolRef, viewYear, classId),
         { timeoutMs: 8000 },
       );
     },
-    [canWriteTenant, schoolRef, activeYear, runCloudSave],
+    [canWriteTenant, schoolRef, viewYear, runCloudSave, isReadOnly, isClassLocked],
   );
 
 
@@ -531,6 +643,8 @@ export function SchoolDataProvider({ children }) {
   );
 
   const resetDemoData = useCallback(() => {
+    // Demo reset wipes the local workspace — never from a locked year.
+    if (isReadOnlyRef.current) return;
     clearPersistedDataset(schoolId);
     localMutationVersion.current += 1;
     const fresh = createInitialDataset();
@@ -539,10 +653,229 @@ export function SchoolDataProvider({ children }) {
 
   /** Clears the local workspace only — cloud data is never wiped implicitly. */
   const clearAllData = useCallback(() => {
+    if (isReadOnlyRef.current) return;
     clearPersistedDataset(schoolId);
     localMutationVersion.current += 1;
     setDataset(emptyDataset(schoolId));
   }, [schoolId]);
+
+
+  /* ---------------------------------------------------------------- *
+   * Annual promotion (বার্ষিক উত্তরণ) — one class at a time.
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Promotes ONE class into the next year.
+   *
+   * Steps:
+   *  1. `advanceAcademicYear` moves the decided pupils into `sessions/{nextYear}`
+   *     (never the profile year — `advanceProfileYear: false`);
+   *  2. the completion is recorded under `sessions/{year}/meta/promotion`;
+   *  3. when EVERY class is complete (a class with no active pupils counts as
+   *     complete), the next year becomes the school's active year.
+   *
+   * The source year's students/results/attendance are never touched, history is
+   * never deleted, and a class that is already complete is refused
+   * (`already-complete`) — so the same promotion can never run twice.
+   *
+   * @returns {{synced, year, nextYear, promoted, graduated, retained, demoted,
+   *   completionRecorded, yearActivated, yearComplete, reason?}}
+   */
+  const advanceClassYear = useCallback(async ({
+    year: fromYear = activeYear,
+    nextYear = '',
+    decisions = [],
+    fromClassId = '',
+    auto = false,
+  } = {}) => {
+    const sourceYear = normalizeSessionYear(fromYear, activeYear);
+    const targetYear = normalizeSessionYear(nextYear, nextSessionYear(sourceYear));
+    const empty = {
+      synced: false, year: sourceYear, nextYear: targetYear,
+      promoted: 0, graduated: 0, retained: 0, demoted: 0,
+      completionRecorded: false, yearActivated: false, yearComplete: false,
+    };
+    if (!schoolId || !sourceYear || !targetYear || targetYear === sourceYear) {
+      return { ...empty, reason: 'invalid-target-year' };
+    }
+    if (!fromClassId || !CLASS_LEVELS.some((item) => item.id === fromClassId)) {
+      return { ...empty, reason: 'invalid-class' };
+    }
+    if (!canWriteTenant || isReadOnlyRef.current) return { ...empty, reason: 'read-only' };
+    if (isClassPromotionComplete(promotionStateRef.current, fromClassId)) {
+      return { ...empty, reason: 'already-complete' };
+    }
+    // 1. Move the roster. The profile year stays put on purpose — one class must
+    //    never flip the whole school into the next year by itself.
+    const result = await advanceAcademicYear({
+      year: sourceYear,
+      nextYear: targetYear,
+      decisions,
+      advanceProfileYear: false,
+    });
+    if (!result?.synced) return { ...result, completionRecorded: false, yearActivated: false, yearComplete: false };
+    // 2. Record the completion: who moved, and exactly where each one landed.
+    //    `moved` holds every pupil the promotion ENROLLED next year — promoted
+    //    AND retained — because the store enrols both groups (retained pupils
+    //    keep their class with a new roll), and the undo must delete exactly
+    //    what the promotion wrote. `destinations` tells the undo where each
+    //    one sits. Class-5 leavers are NOT enrolled next year — they are filed
+    //    in `passedArchive`, so they live in `graduatedIds` only: the undo
+    //    safety check requires every `moved` pupil to sit in the next-year
+    //    roster, and a graduate would fail it as "missing".
+    const isGraduatingClass = fromClassId === 'c5';
+    const moved = [];
+    const destinations = {};
+    (decisions ?? []).forEach((decision) => {
+      const id = String(decision?.studentMasterId ?? decision?.studentId ?? '').trim();
+      if (!id) return;
+      const promoted = decision?.action === 'promote';
+      destinations[id] = promoted ? destinationClassOf(fromClassId) : fromClassId;
+      if (!isGraduatingClass || !promoted) moved.push(id);
+    });
+    const graduatedIds = isGraduatingClass
+      ? (decisions ?? []).filter((decision) => decision?.action === 'promote')
+        .map((decision) => String(decision?.studentMasterId ?? decision?.studentId ?? '').trim())
+        .filter(Boolean)
+      : [];
+    const recordResult = await runCloudSave(() => markClassPromotionComplete(schoolId, {
+      year: sourceYear,
+      classId: fromClassId,
+      toYear: targetYear,
+      promoted: result.promoted ?? moved.length,
+      retained: result.retained ?? 0,
+      graduated: result.graduated ?? graduatedIds.length,
+      moved,
+      graduatedIds,
+      destinations,
+      auto: auto === true,
+      completedBy: user?.uid ?? '',
+      completedByName: user?.name ?? '',
+    }), { timeoutMs: 8000 });
+    const completionRecorded = recordResult?.synced !== false;
+    // 3. Fresh state, then: all six classes done ⇒ activate the next year. The
+    //    class counts come from the CLOUD roster (authoritative); the local roster
+    //    is only the fallback when that read comes back empty — a stale local
+    //    roster must never activate the year while a class still has pupils.
+    const freshState = await readPromotionState(schoolId, sourceYear);
+    setPromotionState(freshState);
+    let counts = {};
+    try {
+      const { students: sourceRoster } = await readYearRoster(schoolId, sourceYear);
+      counts = classStudentCounts(sourceRoster);
+    } catch {
+      counts = {};
+    }
+    if (!Object.keys(counts).length) counts = classStudentCounts(datasetRef.current.students);
+    const yearComplete = isPromotionCompleteForYear(freshState, counts);
+    let yearActivated = false;
+    if (yearComplete) {
+      const activation = await saveProfile({ academicYear: targetYear });
+      yearActivated = activation?.synced === true;
+    }
+    return { ...result, completionRecorded, yearActivated, yearComplete };
+  }, [schoolId, activeYear, canWriteTenant, advanceAcademicYear, runCloudSave, saveProfile, user?.uid, user?.name]);
+
+  /**
+   * Undoes ONE class's promotion (safe, standard): the next-year enrolments and
+   * archive entries that promotion wrote are deleted, the pupils' permanent
+   * identity rows point back at the source year, and the completion record is
+   * removed. The active year is left exactly as it is. The service refuses with
+   * a Bangla message when undoing would destroy newer data (new admission,
+   * next-year marks/attendance, or an edited pupil).
+   */
+  const undoClassPromotion = useCallback(async (classId) => {
+    const sourceYear = activeYear;
+    const targetYear = nextSessionYear(sourceYear);
+    if (!schoolId || !classId || !canWriteTenant || isReadOnlyRef.current) {
+      return { synced: false, reason: 'read-only' };
+    }
+    const result = await runCloudSave(
+      () => undoClassPromotionService(schoolId, { year: sourceYear, nextYear: targetYear, classId }),
+      { timeoutMs: 15000 },
+    );
+    if (result?.synced) {
+      setPromotionState(await readPromotionState(schoolId, sourceYear));
+    }
+    return result;
+  }, [schoolId, activeYear, canWriteTenant, runCloudSave]);
+
+  /** Classes still waiting for promotion (with pupils, no completion record). */
+  const promotionPending = useMemo(
+    () => pendingPromotionClasses(promotionState, classStudentCounts(dataset.students)),
+    [promotionState, dataset.students],
+  );
+  /** Class ids whose promotion is recorded as complete, in school order. */
+  const promotionCompleted = useMemo(
+    () => completedClassIds(promotionState),
+    [promotionState],
+  );
+
+  /**
+   * January warning for the Dashboard and the Promotion page: in January of the
+   * target year ("promote now or it will happen automatically after 31 January"),
+   * and it stays visible past 31 January while classes are still pending (the
+   * auto-run below should have taken them — if it could not, the teacher must).
+   * `null` when there is nothing to warn about.
+   */
+  const januaryWarning = useMemo(() => {
+    if (!promotionStateLoaded) return null;
+    const status = januaryStatus(activeYear);
+    if (!status.isWarningMonth && !status.isAutoDue) return null;
+    if (!promotionPending.length) return null;
+    return { ...status, pendingClasses: promotionPending, pendingCount: promotionPending.length };
+  }, [promotionStateLoaded, promotionState, activeYear, promotionPending]);
+
+  /* ---------------------------------------------------------------- *
+   * January auto-promotion — once per session, on load.
+   *
+   * When 31 January of the target year has passed and classes are still
+   * pending, they are promoted with the SAME rule as the manual flow
+   * (annual result pass ⇒ উত্তীর্ণ, anything else ⇒ এই ক্লাসেই থাকুক) from
+   * the live consolidated result. Idempotent: a class that is already
+   * complete is refused by `advanceClassYear`, and the run is marked done
+   * (`promotion.auto`) only when every pending class succeeded — a failed
+   * class retries on the next app load instead of being forgotten.
+   * ---------------------------------------------------------------- */
+  useEffect(() => {
+    if (autoPromotionRanRef.current) return;
+    if (!promotionStateLoaded || hydrating) return;
+    if (!schoolId || !schoolRef || !canWriteTenant) return;
+    if (isReadOnly) return;
+    const status = januaryStatus(activeYear);
+    if (!status.isAutoDue) return;
+    if (promotionState.auto) return;
+    const pending = pendingPromotionClasses(promotionState, classStudentCounts(dataset.students));
+    if (!pending.length) return;
+    autoPromotionRanRef.current = true;
+    (async () => {
+      const done = [];
+      const failed = [];
+      for (const classId of pending) {
+        const decisions = buildAutoDecisions(
+          dataset.students.filter((student) => student.classId === classId),
+          (student) => getStudentResult(student.id)?.isPass === true,
+        );
+        const result = await advanceClassYear({
+          year: activeYear,
+          nextYear: status.targetYear,
+          decisions,
+          fromClassId: classId,
+          auto: true,
+        });
+        if (result?.synced) done.push(classId);
+        else failed.push(classId);
+      }
+      if (failed.length === 0) {
+        await markAutoPromotionDone(schoolId, activeYear, user?.uid ?? 'system');
+      }
+      setPromotionState(await readPromotionState(schoolId, activeYear));
+      setAutoPromotionNotice({ at: nowISO(), done, failed, targetYear: status.targetYear });
+    })().catch(() => {});
+  }, [
+    promotionStateLoaded, hydrating, schoolId, schoolRef, canWriteTenant, isReadOnly,
+    activeYear, promotionState, dataset.students, getStudentResult, advanceClassYear, user?.uid,
+  ]);
 
 
   const summary = useMemo(() => {
@@ -580,6 +913,19 @@ export function SchoolDataProvider({ children }) {
       schoolRef,
       activeYear,
       canWriteTenant,
+      // viewed year vs active year (বার্ষিক উত্তরণ)
+      viewYear,
+      setViewYear,
+      isReadOnly,
+      isClassLocked,
+      // annual promotion state
+      promotionState,
+      promotionPending,
+      promotionCompleted,
+      januaryWarning,
+      autoPromotionNotice,
+      advanceClassYear,
+      undoClassPromotion,
       // sync status
       syncState,
       isOnline,
@@ -636,6 +982,17 @@ export function SchoolDataProvider({ children }) {
       schoolRef,
       activeYear,
       canWriteTenant,
+      viewYear,
+      setViewYear,
+      isReadOnly,
+      isClassLocked,
+      promotionState,
+      promotionPending,
+      promotionCompleted,
+      januaryWarning,
+      autoPromotionNotice,
+      advanceClassYear,
+      undoClassPromotion,
       syncState,
       isOnline,
       hydrating,

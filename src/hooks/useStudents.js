@@ -297,6 +297,8 @@ export function useStudents({
   canWriteTenant,
   runCloudSave,
   markSynced,
+  /** `(classId) => boolean` — a class frozen by a completed year-end promotion. */
+  isClassLocked = null,
 }) {
   // Roster, marks and attendance are all addressed through the hierarchical
   // `…/schools/{schoolId}/sessions/{year}` reference — never a bare school id.
@@ -305,6 +307,17 @@ export function useStudents({
   const tenantRef = useMemo(() => normalizeLocation(schoolRef ?? {}), [schoolRef]);
   const canWriteCloud = Boolean(tenantRef && isCompleteSchoolRef(tenantRef));
   const year = normalizeSessionYear(activeYear, DEFAULT_ACTIVE_YEAR);
+  /**
+   * A class whose year-end promotion is complete is frozen: no admission, edit,
+   * archive, roll change or শাখা change may touch it. The archive pseudo-class is
+   * never locked by promotion (its own rules apply). The UI hides the buttons too;
+   * this is the defence-in-depth that makes a stray call a no-op instead of a
+   * silent write into frozen history.
+   */
+  const classLocked = useCallback((classId) => {
+    if (!classId || classId === 'archive') return false;
+    return typeof isClassLocked === 'function' ? isClassLocked(classId) === true : false;
+  }, [isClassLocked]);
   // Register the tenant so every `dbPaths` helper resolves the hierarchical base
   // (demo additions included — never `schoolData/demo-school-01`).
   useEffect(() => {
@@ -399,6 +412,9 @@ export function useStudents({
 
   const addStudent = useCallback(
     (input) => {
+      // A frozen class takes no new admission — the UI hides the button; a stray
+      // call returns `null` so the caller can say so instead of toasting success.
+      if (classLocked(input?.classId)) return null;
       // A pupil always lands in a শাখা folder; `ক` is the school's default section.
       const section = toSectionId(input.section);
       // A roll typed in the admission form is kept when it is still free in that
@@ -458,11 +474,14 @@ export function useStudents({
 
       return student;
     },
-    [dataset.meta, updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [dataset.meta, updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /**
    * Bulk Excel import save (`শিক্ষার্থী আমদানি`).
+   *
+   * Rows of a frozen class are skipped (counted as `lockedSkipped`) — never written
+   * locally or to the cloud — so one frozen class can never block the other five.
    *
    * The plan was already built and reviewed in the preview modal, so this only
    * (a) mirrors the same rows locally (instant roster paint) and (b) commits the whole
@@ -473,8 +492,15 @@ export function useStudents({
    */
   const importStudents = useCallback(
     async (plan, { force = false } = {}) => {
-      const rows = Array.isArray(plan?.rows) ? plan.rows : [];
-      if (!rows.length) return { synced: true, written: 0, skipped: 0 };
+      const allRows = Array.isArray(plan?.rows) ? plan.rows : [];
+      // Frozen-class rows are skipped before anything is written.
+      const lockedSkipped = allRows.filter((row) => classLocked(row?.classId)).length;
+      const rows = allRows.filter((row) => !classLocked(row?.classId));
+      if (!rows.length) {
+        return lockedSkipped > 0
+          ? { synced: false, written: 0, skipped: 0, lockedSkipped, reason: 'class-locked' }
+          : { synced: true, written: 0, skipped: 0, lockedSkipped };
+      }
 
       // Local mirror first: the roster shows the imported pupils immediately.
       updateDataset(
@@ -523,18 +549,24 @@ export function useStudents({
         },
       );
 
-      if (!canWriteCloud || !canWriteTenant) return { synced: false, written: 0, skipped: 0 };
-      return runCloudSave(
-        () => importStudentsCloud(tenantRef, year, plan, { force }),
+      if (!canWriteCloud || !canWriteTenant) return { synced: false, written: 0, skipped: 0, lockedSkipped };
+      const cloudResult = await runCloudSave(
+        () => importStudentsCloud(tenantRef, year, { ...plan, rows }, { force }),
         { timeoutMs: PROMOTION_SAVE_TIMEOUT_MS },
       );
+      return { ...cloudResult, lockedSkipped };
     },
-    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave],
+    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, classLocked],
   );
 
   const updateStudent = useCallback(
     (studentId, patch) => {
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
+      // Neither the class the pupil sits in nor the class they would move to may
+      // be frozen — a move out of (or into) a promoted class is refused outright.
+      if (classLocked(existing?.classId) || classLocked(patch?.classId)) {
+        return { synced: false, reason: 'class-locked' };
+      }
       // A class change / শাখা change / archive move is a MOVE of the enrollment row,
       // not an in-place edit — it goes through the single multi-path writer so the
       // old folder is cleared, the new one written and `studentMaster` stays in step.
@@ -622,7 +654,7 @@ export function useStudents({
         { action: 'student.update', detail: 'শিক্ষার্থীর তথ্য হালনাগাদ হয়েছে', actor: 'school_admin' },
       );
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /**
@@ -643,6 +675,7 @@ export function useStudents({
       const existing = datasetRef.current.students.find((student) => student.id === studentId);
       if (!existing) return { ok: false, synced: false, reason: 'not-found' };
       if (existing.classId === 'archive') return { ok: false, synced: false, reason: 'already-archived' };
+      if (classLocked(existing.classId)) return { ok: false, synced: false, reason: 'class-locked' };
       const archived = { ...existing, previousClassId: existing.classId, classId: 'archive', status: 'archived' };
       // The year partition keeps the graduate, so no flat `schoolData/{id}/archive`
       // mirror is written any more.
@@ -679,7 +712,7 @@ export function useStudents({
       }
       return { ok: true, synced: true };
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /**
@@ -698,6 +731,7 @@ export function useStudents({
       if (!existing) return { ok: false, synced: false, reason: 'not-found' };
       if (existing.classId !== 'archive') return { ok: false, synced: false, reason: 'not-archived' };
       if (!CLASS_LEVELS.some((item) => item.id === classId)) return { ok: false, synced: false, reason: 'invalid-class' };
+      if (classLocked(classId)) return { ok: false, synced: false, reason: 'class-locked' };
       const section = toSectionId(existing.section ?? existing.previousSectionId ?? existing.previousSection);
       const roll = nextFreeRollInBucket(datasetRef.current.students, {
         classId,
@@ -738,7 +772,7 @@ export function useStudents({
       }
       return { ok: true, synced: true, roll };
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   const removeStudent = useCallback(
@@ -752,6 +786,7 @@ export function useStudents({
       if (!Number.isFinite(numeric) || numeric < 1) return;
       const rounded = Math.round(numeric);
       const student = datasetRef.current.students.find((item) => item.id === studentId);
+      if (student && classLocked(student.classId)) return;
       // A hand-typed roll is only accepted when it is free in that class + শাখা;
       // asking for an occupied number keeps the pupil at the end of the list instead
       // of creating a duplicate.
@@ -772,7 +807,7 @@ export function useStudents({
         students: prev.students.map((item) => (item.id === studentId ? { ...item, roll: resolved } : item)),
       }));
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, classLocked],
   );
 
   /* ---------------------------------------------------------------- *
@@ -784,6 +819,7 @@ export function useStudents({
     (classId, section) => {
       const label = toSectionId(section);
       if (!classId || !label) return '';
+      if (classLocked(classId)) return '';
       setSectionRegistry((previous) => declareSection(previous, classId, label));
       if (canWriteCloud && canWriteTenant) {
         runCloudSave(() => registerSectionCloud(tenantRef, year, classId, label));
@@ -798,7 +834,7 @@ export function useStudents({
       );
       return label;
     },
-    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave],
+    [updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, classLocked],
   );
 
   /**
@@ -810,6 +846,7 @@ export function useStudents({
       const fromKey = toSectionId(from);
       const toKey = toSectionId(to);
       if (!classId || !fromKey || !toKey || fromKey === toKey) return false;
+      if (classLocked(classId)) return false;
       const roster = datasetRef.current.students.filter(
         (student) => student.classId === classId && toSectionId(student.section) === fromKey,
       );
@@ -835,7 +872,7 @@ export function useStudents({
       );
       return true;
     },
-    [updateStudent, updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave],
+    [updateStudent, updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, classLocked],
   );
 
   /** Removes a declared-but-empty শাখা; `ক` and any occupied শাখা are kept. */
@@ -843,6 +880,7 @@ export function useStudents({
     (classId, section) => {
       const key = toSectionId(section);
       if (!classId || !key || key === DEFAULT_SECTION_ID) return false;
+      if (classLocked(classId)) return false;
       if ((sectionCounts?.[classId]?.[key] ?? 0) > 0) return false;
       setSectionRegistry((previous) => dropSection(previous, classId, key));
       if (canWriteCloud && canWriteTenant) {
@@ -858,7 +896,7 @@ export function useStudents({
       );
       return true;
     },
-    [sectionCounts, updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave],
+    [sectionCounts, updateDataset, canWriteCloud, canWriteTenant, tenantRef, year, runCloudSave, classLocked],
   );
 
   /**
@@ -873,7 +911,16 @@ export function useStudents({
    */
   const executePromotion = useCallback(
     (decisions = [], options = {}) => {
-      const decisionMap = new Map(decisions.map((item) => [item.studentId, item]));
+      // In-year moves never touch a frozen class — neither as the source nor as
+      // the destination. Locked pupils are dropped from the batch entirely.
+      const openDecisions = (decisions ?? []).filter((item) => {
+        const pupil = datasetRef.current.students.find((student) => student.id === item?.studentId);
+        if (!pupil || pupil.classId === 'archive') return false;
+        if (classLocked(pupil.classId)) return false;
+        const target = item?.action === 'retain' ? pupil.classId : NEXT_CLASS_MAP[pupil.classId];
+        return !target || target === 'archive' || !classLocked(target);
+      });
+      const decisionMap = new Map(openDecisions.map((item) => [item.studentId, item]));
       const pickSection = (item, fallback) => {
         const raw = item?.section;
         return raw === undefined || raw === null || raw === '' ? fallback : toSectionId(raw);
@@ -918,7 +965,7 @@ export function useStudents({
         });
 
         const rollPlan = planPromotionRolls({
-          entries: decisions
+          entries: openDecisions
             .map((decision) => {
               const target = targetOf.get(decision.studentId);
               if (!target) return null;
@@ -935,7 +982,7 @@ export function useStudents({
         });
         assignments = rollPlan;
 
-        decisions.forEach((decision) => {
+        openDecisions.forEach((decision) => {
           const candidate = sourceById.get(decision.studentId);
           const target = targetOf.get(decision.studentId);
           if (!candidate || !target) return;
@@ -1138,7 +1185,7 @@ export function useStudents({
         };
       });
     },
-    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, markSynced],
+    [updateDataset, canWriteCloud, tenantRef, year, canWriteTenant, runCloudSave, markSynced, classLocked],
   );
 
   /* ---------------------------------------------------------------- *
@@ -1160,7 +1207,7 @@ export function useStudents({
    *   graduated:number, retained:number, demoted:number, reason?:string}>}
    */
   const advanceAcademicYear = useCallback(
-    async ({ year: fromYear = year, nextYear = '', decisions = [] } = {}) => {
+    async ({ year: fromYear = year, nextYear = '', decisions = [], advanceProfileYear = false } = {}) => {
       const sourceYear = normalizeSessionYear(fromYear, year);
       const targetYear = normalizeSessionYear(nextYear, nextSessionYear(sourceYear));
       const failed = { synced: false, year: sourceYear, nextYear: targetYear, promoted: 0, graduated: 0, retained: 0, demoted: 0 };
@@ -1170,9 +1217,11 @@ export function useStudents({
       if (!canWriteCloud || !canWriteTenant) return { ...failed, reason: 'offline' };
 
       // The source year is only READ here: `promoteSession` writes the destination year,
-      // the leavers' archive and the profile's active year.
+      // the leavers' archive and — only when the caller asks — the profile's active year.
+      // Per-class promotion passes `advanceProfileYear: false`: the year advances only
+      // when EVERY class is complete (the caller records that and activates it).
       const result = await runCloudSave(
-        () => promoteSession(schoolId, { year: sourceYear, nextYear: targetYear, decisions }),
+        () => promoteSession(schoolId, { year: sourceYear, nextYear: targetYear, decisions, advanceProfileYear }),
         { timeoutMs: PROMOTION_SAVE_TIMEOUT_MS },
       );
       if (result?.synced === false) {
