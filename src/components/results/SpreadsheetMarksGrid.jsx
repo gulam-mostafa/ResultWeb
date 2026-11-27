@@ -23,9 +23,11 @@ import GridPinnedBar from './GridPinnedBar.jsx';
  * `position: fixed` + JS measurement): the in-table headers sit inside the
  * horizontal-scroll container, so they scroll away with the page — the pinned
  * bar only appears once the in-table header has scrolled past the top, so the
- * same three sections are never shown twice. The horizontal scrollbar lives at
- * the TOP of the grid (one bar, pinned with the header while the grid is in
- * view); the table's own native scrollbar is hidden.
+ * same three sections are never shown twice. Scroll further and the SUBJECT
+ * row (বিষয়, পূর্ণমান, গাঠনিক, সামষ্টিক, মোট, GPA…) pins below the tabs the
+ * same way, so the columns stay labelled deep down the list. The horizontal
+ * scrollbar lives at the TOP of the grid (one bar, pinned with the header
+ * while the grid is in view); the table's own native scrollbar is hidden.
  *
  * • Keyboard: arrows move one cell/row, `Tab`/`Shift+Tab` walk the natural order,
  *   `Enter` jumps to the same subject of the next pupil.
@@ -201,6 +203,8 @@ export default function SpreadsheetMarksGrid({
   const tableWrapRef = useRef(null);
   /** The thead group-header row — the pinned bar appears once it scrolls past the top. */
   const headerRowRef = useRef(null);
+  /** The thead subject-header row — pinned below the tabs once IT scrolls past. */
+  const subjectRowRef = useRef(null);
 
   /**
    * Brief "সংরক্ষণ হয়েছে" confirmation after the "সংরক্ষণ হচ্ছে…" spinner clears.
@@ -510,10 +514,41 @@ export default function SpreadsheetMarksGrid({
   );
 
   /**
+   * Subject-header cells for the pinned bar — same order, labels and tints as the
+   * in-table subject row (thead row 2), so the pinned copy looks identical.
+   * The pinned bar measures each cell's real offset/width from the row itself.
+   */
+  const subjectCells = useMemo(() => {
+    const cells = activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => ({
+      key: `subject-${field.key}`,
+      label: field.subject?.name ?? field.subjectName ?? '',
+      sub: `(${toBanglaNumber(fieldLimit(field))})`,
+      className: clsx(GROUP_STYLE[groupKey].cell, GROUP_STYLE[groupKey].edge),
+    })));
+    const resultCells = [
+      { key: 'subject-result-total', label: 'মোট', sub: '', className: clsx(GROUP_STYLE.result.cell, GROUP_STYLE.result.edge) },
+      { key: 'subject-result-gpa', label: 'GPA', sub: '', className: GROUP_STYLE.result.cell },
+      { key: 'subject-result-grade', label: 'গ্রেড', sub: '', className: GROUP_STYLE.result.cell },
+      { key: 'subject-result-merit', label: 'মেধাক্রম', sub: '', className: GROUP_STYLE.result.cell },
+    ];
+    if (showNewRoll) {
+      resultCells.push({ key: 'subject-result-newroll', label: 'নতুন রোল', sub: '', className: GROUP_STYLE.result.cell });
+    }
+    resultCells.push({ key: 'subject-result-remark', label: 'মন্তব্য', sub: '', className: GROUP_STYLE.result.cell });
+    return [...cells, ...resultCells];
+  }, [activeGroups, columnGroups, showNewRoll]);
+
+  /**
    * Click a section header → scroll the grid so that section sits in the MIDDLE of
    * the visible display. The sticky শিক্ষার্থী column stays put, so the section is
    * centred in the space to its right; a section wider than that space is shown
-   * from its first column instead. Smooth scroll, clamped to the scroll range.
+   * from its first column instead. ONE click, instantly: `behavior: 'smooth'` never
+   * finished — the pinned bar's scroll-sync echo (its own scroll event, fired
+   * asynchronously) kept resetting the table's scrollLeft mid-animation, so each
+   * click moved only a few pixels and the teacher had to click many times.
+   * `behavior: 'instant'` jumps in one step (and ignores any CSS
+   * `scroll-behavior`), and the sync in GridPinnedBar now ignores its own
+   * programmatic echoes — so the target is reached on the first click.
    */
   const centerSection = useCallback((sectionKey) => {
     const wrap = tableWrapRef.current;
@@ -534,7 +569,7 @@ export default function SpreadsheetMarksGrid({
       ? sectionLeft - stickyWidth
       : sectionLeft + sectionWidth / 2 - stickyWidth - visibleWidth / 2;
     const max = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
-    wrap.scrollTo({ left: Math.max(0, Math.min(max, target)), behavior: 'smooth' });
+    wrap.scrollTo({ left: Math.max(0, Math.min(max, target)), behavior: 'instant' });
   }, []);
 
   /** One clickable group header — label + hint, hover hint so teachers discover it. */
@@ -601,7 +636,9 @@ export default function SpreadsheetMarksGrid({
       <GridPinnedBar
         tableWrapRef={tableWrapRef}
         headerRowRef={headerRowRef}
+        subjectRowRef={subjectRowRef}
         tabs={pinnedTabs}
+        subjectCells={subjectCells}
         onTabClick={centerSection}
         label="নম্বর গ্রিড পাশে স্ক্রল করুন"
       />
@@ -627,7 +664,7 @@ export default function SpreadsheetMarksGrid({
                 {renderGroupHeader('result')}
               </th>
             </tr>
-            <tr>
+            <tr ref={subjectRowRef}>
               {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
                 <th
                   key={`head-${field.key}`}

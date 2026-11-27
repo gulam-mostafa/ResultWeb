@@ -987,4 +987,33 @@ assert.ok(
   'swapSvgsForImages sizes every replacement image from the rendered size',
 );
 
-console.log('PASS — sticky scroll bar mounts, one pinned header + one top scrollbar, PDF slot geometry');
+// 5k — (1) the SUBJECT header row pins below the tabs once it scrolls past:
+// the grid hands the pinned bar the subject row ref + its cells (same order,
+// labels and tints as the in-table row), and the bar measures the real th
+// cells and shows its copy only after the real row has passed the tab bar.
+// (2) ONE click centres a section, instantly: `behavior: 'smooth'` never
+// finished — the pinned bar's scroll-sync echo (a bar's own `scroll` event,
+// fired asynchronously after the table was synced) reset the table's
+// scrollLeft mid-animation, so each click moved only ~3px and the teacher
+// had to click many times. `behavior: 'instant'` jumps in one step, and
+// the sync now ignores its own programmatic echoes.
+assert.ok(gridSrc.includes('subjectRowRef'), 'the grid refs the thead subject row for the pinned bar');
+assert.ok(gridSrc.includes('<tr ref={subjectRowRef}>'), 'the subject row ref sits on the second thead row');
+assert.ok(gridSrc.includes('subjectRowRef={subjectRowRef}'), 'the grid passes the subject row ref to the pinned bar');
+assert.ok(gridSrc.includes('subjectCells={subjectCells}'), 'the grid passes the subject cells to the pinned bar');
+assert.ok(
+  gridSrc.includes("wrap.scrollTo({ left: Math.max(0, Math.min(max, target)), behavior: 'instant' })"),
+  'centerSection jumps instantly instead of smooth-scrolling',
+);
+assert.ok(pinnedSrc.includes('subjectRowRef'), 'the pinned bar measures the subject row');
+assert.ok(pinnedSrc.includes('subjectRects'), 'the pinned bar tracks the subject cells’ offsets and widths');
+assert.ok(pinnedSrc.includes('showSubject'), 'the subject row shows only once the real row has scrolled past the tab bar');
+assert.ok(pinnedSrc.includes('subjectStripRef'), 'the subject strip syncs with the table’s horizontal scroll');
+assert.ok(pinnedSrc.includes('pinned-subject-'), 'the pinned subject cells are rendered below the tabs');
+assert.ok(pinnedSrc.includes('lastSetBarScrollRef'), 'the scroll sync remembers the last value it set on the bars');
+assert.ok(
+  pinnedSrc.includes('Math.abs(bar.scrollLeft - lastSetBarScrollRef.current) < 2'),
+  'a bar scroll that only echoes the table’s own sync never drives the table back',
+);
+
+console.log('PASS — sticky scroll bar mounts, one pinned header + one top scrollbar, PDF slot geometry, pinned subject row + one-click instant centring');
