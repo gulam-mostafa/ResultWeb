@@ -14,17 +14,21 @@
     "check:undefined": "node scripts/check-undefined.mjs"
   },
   "dependencies": {
+    "build": "^0.1.4",
     "chart.js": "^4.4.4",
     "exceljs": "^4.4.0",
     "firebase": "^13.4.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.451.0",
+    "npm": "^12.2.3",
     "qrcode.react": "^4.0.1",
     "react": "^18.3.1",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
+    "run": "^2.1.13",
+    "smoke": "^4.1.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

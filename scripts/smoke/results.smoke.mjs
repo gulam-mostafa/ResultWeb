@@ -835,8 +835,9 @@ assert.ok(printCss.includes('min-height: 258.9mm'), 'the 1-per-A4 full sheet is 
 console.log('PASS — result list download (exact list, per-term file) + pair-marksheet geometry');
 
 /* ------------------------------------------------------------------ *
- * 15. Batch 5f — sticky scroll bar (mount bug), sticky section tabs,
- *     PDF slot geometry
+ * 15. Batch 5f — sticky scroll bar (mount bug), PDF slot geometry
+ *     Batch 5g — ONE pinned header + ONE top scrollbar (fixed + JS),
+ *     replacing the doubled, non-sticking 5f sticky tab bar
  * ------------------------------------------------------------------ */
 // StickyScrollBar: the old single effect early-returned on a missing bar
 // element, so `measure()` never ran and the bar could never mount. The fix
@@ -868,13 +869,40 @@ assert.equal(
   'measuring the target and syncing the bar are two separate effects',
 );
 
-// Sticky section tabs: the grid renders a tab bar (sticky top-0) with the
-// same three sections, each calling centerSection on click. The in-table
-// headers alone cannot stick — they sit inside the overflow-x container.
-assert.ok(gridHtml.includes('sticky top-0'), 'the section tab bar sticks to the top of the screen');
-assert.ok(gridHtml.includes('গাঠনিক মূল্যায়ন মাঝখানে দেখুন'), 'the গাঠনিক tab centres its section on click');
-assert.ok(gridHtml.includes('সামষ্টিক মূল্যায়ন মাঝখানে দেখুন'), 'the সামষ্টিক tab centres its section on click');
-assert.ok(gridHtml.includes('ফলাফল তৈরি মাঝখানে দেখুন'), 'the ফলাফল তৈরি tab centres its section on click');
+// 5g — ONE header, ONE scrollbar, both on top (fixed + JS, never sticky).
+// The 5f in-flow sticky tab bar doubled the section headers and never stuck
+// when scrolled, so it is gone; the pinned bar only appears once the
+// in-table group header row has scrolled past the topbar.
+const gridSrc = readFileSync(
+  path.join(process.cwd(), 'src/components/results/SpreadsheetMarksGrid.jsx'), 'utf8',
+);
+const pinnedSrc = readFileSync(
+  path.join(process.cwd(), 'src/components/results/GridPinnedBar.jsx'), 'utf8',
+);
+const indexCss = readFileSync(path.join(process.cwd(), 'src/index.css'), 'utf8');
+const annualSrc = readFileSync(
+  path.join(process.cwd(), 'src/components/results/ConsolidatedAnnualTable.jsx'), 'utf8',
+);
+assert.ok(!gridHtml.includes('sticky top-0'), 'no in-flow sticky tab bar doubling the section headers');
+assert.ok(!gridSrc.includes('StickyScrollBar'), 'the marks grid no longer uses the bottom fixed scroll bar');
+assert.ok(gridSrc.includes('GridPinnedBar'), 'the marks grid uses the pinned top bar instead');
+assert.ok(gridSrc.includes('headerRowRef'), 'the pinned bar measures the in-table group header row');
+assert.ok(gridSrc.includes('onTabClick={centerSection}'), 'a pinned tab click still centres its section');
+assert.ok(pinnedSrc.includes('fixed z-30'), 'the pinned bar uses position: fixed, not sticky');
+assert.ok(!pinnedSrc.includes('sticky top-0 z-30'), 'the pinned bar never relies on the old sticky bar (only its doc comment mentions sticky)');
+assert.ok(pinnedSrc.includes('getBoundingClientRect'), 'the pinned bar is aligned by JS measurement');
+assert.ok(pinnedSrc.includes("document.querySelector('.app-topbar')"), 'the pinned bar sits just below the app topbar');
+assert.ok(pinnedSrc.includes('showTabs'), 'the pinned tabs show only when the in-table header has scrolled past');
+assert.ok(pinnedSrc.includes('onTabClick?.(tab.key)'), 'a pinned tab calls back into centerSection');
+assert.ok(
+  pinnedSrc.includes('flowBarRef') && pinnedSrc.includes('fixedBarRef'),
+  'one top scrollbar: in-flow above the grid + pinned under the header, never both at once',
+);
+assert.ok(gridHtml.includes('grid-scroll-hidden'), 'the table wrapper hides its native scrollbar');
+assert.ok(indexCss.includes('.grid-scroll-hidden'), 'the hiding rule exists');
+assert.ok(indexCss.includes('scrollbar-width: none'), 'the hiding rule removes the native scrollbar');
+assert.ok(!gridHtml.includes('পাশে স্ক্রল করুন ▶'), 'the old bottom bar hint is gone from the marks grid');
+assert.ok(annualSrc.includes('StickyScrollBar'), 'the annual table still uses its own bottom scroll bar');
 
 // PDF slot geometry: a sheet whose aspect matches the slot fills it exactly
 // (no centring gap); a genuinely short sheet still centres (nothing cut).
@@ -902,4 +930,4 @@ assert.ok(
   'a pair sheet can never spill past its half-page box (print or screen)',
 );
 
-console.log('PASS — sticky scroll bar mounts, sticky section tabs, PDF slot geometry');
+console.log('PASS — sticky scroll bar mounts, one pinned header + one top scrollbar, PDF slot geometry');

@@ -5,7 +5,7 @@ import { configEntryFields } from '../../utils/resultConfig.js';
 import { rankClassRows, subjectTermEntry } from '../../utils/resultEngine.js';
 import { clsx } from '../../utils/clsx.js';
 import Spinner from '../ui/Spinner.jsx';
-import StickyScrollBar from '../ui/StickyScrollBar.jsx';
+import GridPinnedBar from './GridPinnedBar.jsx';
 
 /**
  * Excel-like marks grid (one evaluation tab).
@@ -19,9 +19,13 @@ import StickyScrollBar from '../ui/StickyScrollBar.jsx';
  * Clicking a group header scrolls that section to the MIDDLE of the visible grid
  * (`centerSection`) — the sticky শিক্ষার্থী column stays put while the section centres
  * in the space to its right.
- * The section tabs ALSO live in a sticky bar above the grid (`sticky top-0`): the
- * in-table headers sit inside the horizontal-scroll container, so they scroll away
- * with the page — the bar above never leaves the screen while the grid is in view.
+ * The section tabs ALSO live in a pinned bar above the grid (`GridPinnedBar`,
+ * `position: fixed` + JS measurement): the in-table headers sit inside the
+ * horizontal-scroll container, so they scroll away with the page — the pinned
+ * bar only appears once the in-table header has scrolled past the top, so the
+ * same three sections are never shown twice. The horizontal scrollbar lives at
+ * the TOP of the grid (one bar, pinned with the header while the grid is in
+ * view); the table's own native scrollbar is hidden.
  *
  * • Keyboard: arrows move one cell/row, `Tab`/`Shift+Tab` walk the natural order,
  *   `Enter` jumps to the same subject of the next pupil.
@@ -193,8 +197,10 @@ export default function SpreadsheetMarksGrid({
   const pendingRef = useRef({});
   const editingKey = useRef(null);
   const gridRef = useRef(null);
-  /** The desktop table's horizontal scroll container (the sticky bottom bar syncs with it). */
+  /** The desktop table's horizontal scroll container (the pinned top bar syncs with it). */
   const tableWrapRef = useRef(null);
+  /** The thead group-header row — the pinned bar appears once it scrolls past the top. */
+  const headerRowRef = useRef(null);
 
   /**
    * Brief "সংরক্ষণ হয়েছে" confirmation after the "সংরক্ষণ হচ্ছে…" spinner clears.
@@ -492,6 +498,17 @@ export default function SpreadsheetMarksGrid({
   /** Trailing result columns (মোট … মন্তব্য) — the ফলাফল তৈরি section. */
   const resultColumnCount = 4 + (showNewRoll ? 1 : 0) + 1;
 
+  /** Section tabs for the pinned bar — same order as the in-table group header row. */
+  const pinnedTabs = useMemo(
+    () => [...activeGroups, 'result'].map((groupKey) => ({
+      key: groupKey,
+      label: GROUP_STYLE[groupKey].label,
+      hint: GROUP_STYLE[groupKey].hint,
+      head: GROUP_STYLE[groupKey].head,
+    })),
+    [activeGroups, resultColumnCount],
+  );
+
   /**
    * Click a section header → scroll the grid so that section sits in the MIDDLE of
    * the visible display. The sticky শিক্ষার্থী column stays put, so the section is
@@ -580,54 +597,18 @@ export default function SpreadsheetMarksGrid({
         </div>
       ) : null}
 
-      {/*
-        Sticky section tabs — স্ক্রল করলেও স্ক্রিনের উপরে আটকে থাকে, কখনো
-        বাইরে যায় না। টেবিলের ভেতরের গ্রুপ হেডার (`th`, sticky top-0) এই কাজ
-        করতে পারে না: টেবিলটা `overflow-x-auto` কনটেইনারের ভেতরে, তাই হেডার
-        পেজের সঙ্গে উপরে চলে যায়। এই বারটি সেই কনটেইনারের বাইরে, গ্রিডের
-        উপরে — `sticky top-0` (টপবারের z-20-এর উপরে, z-30) বলে পেজের উপরে
-        আটকে থাকে যতক্ষণ গ্রিড পর্দায় আছে; পেজের উপরে থাকলে নিজের জায়গাতেই
-        থাকে, কিছু ঢাকে না। বাটনগুলো টেবিলের হেডারের মতোই `centerSection`
-        ডাকে — ক্লিক করলে সেই সেকশন ডিসপ্লের মাঝখানে আসে। ডেস্কটপ/ট্যাবলেটে
-        দেখায়; মোবাইলে গ্রিড কার্ড আকারে (পাশে স্ক্রল নেই), তাই সেখানে বার
-        লুকানো থাকে — কার্ডে প্রতিটা সেকশনের নাম এমনিতেই লেখা থাকে।
-      */}
-      <div
-        className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur-sm md:flex dark:border-slate-700 dark:bg-slate-900/95"
-        role="tablist"
-        aria-label="মূল্যায়ন সেকশন — ক্লিক করলে সেই অংশ মাঝখানে আসবে"
-      >
-        {[...activeGroups, 'result'].map((groupKey) => {
-          const count = groupKey === 'result'
-            ? resultColumnCount
-            : columnGroups[groupKey].length;
-          return (
-            <button
-              key={`tab-${groupKey}`}
-              type="button"
-              role="tab"
-              onClick={() => centerSection(groupKey)}
-              className={clsx(
-                'flex-1 px-3 py-2 text-center transition hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60',
-                GROUP_STYLE[groupKey].head,
-              )}
-              title={`${GROUP_STYLE[groupKey].label} — ক্লিক করলে এই অংশ মাঝখানে আসবে`}
-              aria-label={`${GROUP_STYLE[groupKey].label} মাঝখানে দেখুন`}
-            >
-              <span className="block text-xs font-bold">{GROUP_STYLE[groupKey].label}</span>
-              <span className="block text-[10px] font-normal opacity-80">
-                {GROUP_STYLE[groupKey].hint} · {toBanglaNumber(count)} কলাম
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
       {/* Desktop / tablet: one spreadsheet row per pupil. */}
-      <div ref={tableWrapRef} className="hidden max-w-full overflow-x-auto scroll-thin md:block">
+      <GridPinnedBar
+        tableWrapRef={tableWrapRef}
+        headerRowRef={headerRowRef}
+        tabs={pinnedTabs}
+        onTabClick={centerSection}
+        label="নম্বর গ্রিড পাশে স্ক্রল করুন"
+      />
+      <div ref={tableWrapRef} className="hidden max-w-full overflow-x-auto grid-scroll-hidden md:block">
         <table className="table-base min-w-[980px]">
           <thead>
-            <tr>
+            <tr ref={headerRowRef}>
               <th rowSpan={2} className="sticky left-0 top-0 z-20">শিক্ষার্থী / রোল</th>
               {activeGroups.map((groupKey) => (
                 <th
@@ -751,11 +732,6 @@ export default function SpreadsheetMarksGrid({
           </tbody>
         </table>
       </div>
-
-      {/* পর্দার নিচে আটকে থাকা স্ক্রল বার (fixed — পেজ যেখানেই স্ক্রল থাকুক, বার
-          স্ক্রিনের নিচে থাকে; গ্রিড পর্দায় না থাকলে বার নিজে লুকিয়ে যায়)।
-          মোবাইলে ডেস্কটপ টেবিল লুকানো থাকে বলে বার নিজেই লুকিয়ে যায়। */}
-      <StickyScrollBar targetRef={tableWrapRef} label="নম্বর গ্রিড পাশে স্ক্রল করুন" />
 
       {/* Mobile: each pupil is a card; গাঠনিক and সামষ্টিক stay in their own tinted areas. */}
       <div className="divide-y divide-slate-100 md:hidden dark:divide-slate-800">

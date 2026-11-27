@@ -150,6 +150,21 @@
     background: transparent;
   }
 
+  /*
+   * নম্বর গ্রিডের র‍্যাপারের নিজস্ব স্ক্রল বার লুকানো — উপরে একটাই বার
+   * (GridPinnedBar) থাকে, তাই দুটো বার দেখা যাবে না। র‍্যাপার নিজে
+   * স্ক্রলযোগ্যই থাকে (টাচ, কিবোর্ড, প্রোগ্রামেটিক স্ক্রল), শুধু দৃশ্যমান
+   * বারটি লুকানো হয়। বার্ষিক টেবিল (ConsolidatedAnnualTable) এই ক্লাস
+   * ব্যবহার করে না — সেখানে নিচের StickyScrollBar আগের মতোই থাকে।
+   */
+  .grid-scroll-hidden {
+    scrollbar-width: none;
+  }
+
+  .grid-scroll-hidden::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Spreadsheet cell – clear input boundary + active focus ring at 100% zoom. */
   .mark-cell {
     @apply h-9 w-full rounded-md border border-slate-300 bg-white px-1.5 text-center text-sm font-semibold
