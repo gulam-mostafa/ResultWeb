@@ -5,13 +5,22 @@
  *  - class-wise default subjects / গাঠনিক+সামষ্টিক split / pass mark / weights;
  *  - blank marks count as 0, below-pass ⇒ F + GPA 0.00 with the total marks KEPT;
  *  - 80+ highlighting inputs (percent per subject) and the golden-badge condition;
+ *  - result proofing colours: combined below pass ⇒ light red, one component below
+ *    33% of its own max ⇒ light yellow, a mark above the field max ⇒ error red;
  *  - the consolidated বার্ষিক ফলাফল weighting (১৫% + ১৫% + ৭০%) and its renormalisation;
  *  - merit ranking (passing first, ties by GPA then roll) and নতুন রোল only for the
  *    consolidated result;
  *  - the Excel round-trip: build → parse (valid) and build → tampered (rejected with a
- *    precise reason).
+ *    precise reason);
+ *  - the result LIST download: one workbook, one sheet per class, the active tab only,
+ *    with the computed total/GPA/grade/merit/remark exactly as the grid shows them —
+ *    and the list file is NOT a valid marks template;
+ *  - the 2-per-page marksheet geometry: a pair sheet is exactly half a printable
+ *    page (129.4mm) on screen too, with a smaller QR, so two sheets fill one A4.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import XLSX from 'xlsx';
@@ -33,8 +42,13 @@ import {
 import {
   buildResultWorkbook,
   parseResultWorkbook,
+  resultFileName,
   templateSpec,
 } from '../../src/services/excel/resultExcel.js';
+import {
+  buildResultListWorkbook,
+  resultListFileName,
+} from '../../src/services/excel/resultListExcel.js';
 import {
   readAllResultConfigs,
   resultConfigPath,
@@ -251,72 +265,137 @@ assert.deepEqual(tied.map((row) => row.position), [1, 1, 3], 'a tie shares the m
 assert.deepEqual(tied.map((row) => row.newRoll), [1, 2, 3], 'নতুন রোল stays unique even on a tie');
 
 /* ------------------------------------------------------------------ *
- * 5. Excel round-trip + strict validation
+ * 5. Excel round-trip + strict validation — ONE workbook, SIX sheets
  * ------------------------------------------------------------------ */
-const spec = templateSpec({
+const specC1 = templateSpec({
   schoolProfile: { name: 'টেস্ট বিদ্যালয়' },
   classId: 'c1',
   year: '2026',
   tabId: 'term1',
   config: c1,
+  // শাখা ক আগে, তারপর খ; শাখার ভেতরে রোল অনুযায়ী — s2 (ক, ১) → s3 (খ, ১) → s1 (খ, ২)।
   students: [
-    { id: 's1', name: 'রুমি', roll: 1 },
-    { id: 's2', name: 'সজীব', roll: 2 },
+    { id: 's1', name: 'রুমি', roll: 2, section: 'খ' },
+    { id: 's2', name: 'সজীব', roll: 1, section: 'ক' },
+    { id: 's3', name: 'তানিয়া', roll: 1, section: 'খ' },
   ],
 });
+assert.deepEqual(
+  specC1.students.map((student) => student.id),
+  ['s2', 's3', 's1'],
+  'a sheet lists শাখা ক first, then খ, roll inside each শাখা',
+);
+const specPre = templateSpec({
+  schoolProfile: { name: 'টেস্ট বিদ্যালয়' },
+  classId: 'pre',
+  year: '2026',
+  tabId: 'term1',
+  config: preConfig,
+  students: [{ id: 'p1', name: 'টিয়া', roll: 1, section: 'ক' }],
+});
 const marks = { s1: splitMarks('bangla', 'term1', 30, 70) };
-const buffer = await buildResultWorkbook({ spec, marks, computed: {} });
-const parsed = await parseResultWorkbook(new Uint8Array(buffer), spec);
+const buffer = await buildResultWorkbook({ specs: [specC1, specPre], marks, computed: {} });
+const builtBook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+assert.deepEqual(
+  builtBook.SheetNames,
+  ['১ম শ্রেণি', 'প্রাক-প্রাথমিক'],
+  'one sheet per class, named by the class label, in CLASS_LEVELS order',
+);
+const parsed = await parseResultWorkbook(new Uint8Array(buffer), [specC1, specPre]);
 assert.equal(parsed.ok, true, 'a valid untouched template must parse');
-assert.equal(parsed.rows.s1['bangla:formative'], 30, 'web marks travel into the sheet');
-assert.equal(parsed.rows.s1['bangla:summative'], 70);
-assert.equal(parsed.rows.s2['bangla:formative'], null, 'a blank cell parses as null');
+assert.equal(parsed.rowsByClass.c1.s1['bangla:formative'], 30, 'web marks travel into the sheet');
+assert.equal(parsed.rowsByClass.c1.s1['bangla:summative'], 70);
+assert.equal(parsed.rowsByClass.c1.s2['bangla:formative'], null, 'a blank cell parses as null');
+assert.deepEqual(
+  Object.keys(parsed.rowsByClass.c1),
+  ['s2', 's3', 's1'],
+  'the parsed rows keep the শাখা-then-roll order',
+);
+assert.ok(parsed.rowsByClass.pre.p1, 'the pre-primary sheet parses too');
+assert.equal(
+  resultFileName({ specs: [specC1, specPre] }),
+  'টেস্ট_বিদ্যালয়-১ম_প্রান্তিক_মূল্যায়ন-2026.xlsx',
+  'the file is named বিদ্যালয়–মূল্যায়ন–শিক্ষাবর্ষ',
+);
 
 // A renamed subject column must be rejected with the exact reason.
 const book = XLSX.read(new Uint8Array(buffer), { type: 'array' });
-const sheet = book.Sheets[book.SheetNames[0]];
-sheet.D9 = { t: 's', v: 'বাংলা-পরিবর্তিত' };
+const sheet = book.Sheets['১ম শ্রেণি'];
+sheet.E9 = { t: 's', v: 'বাংলা-পরিবর্তিত' };
 const rejected = await parseResultWorkbook(
   new Uint8Array(XLSX.write(book, { bookType: 'xlsx', type: 'array' })),
-  spec,
+  [specC1, specPre],
 );
 assert.equal(rejected.ok, false);
 assert.equal(rejected.code, 'column-mismatch');
 assert.ok(rejected.message.includes('বাংলা'), 'the error must name the changed column');
+assert.ok(rejected.message.includes('১ম শ্রেণি'), 'the error must name the sheet');
 
 // A removed pupil id must be rejected too.
 const book2 = XLSX.read(new Uint8Array(buffer), { type: 'array' });
-const sheet2 = book2.Sheets[book2.SheetNames[0]];
-delete sheet2.B10;
+const sheet2 = book2.Sheets['১ম শ্রেণি'];
+delete sheet2.C10;
 const rejected2 = await parseResultWorkbook(
   new Uint8Array(XLSX.write(book2, { bookType: 'xlsx', type: 'array' })),
-  spec,
+  [specC1, specPre],
 );
 assert.equal(rejected2.ok, false);
 assert.ok(['row-mismatch', 'row-count'].includes(rejected2.code), 'editing a pupil row is rejected');
 
-// A file of another class is rejected with a class-specific reason.
-const otherClass = templateSpec({
-  schoolProfile: { name: 'টেস্ট বিদ্যালয়' },
-  classId: 'c2',
-  year: '2026',
-  tabId: 'term1',
-  config: c1,
-  students: [],
-});
-const wrongClass = await parseResultWorkbook(new Uint8Array(buffer), otherClass);
+// A sheet whose meta class code was changed is rejected with a class-specific reason.
+const bookClass = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+bookClass.Sheets['১ম শ্রেণি'].B3 = { t: 's', v: 'c2' };
+const wrongClass = await parseResultWorkbook(
+  new Uint8Array(XLSX.write(bookClass, { bookType: 'xlsx', type: 'array' })),
+  [specC1, specPre],
+);
 assert.equal(wrongClass.ok, false);
 assert.equal(wrongClass.code, 'class-mismatch');
 
+// A missing class sheet rejects the whole file.
+const bookMissing = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+delete bookMissing.Sheets['প্রাক-প্রাথমিক'];
+bookMissing.SheetNames = bookMissing.SheetNames.filter((name) => name !== 'প্রাক-প্রাথমিক');
+const rejectedMissing = await parseResultWorkbook(
+  new Uint8Array(XLSX.write(bookMissing, { bookType: 'xlsx', type: 'array' })),
+  [specC1, specPre],
+);
+assert.equal(rejectedMissing.ok, false);
+assert.equal(rejectedMissing.code, 'sheet-missing');
+
 // An out-of-range mark is rejected with the row/column named.
 const book3 = XLSX.read(new Uint8Array(buffer), { type: 'array' });
-book3.Sheets[book3.SheetNames[0]].D10 = { t: 'n', v: 999 };
+book3.Sheets['১ম শ্রেণি'].E10 = { t: 'n', v: 999 };
 const rejected3 = await parseResultWorkbook(
   new Uint8Array(XLSX.write(book3, { bookType: 'xlsx', type: 'array' })),
-  spec,
+  [specC1, specPre],
 );
 assert.equal(rejected3.ok, false);
 assert.equal(rejected3.code, 'mark-range');
+
+// OLD single-sheet file (sheet "নম্বরপত্র", no শাখা column) still uploads.
+const legacyRows = [
+  ['RESULTWEB MARKS TEMPLATE v1'],
+  ['শ্রেণি', '১ম শ্রেণি'],
+  ['শ্রেণি কোড', 'c1'],
+  ['শিক্ষাবর্ষ', '2026'],
+  ['মূল্যায়ন', '১ম প্রান্তিক মূল্যায়ন'],
+  ['মূল্যায়ন কোড', 'term1'],
+  ['পাস নম্বর', 33],
+  [],
+  ['রোল', 'শিক্ষার্থী আইডি', 'শিক্ষার্থীর নাম', 'বাংলা (গাঠনিক)', 'গণিত (গাঠনিক)', 'ইংরেজি (গাঠনিক)', 'সমন্বিত (গাঠনিক)', 'বাংলা (সামষ্টিক)', 'গণিত (সামষ্টিক)', 'ইংরেজি (সামষ্টিক)', 'সমন্বিত (সামষ্টিক)', 'মোট', 'GPA', 'গ্রেড'],
+  [1, 's2', 'সজীব', 30, '', '', '', '', '', '', '', '', '', ''],
+  [1, 's3', 'তানিয়া', '', '', '', '', '', '', '', '', '', '', ''],
+  [2, 's1', 'রুমি', '', '', '', '', '', '', '', '', '', '', ''],
+];
+const legacyBook = XLSX.utils.book_new();
+XLSX.utils.book_append_sheet(legacyBook, XLSX.utils.aoa_to_sheet(legacyRows), 'নম্বরপত্র');
+const legacyParsed = await parseResultWorkbook(
+  new Uint8Array(XLSX.write(legacyBook, { bookType: 'xlsx', type: 'array' })),
+  [specC1, specPre],
+);
+assert.equal(legacyParsed.ok, true, 'an old single-sheet download still parses');
+assert.equal(legacyParsed.rowsByClass.c1.s2['bangla:formative'], 30, 'legacy marks read back');
 
 /* ------------------------------------------------------------------ *
  * 6. Per-school isolation of the configuration node
@@ -418,10 +497,18 @@ const gridMarks = {
   g2: {
     'bangla:formative': { term1: 10 }, 'bangla:summative': { term1: 15 }, bangla: { term1: 25 },
   },
+  // তানিয়া: গাঠনিক ৫/৩০ এককভাবে ৩৩%-এর নিচে, কিন্তু মোট ৬৫ ⇒ শুধু গাঠনিক ঘর হলুদ।
+  g3: {
+    'bangla:formative': { term1: 5 }, 'bangla:summative': { term1: 60 }, bangla: { term1: 65 },
+  },
+  // রাকিব: গণিত গাঠনিক ৩৫ — সেট করা সর্বোচ্চ ৩০-এর বেশি ⇒ বর্ডারসহ এরর লাল।
+  g4: {
+    'math:formative': { term1: 35 }, 'math:summative': { term1: 60 }, math: { term1: 95 },
+  },
 };
 
 const gridHtml = renderToStaticMarkup(React.createElement(SpreadsheetMarksGrid, {
-  students: [{ id: 'g1', name: 'রুমি', roll: 1 }, { id: 'g2', name: 'সজীব', roll: 2 }],
+  students: [{ id: 'g1', name: 'রুমি', roll: 1 }, { id: 'g2', name: 'সজীব', roll: 2 }, { id: 'g3', name: 'তানিয়া', roll: 3 }, { id: 'g4', name: 'রাকিব', roll: 4 }],
   marks: gridMarks,
   config: c1,
   tabId: 'term1',
@@ -435,6 +522,9 @@ const gridHtml = renderToStaticMarkup(React.createElement(SpreadsheetMarksGrid, 
 assert.ok(gridHtml.includes('গোল্ডেন'), 'a pupil at 80+ in every subject carries the golden badge');
 assert.ok(gridHtml.includes('bg-emerald-50'), '80+ cells carry the light-green highlight class');
 assert.ok(gridHtml.includes('bg-rose-50'), 'below-pass cells carry the light-red highlight class');
+assert.ok(gridHtml.includes('bg-amber-50'), 'a single component below 33% of its own max carries the light-yellow class');
+assert.ok(gridHtml.includes('mark-cell-invalid'), 'a mark above the field max carries the error class');
+assert.ok(gridHtml.includes('border-rose-600'), 'an over-max mark carries the error-red border');
 assert.ok(gridHtml.includes('বর্তমান রোল') && gridHtml.includes('মেধাক্রম'), 'the sort control lists both orders');
 assert.ok(gridHtml.includes('গাঠনিক') && gridHtml.includes('সামষ্টিক'), 'গাঠনিক / সামষ্টিক inputs render side by side');
 assert.ok(!gridHtml.includes('নতুন রোল'), 'a per-term tab has NO নতুন রোল column until the consolidated result exists');
@@ -527,7 +617,8 @@ assert.ok(
 assert.ok(gridSource.includes('pendingRef'), 'committed values are pinned until the store confirms them');
 
 /* ------------------------------------------------------------------ *
- * 11. Excel download is gated behind the warning popup
+ * 11. Excel download is DIRECT on the Results page (no warning popup);
+ *    the popup still exists for the Students page.
  * ------------------------------------------------------------------ */
 const warningSource = await readSourceFile(
   pathModule.join(process.cwd(), 'src/components/results/ExcelDownloadWarningModal.jsx'),
@@ -539,12 +630,27 @@ const pageSource = await readSourceFile(
   pathModule.join(process.cwd(), 'src/pages/ResultsPage.jsx'),
   'utf8',
 );
-assert.ok(pageSource.includes('setDownloadWarningOpen(true)'), 'the download button only opens the warning first');
 assert.ok(
-  pageSource.includes('onConfirm={handleDownload}'),
-  'the download handler is reached only through the popup confirm',
+  pageSource.includes('onClick={handleDownload}'),
+  'the Results download button downloads directly on click',
 );
-console.log('PASS — grouped গাঠনিক/সামষ্টিক columns, term-carrying writes, gated Excel download');
+assert.ok(
+  !pageSource.includes('ExcelDownloadWarningModal'),
+  'the Results page no longer opens the warning popup',
+);
+assert.ok(
+  !pageSource.includes('setDownloadWarningOpen(true)'),
+  'no warning state is opened from the Results page',
+);
+assert.ok(
+  !pageSource.includes('ডাউনলোড করা ফাইলের ফরম্যাট, শিটের নাম'),
+  'the inline warning text under the Results buttons is gone',
+);
+assert.ok(
+  pageSource.includes('সব শ্রেণি · ৬টি শিট'),
+  'the Excel card says the download covers all six classes',
+);
+console.log('PASS — grouped গাঠনিক/সামষ্টিক columns, term-carrying writes, direct Excel download');
 
 /* ------------------------------------------------------------------ *
  * 12. Single-score (pre-primary) grid + saving spinner markup
@@ -589,3 +695,211 @@ assert.ok(remarkHtml.includes('মন্তব্য লিখুন'), 'an empt
 assert.ok(remarkHtml.includes('এর মন্তব্য'), 'the comment cell is a clickable button');
 
 console.log('PASS — rendered grid (highlights, golden badge, sort control, per-term columns)');
+
+/* ------------------------------------------------------------------ *
+ * 14. Result LIST download (হুবহু লিস্ট) + pair-marksheet geometry
+ * ------------------------------------------------------------------ */
+// Term tab: one workbook, one sheet per class, the ACTIVE tab only.
+const listMarksS2 = {
+  ...splitMarks('bangla', 'term1', 30, 70),
+  ...splitMarks('math', 'term1', 30, 70),
+  ...splitMarks('english', 'term1', 30, 70),
+  ...splitMarks('integrated', 'term1', 30, 70),
+};
+const listMarksS1 = { ...splitMarks('bangla', 'term1', 30, 70) };
+const listStudents = [
+  { id: 's1', name: 'রুমি', roll: 2, section: 'খ' },
+  { id: 's2', name: 'সজীব', roll: 1, section: 'ক' },
+  { id: 's3', name: 'তানিয়া', roll: 1, section: 'খ' },
+];
+const listRows = rankClassRows([
+  { student: listStudents[0], studentId: 's1', result: computeTermResultForConfig(listMarksS1, c1, 'term1') },
+  { student: listStudents[1], studentId: 's2', result: computeTermResultForConfig(listMarksS2, c1, 'term1') },
+  { student: listStudents[2], studentId: 's3', result: computeTermResultForConfig({}, c1, 'term1') },
+]);
+const listClasses = [
+  {
+    classId: 'pre', className: 'প্রাক-প্রাথমিক', config: preConfig,
+    students: [{ id: 'p1', name: 'টিয়া', roll: 1, section: 'ক' }], sections: ['ক'],
+    rows: rankClassRows([
+      { student: { id: 'p1', name: 'টিয়া', roll: 1 }, studentId: 'p1', result: computeTermResultForConfig({}, preConfig, 'term1') },
+    ]),
+    remarks: {},
+  },
+  {
+    classId: 'c1', className: '১ম শ্রেণি', config: c1,
+    students: listStudents, sections: ['ক', 'খ'],
+    rows: listRows,
+    remarks: { s2: 'খুব ভালো করেছে।' },
+  },
+];
+const listBuffer = await buildResultListWorkbook({
+  classes: listClasses,
+  schoolName: 'টেস্ট বিদ্যালয়',
+  year: '2026',
+  tabId: 'term1',
+  tabName: '১ম প্রান্তিক মূল্যায়ন',
+});
+const listBook = XLSX.read(new Uint8Array(listBuffer), { type: 'array' });
+assert.deepEqual(
+  listBook.SheetNames,
+  ['প্রাক-প্রাথমিক', '১ম শ্রেণি'],
+  'the list has one sheet per class, named by the class label, in CLASS_LEVELS order',
+);
+const listSheet = listBook.Sheets['১ম শ্রেণি'];
+const listMatrix = XLSX.utils.sheet_to_json(listSheet, { header: 1, defval: '' });
+assert.deepEqual(
+  listMatrix[2],
+  ['রোল', 'শাখা', 'শিক্ষার্থীর নাম', 'বাংলা (গাঠনিক)', 'গণিত (গাঠনিক)', 'ইংরেজি (গাঠনিক)', 'সমন্বিত (গাঠনিক)', 'বাংলা (সামষ্টিক)', 'গণিত (সামষ্টিক)', 'ইংরেজি (সামষ্টিক)', 'সমন্বিত (সামষ্টিক)', 'মোট', 'GPA', 'গ্রেড', 'মেধাক্রম', 'মন্তব্য'],
+  'the list headers mirror the grid columns exactly (all গাঠনিক first, then সামষ্টিক — no নতুন রোল without a consolidated result)',
+);
+// Rows: শাখা ক first, then খ, roll inside each শাখা — s2 (ক, ১) → s3 (খ, ১) → s1 (খ, ২)।
+assert.equal(listMatrix[3][0], 1, 'first row is the ক pupil');
+assert.equal(listMatrix[3][2], 'সজীব');
+assert.equal(listMatrix[3][11], 400, 'the list shows the computed total, not the entered marks');
+assert.equal(listMatrix[3][12], 5, 'the list shows the computed GPA');
+assert.equal(listMatrix[3][13], 'A+', 'the list shows the computed grade');
+assert.equal(listMatrix[3][14], 1, 'the list shows the computed merit position');
+assert.equal(listMatrix[3][15], 'খুব ভালো করেছে।', 'the list shows the saved remark');
+assert.equal(listMatrix[4][2], 'তানিয়া');
+assert.equal(listMatrix[4][14], '', 'a pupil with no marks has no merit position');
+assert.equal(
+  resultListFileName({ schoolName: 'টেস্ট বিদ্যালয়', tabName: '১ম প্রান্তিক মূল্যায়ন', year: '2026' }),
+  'তালিকা-টেস্ট_বিদ্যালয়-১ম_প্রান্তিক_মূল্যায়ন-2026.xlsx',
+  'the list file is named তালিকা–বিদ্যালয়–মূল্যায়ন–শিক্ষাবর্ষ (one file per term)',
+);
+// The list is a read-only report — the strict marks upload must reject it.
+const listRejected = await parseResultWorkbook(new Uint8Array(listBuffer), [specC1, specPre]);
+assert.equal(listRejected.ok, false, 'a list file must never parse as a marks template');
+assert.equal(
+  listBook.Sheets['১ম শ্রেণি'].A1?.v,
+  'RESULTWEB RESULT LIST',
+  'the list carries its own stamp, not the template stamp — so the upload can never mistake it for a template',
+);
+
+// Consolidated tab: per-term weighted MARKS, not subject marks.
+const consMarks = {};
+['bangla', 'math', 'english', 'integrated'].forEach((id) => {
+  consMarks[`${id}:formative`] = { term1: 27, term2: 24, annual: 21 };
+  consMarks[`${id}:summative`] = { term1: 63, term2: 56, annual: 49 };
+  consMarks[id] = { term1: 90, term2: 80, annual: 70 };
+});
+const consResult = computeConsolidatedResult(consMarks, c1);
+const consBuffer = await buildResultListWorkbook({
+  classes: [{
+    classId: 'c1', className: '১ম শ্রেণি', config: c1,
+    students: [{ id: 's2', name: 'সজীব', roll: 1, section: 'ক' }], sections: ['ক'],
+    rows: rankClassRows([
+      { student: { id: 's2', name: 'সজীব', roll: 1 }, studentId: 's2', result: consResult },
+    ], { assignNewRoll: true }),
+    remarks: {},
+  }],
+  schoolName: 'টেস্ট বিদ্যালয়',
+  year: '2026',
+  tabId: 'consolidated',
+  tabName: 'বার্ষিক ফলাফল',
+});
+const consMatrix = XLSX.utils.sheet_to_json(
+  XLSX.read(new Uint8Array(consBuffer), { type: 'array' }).Sheets['১ম শ্রেণি'],
+  { header: 1, defval: '' },
+);
+assert.deepEqual(
+  consMatrix[2],
+  ['রোল', 'শাখা', 'শিক্ষার্থীর নাম', '১ম প্রান্তিক', '২য় প্রান্তিক', 'বার্ষিক মূল্যায়ন', 'মোট নম্বর', 'ফলাফল', 'GPA', 'গ্রেড', 'মেধাক্রম', 'নতুন রোল', 'মন্তব্য'],
+  'the consolidated list mirrors the বার্ষিক ফলাফল table',
+);
+// 4 subjects × 90 × 15% = 54; × 80 × 15% = 48; × 70 × 70% = 196; total 298.
+assert.equal(consMatrix[3][3], 54, '১ম প্রান্তিক shows its weighted marks');
+assert.equal(consMatrix[3][4], 48, '২য় প্রান্তিক shows its weighted marks');
+assert.equal(consMatrix[3][5], 196, 'বার্ষিক shows its weighted marks');
+assert.equal(consMatrix[3][6], 298, 'the consolidated total is the sum of the weighted marks');
+assert.equal(consMatrix[3][11], 1, 'নতুন রোল is shown on the consolidated list');
+
+// 2-per-page marksheet geometry — the pair sheet must be exactly half a
+// printable page on SCREEN too (the direct PDF captures the screen layout),
+// with the slack spread evenly and a smaller QR. The 1-per-A4 sheet is untouched.
+const printCss = readFileSync(path.join(process.cwd(), 'src/styles/print.css'), 'utf8');
+const compactBase = printCss.match(/\.print-sheet--compact\s*\{[^}]*\}/g) ?? [];
+assert.ok(
+  compactBase.some((rule) => rule.includes('height: 129.4mm') && rule.includes('justify-content: space-between')),
+  'a pair sheet is exactly 129.4mm tall with evenly spread content, on screen and in print',
+);
+assert.ok(
+  printCss.includes('.print-sheet--compact > .rsheet__foot'),
+  'the pair footer no longer uses margin-top: auto (it would swallow the spread)',
+);
+const compactQr = printCss.match(/\.rsheet--compact\s+\.rsheet__qr\s*\{[^}]*\}/)?.[0] ?? '';
+assert.ok(compactQr.includes('width: 24mm'), 'the pair QR is smaller (24mm, not 30mm)');
+assert.ok(printCss.includes('min-height: 258.9mm'), 'the 1-per-A4 full sheet is untouched');
+
+console.log('PASS — result list download (exact list, per-term file) + pair-marksheet geometry');
+
+/* ------------------------------------------------------------------ *
+ * 15. Batch 5f — sticky scroll bar (mount bug), sticky section tabs,
+ *     PDF slot geometry
+ * ------------------------------------------------------------------ */
+// StickyScrollBar: the old single effect early-returned on a missing bar
+// element, so `measure()` never ran and the bar could never mount. The fix
+// splits it: one effect measures the TARGET alone, a second syncs the bar
+// once it exists. Effects don't run under renderToStaticMarkup, so this is
+// a source-level check of the split.
+const stickyBarSrc = readFileSync(
+  path.join(process.cwd(), 'src/components/ui/StickyScrollBar.jsx'), 'utf8',
+);
+const firstEffectAt = stickyBarSrc.indexOf('useEffect(() => {');
+const firstEffect = stickyBarSrc.slice(firstEffectAt, firstEffectAt + 400);
+assert.ok(firstEffectAt >= 0, 'the scroll bar measures its target in an effect');
+assert.ok(
+  firstEffect.includes('const target = targetRef?.current;')
+    && firstEffect.includes('if (!target) return undefined;'),
+  'measuring the target runs even when the bar element does not exist yet (no early-return on a missing bar)',
+);
+assert.ok(
+  !firstEffect.includes('barRef'),
+  'the measuring effect never touches the bar element — the bar cannot block its own mount',
+);
+assert.ok(
+  stickyBarSrc.includes('fixed bottom-0'),
+  'the scroll bar stays fixed at the bottom of the screen',
+);
+assert.equal(
+  stickyBarSrc.split('useEffect(').length - 1 >= 2,
+  true,
+  'measuring the target and syncing the bar are two separate effects',
+);
+
+// Sticky section tabs: the grid renders a tab bar (sticky top-0) with the
+// same three sections, each calling centerSection on click. The in-table
+// headers alone cannot stick — they sit inside the overflow-x container.
+assert.ok(gridHtml.includes('sticky top-0'), 'the section tab bar sticks to the top of the screen');
+assert.ok(gridHtml.includes('গাঠনিক মূল্যায়ন মাঝখানে দেখুন'), 'the গাঠনিক tab centres its section on click');
+assert.ok(gridHtml.includes('সামষ্টিক মূল্যায়ন মাঝখানে দেখুন'), 'the সামষ্টিক tab centres its section on click');
+assert.ok(gridHtml.includes('ফলাফল তৈরি মাঝখানে দেখুন'), 'the ফলাফল তৈরি tab centres its section on click');
+
+// PDF slot geometry: a sheet whose aspect matches the slot fills it exactly
+// (no centring gap); a genuinely short sheet still centres (nothing cut).
+const { fitSheetIntoSlot } = await import('../../src/utils/downloadPdf.js');
+assert.deepEqual(
+  fitSheetIntoSlot(171.9, 129.4, 171.9, 129.45),
+  { x: 0, y: 0, w: 171.9, h: 129.45 },
+  'a 129.4mm pair sheet fills the 129.45mm half-page slot exactly',
+);
+assert.deepEqual(
+  fitSheetIntoSlot(171.9, 258.9, 171.9, 258.9),
+  { x: 0, y: 0, w: 171.9, h: 258.9 },
+  'a full sheet fills the whole page excluding the margin',
+);
+const shortFit = fitSheetIntoSlot(171.9, 100, 171.9, 129.45);
+assert.ok(shortFit.w === 171.9 && shortFit.h === 100 && shortFit.y > 0,
+  'a short sheet still centres instead of being stretched or cut');
+const pdfSrc = readFileSync(path.join(process.cwd(), 'src/utils/downloadPdf.js'), 'utf8');
+assert.ok(
+  pdfSrc.includes('clonedSheet.style.minHeight'),
+  'the capture forces each sheet to the exact slot height (print rules do not apply to html2canvas)',
+);
+assert.ok(
+  compactBase.some((rule) => rule.includes('overflow: hidden')),
+  'a pair sheet can never spill past its half-page box (print or screen)',
+);
+
+console.log('PASS — sticky scroll bar mounts, sticky section tabs, PDF slot geometry');

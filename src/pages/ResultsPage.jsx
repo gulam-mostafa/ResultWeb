@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Download, FileSpreadsheet, FileText, Printer, Settings2, Sparkles, Upload,
+  ArrowUpRight, Download, FileSpreadsheet, FileText, Printer, Settings2, Sparkles, Upload,
 } from 'lucide-react';
 
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
@@ -20,7 +20,6 @@ import SpreadsheetMarksGrid from '../components/results/SpreadsheetMarksGrid.jsx
 import ConsolidatedAnnualTable from '../components/results/ConsolidatedAnnualTable.jsx';
 import ResultConfigModal from '../components/results/ResultConfigModal.jsx';
 import ExcelPreviewModal from '../components/results/ExcelPreviewModal.jsx';
-import ExcelDownloadWarningModal from '../components/results/ExcelDownloadWarningModal.jsx';
 import AIRemarkModal from '../components/results/AIRemarkModal.jsx';
 import Spinner from '../components/ui/Spinner.jsx';
 import { useToast } from '../components/ui/Toast.jsx';
@@ -29,6 +28,7 @@ import AutoPromotionModal from '../components/students/AutoPromotionModal.jsx';
 import StudentDetailsModal from '../components/students/StudentDetailsModal.jsx';
 import StudentResultModal from '../components/results/StudentResultModal.jsx';
 import { downloadResultExcel, parseResultWorkbook, templateSpec } from '../services/excel/resultExcel.js';
+import { downloadResultList } from '../services/excel/resultListExcel.js';
 import { downloadSheetsAsPdf } from '../utils/downloadPdf.js';
 import { DEFAULT_SECTION_ID } from '../services/database/dbPaths.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
@@ -98,9 +98,9 @@ export default function ResultsPage() {
   const [uploadInfo, setUploadInfo] = useState('');
   const [preview, setPreview] = useState(null);
   const [savingPreview, setSavingPreview] = useState(false);
-  /** Excel warning popup — the `.xlsx` download only starts after its confirm button. */
-  const [downloadWarningOpen, setDownloadWarningOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  /** তালিকা ডাউনলোড (হুবহু লিস্ট) চলছে কি না। */
+  const [downloadingList, setDownloadingList] = useState(false);
   const [parsingUpload, setParsingUpload] = useState(false);
   /** সরাসরি PDF ডাউনলোড চলছে কি না (প্রিন্ট ডায়ালগ ছাড়া, jsPDF দিয়ে)। */
   const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -345,45 +345,107 @@ export default function ResultsPage() {
   }, [advanceAcademicYear, activeYear, allStudents, getStudentResult]);
 
   /* ---------------------------------------------------------------- *
-   * Excel: download (with the format warning) / upload (strict) / save
+   * Excel: download (direct — 6 sheets, all classes) / upload (strict, all
+   * 6 sheets) / save (per class, one toast at the end)
    * ---------------------------------------------------------------- */
 
-  const excelSpec = useMemo(() => templateSpec({
+  /** Per-class result config for ALL six classes (the download covers all of them). */
+  const configsByClass = useMemo(() => {
+    const map = {};
+    CLASS_LEVELS.forEach((level) => {
+      map[level.id] = normalizeResultConfig(getResultConfig?.(level.id) ?? null, level.id);
+    });
+    return map;
+  }, [getResultConfig]);
+
+  /**
+   * One template spec per class, in CLASS_LEVELS order — every sheet holds ALL
+   * pupils of its class, ALL sections (শাখা ক → খ → গ, then roll). The
+   * class/শাখা selectors above control only the on-screen grid, never the file.
+   */
+  const excelSpecs = useMemo(() => CLASS_LEVELS.map((level) => templateSpec({
     schoolProfile,
-    classId,
+    classId: level.id,
     year: activeYear,
     tabId,
-    config,
-    students,
-  }), [schoolProfile, classId, activeYear, tabId, config, students]);
+    config: configsByClass[level.id],
+    students: studentsByClass?.[level.id] ?? [],
+    sections: getSectionsOfClass?.(level.id) ?? [],
+  })), [schoolProfile, activeYear, tabId, configsByClass, studentsByClass, getSectionsOfClass]);
 
-  /** Opens the mandatory warning popup — NO file is generated at this point. */
-  const requestDownload = () => {
-    setUploadError('');
-    setUploadInfo('');
-    setDownloadNotice('');
-    setDownloadWarningOpen(true);
-  };
-
-  /** Runs only after the teacher confirms inside the warning popup. */
+  /** Direct download — no warning popup: one workbook, six class sheets. */
   const handleDownload = async () => {
     if (downloading) return;
     setDownloading(true);
     setUploadError('');
     setUploadInfo('');
+    setDownloadNotice('');
     try {
-      const computed = Object.fromEntries(
-        (excelSpec.students ?? []).map((student) => [student.id, getRowResult(student.id)]),
-      );
-      const { name } = await downloadResultExcel({ spec: excelSpec, marks, computed });
+      const computed = {};
+      excelSpecs.forEach((item) => {
+        (item.students ?? []).forEach((student) => {
+          computed[student.id] = getTabResult?.(student.id, tabId) ?? {};
+        });
+      });
+      const { name } = await downloadResultExcel({ specs: excelSpecs, marks, computed });
       setDownloadNotice(`ফাইল ডাউনলোড হয়েছে: ${name}`);
-      setDownloadWarningOpen(false);
     } catch {
       setDownloadNotice('');
       setUploadError('এক্সেল ফাইল তৈরি করা যায়নি। আবার চেষ্টা করুন।');
-      setDownloadWarningOpen(false);
     } finally {
       setDownloading(false);
+    }
+  };
+
+  /**
+   * তালিকা ডাউনলোড — the on-screen LIST exactly as shown (হুবহু), all six
+   * classes in one file, for the ACTIVE tab only (another tab downloads that
+   * term's own file). Values come from the engine (`getClassRows` /
+   * `getRemark`), never recomputed here; নতুন রোল comes from the consolidated
+   * rows, so a term tab shows it too once the annual result is calculated.
+   */
+  const listClasses = useMemo(() => CLASS_LEVELS.map((level) => {
+    const rows = getClassRows?.(level.id, tabId) ?? [];
+    const consolidatedRows = tabId === 'consolidated'
+      ? rows
+      : (getClassRows?.(level.id, 'consolidated') ?? []);
+    const newRollById = new Map(
+      consolidatedRows.filter((row) => row?.newRoll != null).map((row) => [row.studentId, row.newRoll]),
+    );
+    const classStudents = studentsByClass?.[level.id] ?? [];
+    return {
+      classId: level.id,
+      className: CLASS_LABEL_MAP[level.id],
+      config: configsByClass[level.id],
+      students: classStudents,
+      sections: getSectionsOfClass?.(level.id) ?? [],
+      rows: rows.map((row) => ({
+        ...row,
+        newRoll: row.newRoll ?? newRollById.get(row.studentId) ?? null,
+      })),
+      remarks: Object.fromEntries(
+        classStudents.map((student) => [student.id, getRemark?.(student.id, remarkTermId) ?? '']),
+      ),
+    };
+  }), [tabId, getClassRows, configsByClass, studentsByClass, getSectionsOfClass, getRemark, remarkTermId]);
+
+  /** Small list download — a read-only report, not the upload template. */
+  const handleDownloadList = async () => {
+    if (downloadingList) return;
+    setDownloadingList(true);
+    try {
+      const { name } = await downloadResultList({
+        classes: listClasses,
+        schoolName: schoolProfile?.name ?? '',
+        year: activeYear,
+        tabId,
+        tabName: activeTab.name,
+      });
+      toast.success(`তালিকা ডাউনলোড হয়েছে: ${name}`);
+    } catch {
+      toast.error('তালিকা তৈরি করা যায়নি — আবার চেষ্টা করুন');
+    } finally {
+      setDownloadingList(false);
     }
   };
 
@@ -404,12 +466,12 @@ export default function ResultsPage() {
         setUploadError('ফাইলটি পড়া যায়নি।');
         return;
       }
-      const parsed = await parseResultWorkbook(new Uint8Array(buffer), excelSpec);
+      const parsed = await parseResultWorkbook(new Uint8Array(buffer), excelSpecs);
       if (!parsed?.ok) {
         setUploadError(parsed?.message ?? 'ফাইলটি যাচাই করা যায়নি।');
         return;
       }
-      setPreview({ rows: parsed.rows ?? {}, spec: excelSpec });
+      setPreview({ rowsByClass: parsed.rowsByClass ?? {}, specs: excelSpecs });
       setUploadInfo('ফাইল যাচাই সম্পন্ন — স্ক্রিন প্রিভিউ থেকে সংরক্ষণ করুন।');
     } catch {
       setUploadError('ফাইল প্রক্রিয়া করা যায়নি। আবার চেষ্টা করুন।');
@@ -420,33 +482,48 @@ export default function ResultsPage() {
 
 
   /**
-   * Saves the previewed sheet in ONE multi-path database write (per class + term), so a
-   * 40-pupil upload is a single atomic update inside this school's own year partition.
-   * The preview modal closes on success, so the toast is the visible confirmation;
-   * on failure the modal stays open with its own error and the toast floats above it.
+   * Saves the previewed workbook — ONE multi-path database write per class
+   * (per class + term), so a 40-pupil upload is a single atomic update inside
+   * this school's own year partition. The preview modal closes on success, so
+   * the toast is the visible confirmation; on failure the modal stays open
+   * with its own error and the toast floats above it.
+   *
+   * `mergedByClass` comes from the preview modal (`{ classId: mergedMarks }`)
+   * but is only used to know which classes were parsed; the ENTRIES written
+   * are built from the parsed rows, exactly like the old single-class save.
    */
-  const savePreview = async (mergedMarks) => {
+  const savePreview = async (mergedByClass) => {
     if (isConsolidated || !activeTab.termId) return { synced: false };
     setSavingPreview(true);
     try {
-      const entries = {};
-      Object.entries(preview?.rows ?? {}).forEach(([studentId, fields]) => {
-        entries[studentId] = Object.fromEntries(
-          Object.entries(fields ?? {}).map(([fieldKey, mark]) => [fieldKey, { value: mark }]),
-        );
-      });
-      const result = await applyImportedMarks?.(entries, {
-        classId,
-        termId: activeTab.termId,
-        config,
-      });
-      if (result?.synced === false) {
-        toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
-        return result;
+      const classIds = Object.keys(preview?.rowsByClass ?? {});
+      let savedAny = false;
+      let lastResult = { synced: true };
+      for (const previewClassId of classIds) {
+        const classRows = preview.rowsByClass[previewClassId] ?? {};
+        if (!Object.keys(classRows).length) continue;
+        const entries = {};
+        Object.entries(classRows).forEach(([studentId, fields]) => {
+          entries[studentId] = Object.fromEntries(
+            Object.entries(fields ?? {}).map(([fieldKey, mark]) => [fieldKey, { value: mark }]),
+          );
+        });
+        const result = await applyImportedMarks?.(entries, {
+          classId: previewClassId,
+          termId: activeTab.termId,
+          config: configsByClass[previewClassId],
+        });
+        lastResult = result ?? { synced: true };
+        if (result?.synced === false) {
+          toast.error('সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন');
+          return result;
+        }
+        savedAny = true;
       }
+      if (!savedAny) return { synced: false };
       setUploadInfo('এক্সেলের নম্বর সফলভাবে সংরক্ষণ হয়েছে।');
       toast.success('সংরক্ষণ হয়েছে');
-      return result ?? { synced: true };
+      return lastResult;
     } catch {
       // The modal also shows its own inline error for this; returning
       // `{ synced: false }` (instead of throwing) is what triggers it.
@@ -537,10 +614,10 @@ export default function ResultsPage() {
     <Card className="mb-4 no-print">
       <CardHeader
         title="এক্সেল নম্বরপত্র"
-        subtitle={`${CLASS_LABEL_MAP[classId]} · ${activeTab.name} · ${activeYear} শিক্ষাবর্ষ`}
+        subtitle={`সব শ্রেণি · ৬টি শিট · ${activeTab.name} · ${activeYear} শিক্ষাবর্ষ`}
         icon={FileSpreadsheet}
         action={<div className="flex flex-wrap items-center gap-2">
-          <button type="button" className="btn-secondary btn-sm" onClick={requestDownload} disabled={downloading || parsingUpload}>
+          <button type="button" className="btn-secondary btn-sm" onClick={handleDownload} disabled={downloading || parsingUpload}>
             {downloading
               ? <><Spinner size="xs" tone="brand" label="এক্সেল তৈরি হচ্ছে…" /> তৈরি হচ্ছে…</>
               : <><Download size={13} /> এক্সেল ডাউনলোড</>}
@@ -558,11 +635,11 @@ export default function ResultsPage() {
           <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden" onChange={handleUpload} aria-label="এক্সেল ফাইল আপলোড" />
         </div>}
       />
-      <div className="rounded-xl bg-amber-50 p-3 text-[11px] leading-relaxed font-semibold text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
-        <AlertTriangle size={13} className="mr-1 inline" aria-hidden="true" />
-        <b>সতর্কতা:</b> ডাউনলোড করা ফাইলের ফরম্যাট, শিটের নাম, বিষয়ের নাম, কলাম ও সারির কাঠামো <b>পরিবর্তন করবেন না</b> — শুধু নম্বরের ঘর পূরণ করুন। ওয়েবে ইতিমধ্যে দেওয়া নম্বরও ফাইলে থাকবে, তাই অর্ধেক ওয়েবে ও বাকিটা এক্সেলে পূরণ করে পুনরায় আপলোড করা যাবে। কাঠামো বদলালে আপলোড <b>কারণসহ বাতিল</b> হবে এবং নম্বর আগে <b>স্ক্রিন প্রিভিউ</b>তে দেখানো হবে — <b>সংরক্ষণ</b> চাপলেই কেবল এই বিদ্যালয়ের ডেটাবেজে যাবে।
-        {isConsolidated ? ' বার্ষিক ফলাফল ট্যাব স্বয়ংক্রিয়ভাবে হিসাব হয়, তাই এখানে আপলোড নেই — অন্য তিনটি ট্যাবে নম্বর দিন।' : ''}
-      </div>
+      {isConsolidated ? (
+        <p className="mt-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+          বার্ষিক ফলাফল ট্যাব স্বয়ংক্রিয়ভাবে হিসাব হয়, তাই এখানে আপলোড নেই — অন্য তিনটি ট্যাবে নম্বর দিন।
+        </p>
+      ) : null}
       {parsingUpload ? (
         <p role="status" className="mt-2 flex items-center gap-2 rounded-lg bg-sky-50 p-2.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
           <Spinner size="xs" tone="brand" label="এক্সেল ফাইল যাচাই হচ্ছে…" />
@@ -582,6 +659,17 @@ export default function ResultsPage() {
           subtitle={isConsolidated
             ? `১ম (${toBanglaNumber(weights.term1)}%) + ২য় (${toBanglaNumber(weights.term2)}%) + বার্ষিক (${toBanglaNumber(weights.annual)}%) অনুযায়ী চূড়ান্ত ফলাফল · মেধাক্রম ও নতুন রোল`
             : `প্রতি বিষয়ে পূর্ণমান ${perSubjectFullMarksLabel} · মোট পূর্ণমান ${toBanglaNumber(totalFullMarks)} · পাস নম্বর ${toBanglaNumber(config.passMark)} · এই প্রান্তিকের পৃথক মেধাক্রম`}
+          action={<button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={handleDownloadList}
+            disabled={downloadingList}
+            title="পর্দার তালিকাটি হুবহু এক্সেলে ডাউনলোড করুন (৬ শ্রেণি, এই প্রান্তিকের ফাইল)"
+          >
+            {downloadingList
+              ? <><Spinner size="xs" tone="brand" label="তালিকা তৈরি হচ্ছে…" /> তৈরি হচ্ছে…</>
+              : <><Download size={13} /> তালিকা ডাউনলোড</>}
+          </button>}
         />
         {switching || isHydrating ? (
           <p
@@ -749,7 +837,7 @@ export default function ResultsPage() {
       </p>
     </Card>
 
-    {/* মার্কশিট প্রিভিউ: ১৮৬mm চওড়া A4 শিট — ছোট স্ক্রিনে পাশে স্ক্রল হবে (প্রিন্টে স্ক্রল থাকবে না)। */}
+    {/* মার্কশিট প্রিভিউ: ১৭১.৯mm চওড়া A4 শিট (০.৭৫ ইঞ্চি মার্জিন বাদে ছাপার জায়গা) — ছোট স্ক্রিনে পাশে স্ক্রল হবে (প্রিন্টে স্ক্রল থাকবে না)। */}
     <div className="max-w-full overflow-x-auto scroll-thin print:overflow-visible">
     <div ref={printRootRef} className={pageLayout === 'pair' ? 'print-root print-pair' : 'print-root print-single'}>
       {(bulkPrint ? marksheetRows : marksheetRows.filter((row) => row.student.id === printTarget?.id)).map((row) => (
@@ -797,23 +885,14 @@ export default function ResultsPage() {
       onReset={resetResultConfig}
     />
 
-    <ExcelDownloadWarningModal
-      open={downloadWarningOpen}
-      onClose={() => {
-        if (downloading) return;
-        setDownloadWarningOpen(false);
-      }}
-      onConfirm={handleDownload}
-      downloading={downloading}
-      subtitle={`${CLASS_LABEL_MAP[classId] ?? ''} · ${activeTab.name} · ${activeYear} শিক্ষাবর্ষ`}
-    />
-
     <ExcelPreviewModal
       open={Boolean(preview)}
       onClose={() => setPreview(null)}
-      spec={preview?.spec ?? excelSpec}
-      rows={preview?.rows ?? {}}
-      config={config}
+      classes={(preview?.specs ?? excelSpecs).map((item) => ({
+        spec: item,
+        config: configsByClass[item.classId],
+        rows: preview?.rowsByClass?.[item.classId] ?? {},
+      }))}
       tabId={tabId}
       marks={marks}
       onSave={savePreview}

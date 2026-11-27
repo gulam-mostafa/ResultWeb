@@ -13,12 +13,21 @@ import { jsPDF } from 'jspdf';
  * - ২টি/পেজ লেআউট: প্রতি A4 পেজে ২টি শিট, উপর-নিচে অর্ধেক-অর্ধেক করে
  *   (print.css-এর print-pair নিয়ম — compact শিটের উচ্চতা ১২৯.৪ মিমি)।
  *
+ * আসল কারণ ও ঠিক করা (ব্যাচ ৫এফ): আগের কোড ছবিটাকে `contain` দিয়ে স্লটের
+ * মাঝখানে বসাত — ক্যাপচার করা শিট স্লটের চেয়ে একটু ছোট হলেই উপরে-নিচে ফাঁকা
+ * দেখাত, আর `@media print` নিয়ম ক্যাপচারে প্রযোজ্য হয় না বলে প্রিন্টের
+ * ১২৯.৪ মিমি উচ্চতা স্ক্রিন-ক্যাপচারে কোনো কাজে আসত না। তাই এখন ক্যাপচারের
+ * আগেই (`onclone`-এ, আসল পেজ না ছুঁয়ে) প্রতিটা শিটকে স্লটের ঠিক মাপে বসানো
+ * হয় — চওড়া ১৭১.৯ মিমি, কমপক্ষে স্লটের উচ্চতা — ফলে ক্যাপচার করা ছবির
+ * অনুপাত স্লটের অনুপাতের সঙ্গে হুবহু মেলে আর `fitSheetIntoSlot` সেটাকে
+ * স্লটে একদম ভরে দেয় (মিলে গেলে মাঝখানে বসানোর অফসেট থাকে না)।
+ *
  * দুটি সীমা জেনে রাখা ভালো:
  * - QR কোড `QRCodeSVG` (ইনলাইন SVG) — html2canvas SVG আঁকতে পারে না, তাই ক্যাপচারের
  *   আগে `onclone`-এ প্রতিটি SVG-কে একই মাপের `<img>` (data URL) দিয়ে বদলে দেওয়া হয়।
- * - মার্কশিটের রং/ফন্ট স্ক্রিনের মতোই আসে; প্রিন্টের মতো `@media print` নিয়ম
- *   (যেমন compact শিটের ১২৯.৪ মিমি উচ্চতা) এখানে প্রযোজ্য নয় — ছবি `contain`
- *   হিসেবে স্লটে বসে, তাই বিকৃতি হয় না।
+ * - মার্কশিটের রং/ফন্ট স্ক্রিনের মতোই আসে। কোনো শিটের বিষয়বস্তু স্লটের চেয়ে
+ *   লম্বা হলে (স্বাভাবিকভাবে হয় না — compact শিটের বিষয়বস্তু ১২৯.৪ মিমিতে
+ *   ধরার মতো করে সাজানো) ছবিটা ছোট করে পুরোটা দেখানো হয়, কাটা হয় না।
  */
 
 const MM_PER_INCH = 25.4;
@@ -27,6 +36,8 @@ const PAGE_W_MM = 210;
 const PAGE_H_MM = 297;
 const CONTENT_W_MM = PAGE_W_MM - MARGIN_MM * 2; // ১৭১.৯ মিমি
 const CONTENT_H_MM = PAGE_H_MM - MARGIN_MM * 2; // ২৫৮.৯ মিমি
+/** html2canvas রেন্ডারের গুণমান (ক্যানভাস পিক্সেল = CSS পিক্সেল × SCALE)। */
+const CANVAS_SCALE = 2;
 
 /** ফাইলের নামে ব্যবহার করা যায় না এমন অক্ষর সরানো (বাংলা অক্ষর রাখা হয়)। */
 export function sanitizePdfFilename(name) {
@@ -67,11 +78,24 @@ function swapSvgsForImages(clonedDoc) {
 }
 
 /**
- * একটি ছবিকে (w × h মিমি) স্লটের ভেতরে বিকৃতি ছাড়া বসানোর মাপ (contain)।
+ * একটি ছবিকে (w × h মিমি) স্লটের ভেতরে বিকৃতি ছাড়া বসানোর মাপ।
+ *
+ * ছবির অনুপাত স্লটের অনুপাতের সঙ্গে মিলে গেলে (১ মিমির ভেতরে — গোল করার
+ * ভুলটুকু) ছবিটা স্লটে একদম ভরে যায়: মাঝখানে বসানোর অফসেট থাকে না, তাই
+ * উপরে-নিচে কোনো সাদা ফাঁকা থাকে না। অনুপাত না মিললে (শিটের বিষয়বস্তু
+ * স্লটের চেয়ে লম্বা হলে) আগের মতো `contain` — পুরোটা দেখা যায়, কাটা হয় না।
+ *
+ * @returns {{x:number, y:number, w:number, h:number}} — স্লটের ভেতরে অফসেটসহ মাপ।
  */
-function fitInto(imgW, imgH, slotW, slotH) {
+export function fitSheetIntoSlot(imgW, imgH, slotW, slotH) {
   const scale = Math.min(slotW / imgW, slotH / imgH);
-  return { w: imgW * scale, h: imgH * scale };
+  let w = imgW * scale;
+  let h = imgH * scale;
+  if (Math.abs(w - slotW) < 1 && Math.abs(h - slotH) < 1) {
+    w = slotW;
+    h = slotH;
+  }
+  return { x: (slotW - w) / 2, y: (slotH - h) / 2, w, h };
 }
 
 /**
@@ -97,24 +121,42 @@ export async function downloadSheetsAsPdf(containerEl, { filename = 'marksheet.p
 
   for (let index = 0; index < sheets.length; index += 1) {
     const sheet = sheets[index];
+    const isCompact = sheet.classList?.contains('print-sheet--compact') ?? false;
     const canvas = await html2canvas(sheet, {
-      scale: 2,
+      scale: CANVAS_SCALE,
       useCORS: true,
       backgroundColor: '#ffffff',
       logging: false,
-      onclone: (clonedDoc) => swapSvgsForImages(clonedDoc),
+      /**
+       * ক্যাপচারের আগেই ক্লোন করা শিটকে স্লটের ঠিক মাপে বসানো — আসল পেজ
+       * ছোঁয়া হয় না। চওড়া ১৭১.৯ মিমি আর কমপক্ষে স্লটের উচ্চতা থাকলে
+       * ক্যাপচার করা ছবির অনুপাত স্লটের সঙ্গে হুবহু মেলে, ফলে
+       * `fitSheetIntoSlot` সেটাকে স্লটে একদম ভরে দেয়। compact (অর্ধেক-পেজ)
+       * শিটে `overflow: hidden`-ও দেওয়া হয়, যাতে লম্বা বিষয়বস্তু বাক্সের
+       * বাইরে গিয়ে ক্যানভাসটা স্লটের চেয়ে লম্বা করে না ফেলে (বিষয়বস্তু
+       * ১২৯.৪ মিমিতে ধরার মতো করে সাজানো — ছোট ফন্ট, ছোট মন্তব্য)।
+       */
+      onclone: (clonedDoc, clonedSheet) => {
+        swapSvgsForImages(clonedDoc);
+        if (clonedSheet && clonedSheet.style) {
+          clonedSheet.style.width = `${CONTENT_W_MM}mm`;
+          clonedSheet.style.minHeight = `${slotH}mm`;
+          if (isCompact) clonedSheet.style.overflow = 'hidden';
+        }
+      },
     });
     const imgData = canvas.toDataURL('image/jpeg', 0.92);
-    const imgW = (canvas.width / 96) * MM_PER_INCH;
-    const imgH = (canvas.height / 96) * MM_PER_INCH;
+    // ক্যানভাস পিক্সেল = CSS পিক্সেল × CANVAS_SCALE — মিমিতে ফেরাতে SCALE দিয়ে ভাগ।
+    const imgW = (canvas.width / CANVAS_SCALE / 96) * MM_PER_INCH;
+    const imgH = (canvas.height / CANVAS_SCALE / 96) * MM_PER_INCH;
     const slotIndex = index % perPage;
     if (slotIndex === 0) {
       if (index > 0) pdf.addPage('a4', 'portrait');
       pageCount += 1;
     }
     const slotTop = MARGIN_MM + slotIndex * slotH;
-    const { w, h } = fitInto(imgW, imgH, CONTENT_W_MM, slotH);
-    pdf.addImage(imgData, 'JPEG', MARGIN_MM + (CONTENT_W_MM - w) / 2, slotTop + (slotH - h) / 2, w, h);
+    const placed = fitSheetIntoSlot(imgW, imgH, CONTENT_W_MM, slotH);
+    pdf.addImage(imgData, 'JPEG', MARGIN_MM + placed.x, slotTop + placed.y, placed.w, placed.h);
   }
 
   pdf.save(sanitizePdfFilename(filename));

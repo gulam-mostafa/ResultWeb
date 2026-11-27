@@ -521,7 +521,9 @@
  * ------------------------------------------------------------------ */
 .rsheet--compact {
   min-height: 0;
-  padding: 7mm 9mm;
+  /* 4mm top/bottom (not 7mm): the sheet is exactly 129.4mm tall (see below), so the
+     padding has to leave room for the content inside the fixed box. */
+  padding: 4mm 9mm;
   font-size: 8pt;
   line-height: 1.35;
 }
@@ -602,12 +604,13 @@
 }
 
 /* Half-page layout: the usable area is ~125mm (129.4mm box − 4mm separator-side
-   padding in print), so a 30mm QR still leaves ample headroom.
-   30mm / 73 cells ≈ 0.41mm per cell — comfortably scannable — and a pair can never
-   spill onto a third page. */
+   padding in print), so a 24mm QR still leaves ample headroom.
+   24mm / 73 cells ≈ 0.33mm per cell — at the practical scannable floor, so please
+   test-scan one printed copy with an ordinary phone; if any camera struggles,
+   raise this back to 28mm. A pair can never spill onto a third page. */
 .rsheet--compact .rsheet__qr {
-  width: 30mm;
-  height: 30mm;
+  width: 24mm;
+  height: 24mm;
 }
 
 .rsheet--compact .signature {
@@ -618,6 +621,41 @@
 .rsheet--compact .signature__role,
 .rsheet--compact .qr-block {
   font-size: 6pt;
+}
+
+/* ------------------------------------------------------------------ *
+ * A pair sheet is EXACTLY half a printable page — on screen too.
+ * ------------------------------------------------------------------ *
+ * The direct-PDF renderer (jsPDF/html2canvas) captures the SCREEN layout:
+ * `@media print` never applies there, so a content-height compact sheet was
+ * contain-fitted into the 129.45mm half-page slot and left a gap above and
+ * below — the page looked half empty (see the gps1 screenshot). Giving the
+ * sheet its exact 129.4mm height here means the captured image fills the slot
+ * exactly, and the print path keeps the same box it already had.
+ *
+ * The slack inside the half is spread EVENLY between the blocks
+ * (`space-between`: header at the very top, signature/QR footer at the very
+ * bottom), instead of one big gap before the footer — so the sheet reads as a
+ * full half page, whether it has 3 subjects or 7. The footer's `margin-top:
+ * auto` is switched off for compact sheets only: an auto margin would swallow
+ * all the free space and defeat the even spread. The 1-per-A4 full sheet is
+ * untouched — it still uses `margin-top: auto` and fills 258.9mm as before.
+ *
+ * `overflow: hidden` is the guard that keeps the pair on ONE page: the content
+ * is designed to fit the 129.4mm box (small fonts, trimmed remark), so nothing
+ * is ever clipped in practice — but without it, one tall sheet could spill
+ * past its half and cut the next sheet's QR off the bottom of the page.
+ */
+.print-sheet--compact {
+  height: 129.4mm;
+  min-height: 129.4mm;
+  max-height: 129.4mm;
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+.print-sheet--compact > .rsheet__foot {
+  margin-top: 0;
 }
 
 /* ------------------------------------------------------------------ *
@@ -633,6 +671,9 @@
        (258.8mm — a hair of rounding slack, so the pair can never spill over). */
     height: 129.4mm !important;
     max-height: 129.4mm !important;
+    /* Nothing may spill past the half-page box — a spill would overlap the next
+       sheet and could cut its QR off the bottom of the page. */
+    overflow: hidden !important;
     padding: 0 !important;
     page-break-after: auto;
     break-after: auto;

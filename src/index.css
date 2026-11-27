@@ -196,6 +196,11 @@
     @apply bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200;
   }
 
+  /* ফলাফল তৈরি — light emerald, distinct from গাঠনিক (sky) and সামষ্টিক (violet). */
+  .mark-group-head-result {
+    @apply bg-emerald-100 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100;
+  }
+
   .table-base thead th.mark-group-head-formative {
     @apply border-b-2 border-sky-300 bg-sky-100 text-sky-900
       dark:border-sky-700 dark:bg-sky-950/70 dark:text-sky-100;
@@ -211,6 +216,11 @@
       dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200;
   }
 
+  .table-base thead th.mark-group-head-result {
+    @apply border-b-2 border-emerald-300 bg-emerald-100 text-emerald-900
+      dark:border-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-100;
+  }
+
   .mark-group-cell-formative {
     @apply bg-sky-50/60 dark:bg-sky-950/20;
   }
@@ -221,6 +231,11 @@
 
   .mark-group-cell-single {
     @apply bg-slate-50/60 dark:bg-slate-800/30;
+  }
+
+  /* ফলাফল তৈরি work-area cells — very light emerald, text stays fully readable. */
+  .mark-group-cell-result {
+    @apply bg-emerald-50/60 dark:bg-emerald-950/20;
   }
 }
 

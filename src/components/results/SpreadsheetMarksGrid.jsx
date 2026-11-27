@@ -15,11 +15,21 @@ import StickyScrollBar from '../ui/StickyScrollBar.jsx';
  *   একক নম্বর │ মোট │ GPA │ গ্রেড │ মেধাক্রম │ নতুন রোল
  *
  * Each group carries its own header tint and cell tint (sky = গাঠনিক, violet = সামষ্টিক,
- * slate = একক) so a teacher can tell the groups apart at a glance.
+ * slate = একক, emerald = ফলাফল তৈরি) so a teacher can tell the groups apart at a glance.
+ * Clicking a group header scrolls that section to the MIDDLE of the visible grid
+ * (`centerSection`) — the sticky শিক্ষার্থী column stays put while the section centres
+ * in the space to its right.
+ * The section tabs ALSO live in a sticky bar above the grid (`sticky top-0`): the
+ * in-table headers sit inside the horizontal-scroll container, so they scroll away
+ * with the page — the bar above never leaves the screen while the grid is in view.
  *
  * • Keyboard: arrows move one cell/row, `Tab`/`Shift+Tab` walk the natural order,
  *   `Enter` jumps to the same subject of the next pupil.
- * • Cells highlight softly: light red below the pass mark, light green at/above golden.
+ * • Cells are proofed as the teacher types (`proofTone`, error > fail > weak > golden):
+ *   a mark above the field's set max (or negative / not a number) is ERROR RED with a
+ *   red border; a subject whose formative + summative combined total is below the
+ *   pass mark is LIGHT RED; a single component below the pass mark's share of ITS
+ *   own max is LIGHT YELLOW; 80+ is light green. Empty cells are never coloured.
  * • A pupil at/above the golden mark in EVERY subject carries the golden badge.
  * • Clicking a pupil's NAME opens the pupil's profile & result details (`onShowStudent`);
  *   the small info button beside it opens the same full record.
@@ -51,11 +61,41 @@ const sameValue = (a, b) => {
 /** A committed value waits at most this long for the store to confirm it. */
 const PENDING_TTL_MS = 8000;
 
-/** Soft highlight of one entered cell, based on its own percentage. */
-function cellTone(entry, passMark, goldenMark) {
-  if (!entry?.hasAnyMark) return '';
-  if (!entry.isPass) return 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-200';
-  if (entry.percent >= goldenMark) return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200';
+/**
+ * Proofing colour of one entered cell — the three-tier result check, strongest first:
+ *
+ *   1. WRONG MARK (error red + red border) — the typed value is above the field's set
+ *      max (e.g. 35 in a 30-mark field), negative, or not a number. `setMark` stores
+ *      an over-max value as-is (it only clamps negatives to 0), so the error state
+ *      stays visible after saving, not just while typing.
+ *   2. COMBINED BELOW PASS (light red, warning-like) — the subject's formative +
+ *      summative total is below the pass mark (default 33% of the subject's full
+ *      mark, from the result config). Applied to that subject's entered cells.
+ *   3. SINGLE COMPONENT BELOW 33% (light yellow) — this component alone is below
+ *      the pass mark's share of ITS OWN max (e.g. pass 33 ⇒ formative max 30 needs
+ *      ≥ 9.9, summative max 70 needs ≥ 23.1). Never hard-coded 30/70.
+ *   4. Golden (light green) — the subject is at/above the golden mark.
+ *
+ * Precedence: error > light red > light yellow > section tint. The classes are
+ * Tailwind utilities, so they beat the batch-5b section tints (component layer)
+ * wherever they apply. Empty cells (`numeric === null`) are never coloured as
+ * failing — a pupil with no marks at all shows no proofing colour.
+ */
+function proofTone({ entry, numeric, fieldMax, passMark, goldenMark, invalid }) {
+  if (invalid) {
+    return 'border-rose-600 bg-rose-100 text-rose-800 ring-1 ring-rose-500/50 dark:border-rose-400 dark:bg-rose-950/60 dark:text-rose-200';
+  }
+  if (numeric === null || !entry?.hasAnyMark) return '';
+  if (!entry.isPass) {
+    return 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-200';
+  }
+  const threshold = (Number(passMark) / 100) * Number(fieldMax);
+  if (Number.isFinite(numeric) && numeric >= 0 && numeric < threshold) {
+    return 'bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200';
+  }
+  if (entry.percent >= goldenMark) {
+    return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200';
+  }
   return '';
 }
 
@@ -84,6 +124,15 @@ const GROUP_STYLE = {
     edge: 'border-l-2 border-l-slate-300 dark:border-l-slate-600',
     label: 'একক নম্বর',
     hint: 'বিভাজন ছাড়া বিষয়',
+  },
+  /** ফলাফল তৈরি — the trailing মোট / GPA / গ্রেড / মেধাক্রম / নতুন রোল / মন্তব্য columns. */
+  result: {
+    head: 'mark-group-head-result',
+    cell: 'mark-group-cell-result',
+    input: 'mark-cell-single',
+    edge: 'border-l-2 border-l-emerald-400 dark:border-l-emerald-600',
+    label: 'ফলাফল তৈরি',
+    hint: 'মোট · GPA · গ্রেড · মেধাক্রম',
   },
 };
 
@@ -376,7 +425,16 @@ export default function SpreadsheetMarksGrid({
     const numeric = blank ? null : Number(value);
     const invalid = numeric !== null
       && (!Number.isFinite(numeric) || numeric < 0 || numeric > fieldLimit(field));
-    const tone = disabled ? '' : cellTone(entry, passMark, goldenMark);
+    // Proofing (error > combined-fail > single-component > golden) wins over the
+    // section tint; the `mark-cell-invalid` class keeps the error focus ring too.
+    const tone = disabled ? '' : proofTone({
+      entry,
+      numeric,
+      fieldMax: fieldLimit(field),
+      passMark,
+      goldenMark,
+      invalid,
+    });
     const groupStyle = GROUP_STYLE[field.component] ?? GROUP_STYLE.single;
     return (
       <input
@@ -431,6 +489,53 @@ export default function SpreadsheetMarksGrid({
     [columnGroups],
   );
 
+  /** Trailing result columns (মোট … মন্তব্য) — the ফলাফল তৈরি section. */
+  const resultColumnCount = 4 + (showNewRoll ? 1 : 0) + 1;
+
+  /**
+   * Click a section header → scroll the grid so that section sits in the MIDDLE of
+   * the visible display. The sticky শিক্ষার্থী column stays put, so the section is
+   * centred in the space to its right; a section wider than that space is shown
+   * from its first column instead. Smooth scroll, clamped to the scroll range.
+   */
+  const centerSection = useCallback((sectionKey) => {
+    const wrap = tableWrapRef.current;
+    if (!wrap) return;
+    const cells = [...wrap.querySelectorAll(`th[data-section="${sectionKey}"]`)];
+    if (!cells.length) return;
+    const first = cells[0];
+    const last = cells[cells.length - 1];
+    const wrapRect = wrap.getBoundingClientRect();
+    const firstRect = first.getBoundingClientRect();
+    const lastRect = last.getBoundingClientRect();
+    const sectionLeft = wrap.scrollLeft + (firstRect.left - wrapRect.left);
+    const sectionWidth = lastRect.right - firstRect.left;
+    const stickyTh = wrap.querySelector('thead th.sticky');
+    const stickyWidth = stickyTh ? stickyTh.getBoundingClientRect().width : 0;
+    const visibleWidth = Math.max(1, wrap.clientWidth - stickyWidth);
+    const target = sectionWidth >= visibleWidth
+      ? sectionLeft - stickyWidth
+      : sectionLeft + sectionWidth / 2 - stickyWidth - visibleWidth / 2;
+    const max = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+    wrap.scrollTo({ left: Math.max(0, Math.min(max, target)), behavior: 'smooth' });
+  }, []);
+
+  /** One clickable group header — label + hint, hover hint so teachers discover it. */
+  const renderGroupHeader = (groupKey) => (
+    <button
+      type="button"
+      onClick={() => centerSection(groupKey)}
+      className="block w-full cursor-pointer rounded-md px-1 py-0.5 transition hover:bg-white/40 hover:underline hover:underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60 dark:hover:bg-white/10"
+      title={`${GROUP_STYLE[groupKey].label} — ক্লিক করলে এই অংশ মাঝখানে আসবে`}
+      aria-label={`${GROUP_STYLE[groupKey].label} মাঝখানে দেখুন`}
+    >
+      {GROUP_STYLE[groupKey].label}
+      <span className="ml-1 block text-[10px] font-normal opacity-80">
+        {GROUP_STYLE[groupKey].hint}
+      </span>
+    </button>
+  );
+
   return (
     <div className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-700">
       {onSortModeChange ? (
@@ -475,6 +580,49 @@ export default function SpreadsheetMarksGrid({
         </div>
       ) : null}
 
+      {/*
+        Sticky section tabs — স্ক্রল করলেও স্ক্রিনের উপরে আটকে থাকে, কখনো
+        বাইরে যায় না। টেবিলের ভেতরের গ্রুপ হেডার (`th`, sticky top-0) এই কাজ
+        করতে পারে না: টেবিলটা `overflow-x-auto` কনটেইনারের ভেতরে, তাই হেডার
+        পেজের সঙ্গে উপরে চলে যায়। এই বারটি সেই কনটেইনারের বাইরে, গ্রিডের
+        উপরে — `sticky top-0` (টপবারের z-20-এর উপরে, z-30) বলে পেজের উপরে
+        আটকে থাকে যতক্ষণ গ্রিড পর্দায় আছে; পেজের উপরে থাকলে নিজের জায়গাতেই
+        থাকে, কিছু ঢাকে না। বাটনগুলো টেবিলের হেডারের মতোই `centerSection`
+        ডাকে — ক্লিক করলে সেই সেকশন ডিসপ্লের মাঝখানে আসে। ডেস্কটপ/ট্যাবলেটে
+        দেখায়; মোবাইলে গ্রিড কার্ড আকারে (পাশে স্ক্রল নেই), তাই সেখানে বার
+        লুকানো থাকে — কার্ডে প্রতিটা সেকশনের নাম এমনিতেই লেখা থাকে।
+      */}
+      <div
+        className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur-sm md:flex dark:border-slate-700 dark:bg-slate-900/95"
+        role="tablist"
+        aria-label="মূল্যায়ন সেকশন — ক্লিক করলে সেই অংশ মাঝখানে আসবে"
+      >
+        {[...activeGroups, 'result'].map((groupKey) => {
+          const count = groupKey === 'result'
+            ? resultColumnCount
+            : columnGroups[groupKey].length;
+          return (
+            <button
+              key={`tab-${groupKey}`}
+              type="button"
+              role="tab"
+              onClick={() => centerSection(groupKey)}
+              className={clsx(
+                'flex-1 px-3 py-2 text-center transition hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60',
+                GROUP_STYLE[groupKey].head,
+              )}
+              title={`${GROUP_STYLE[groupKey].label} — ক্লিক করলে এই অংশ মাঝখানে আসবে`}
+              aria-label={`${GROUP_STYLE[groupKey].label} মাঝখানে দেখুন`}
+            >
+              <span className="block text-xs font-bold">{GROUP_STYLE[groupKey].label}</span>
+              <span className="block text-[10px] font-normal opacity-80">
+                {GROUP_STYLE[groupKey].hint} · {toBanglaNumber(count)} কলাম
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Desktop / tablet: one spreadsheet row per pupil. */}
       <div ref={tableWrapRef} className="hidden max-w-full overflow-x-auto scroll-thin md:block">
         <table className="table-base min-w-[980px]">
@@ -487,23 +635,22 @@ export default function SpreadsheetMarksGrid({
                   colSpan={columnGroups[groupKey].length}
                   className={clsx('top-0 z-20 text-center', GROUP_STYLE[groupKey].head, GROUP_STYLE[groupKey].edge)}
                 >
-                  {GROUP_STYLE[groupKey].label}
-                  <span className="ml-1 block text-[10px] font-normal opacity-80">
-                    {GROUP_STYLE[groupKey].hint}
-                  </span>
+                  {renderGroupHeader(groupKey)}
                 </th>
               ))}
-              <th rowSpan={2} className="top-0">মোট</th>
-              <th rowSpan={2} className="top-0">GPA</th>
-              <th rowSpan={2} className="top-0">গ্রেড</th>
-              <th rowSpan={2} className="top-0">মেধাক্রম</th>
-              {showNewRoll ? <th rowSpan={2} className="top-0">নতুন রোল</th> : null}
-              <th rowSpan={2} className="top-0">মন্তব্য</th>
+              {/* ফলাফল তৈরি — its own clickable header over the trailing result columns. */}
+              <th
+                colSpan={resultColumnCount}
+                className={clsx('top-0 z-20 text-center', GROUP_STYLE.result.head, GROUP_STYLE.result.edge)}
+              >
+                {renderGroupHeader('result')}
+              </th>
             </tr>
             <tr>
               {activeGroups.flatMap((groupKey) => columnGroups[groupKey].map((field) => (
                 <th
                   key={`head-${field.key}`}
+                  data-section={groupKey}
                   className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE[groupKey].cell, GROUP_STYLE[groupKey].edge)}
                   title={`${field.subject?.name ?? field.subjectName} · ${field.label}`}
                 >
@@ -511,6 +658,12 @@ export default function SpreadsheetMarksGrid({
                   <span className="block text-[10px] font-normal opacity-70">({toBanglaNumber(fieldLimit(field))})</span>
                 </th>
               )))}
+              <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell, GROUP_STYLE.result.edge)}>মোট</th>
+              <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell)}>GPA</th>
+              <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell)}>গ্রেড</th>
+              <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell)}>মেধাক্রম</th>
+              {showNewRoll ? <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell)}>নতুন রোল</th> : null}
+              <th data-section="result" className={clsx('top-[2.4rem] z-10 text-center', GROUP_STYLE.result.cell)}>মন্তব্য</th>
             </tr>
           </thead>
           <tbody ref={gridRef}>
@@ -559,9 +712,9 @@ export default function SpreadsheetMarksGrid({
                       {renderInput(student, field)}
                     </td>
                   )))}
-                  <td className="font-bold">{toBanglaNumber(result?.totalMarks ?? 0)}</td>
-                  <td>{result?.gpa == null ? '—' : Number(result.gpa).toFixed(2)}</td>
-                  <td>
+                  <td className={clsx('font-bold', GROUP_STYLE.result.cell, GROUP_STYLE.result.edge)}>{toBanglaNumber(result?.totalMarks ?? 0)}</td>
+                  <td className={GROUP_STYLE.result.cell}>{result?.gpa == null ? '—' : Number(result.gpa).toFixed(2)}</td>
+                  <td className={GROUP_STYLE.result.cell}>
                     <button
                       type="button"
                       onClick={() => onShowResult?.(student)}
@@ -572,13 +725,13 @@ export default function SpreadsheetMarksGrid({
                       {result?.grade ?? '—'}
                     </button>
                   </td>
-                  <td>{toBanglaNumber(result?.hasAnyMark ? rankRow?.position ?? '—' : '—')}</td>
+                  <td className={GROUP_STYLE.result.cell}>{toBanglaNumber(result?.hasAnyMark ? rankRow?.position ?? '—' : '—')}</td>
                   {showNewRoll ? (
-                    <td className="font-bold text-brand-700 dark:text-brand-300">
+                    <td className={clsx('font-bold text-brand-700 dark:text-brand-300', GROUP_STYLE.result.cell)}>
                       {toBanglaNumber(newRollOf(student.id) ?? '—')}
                     </td>
                   ) : null}
-                  <td className="min-w-32 align-top">
+                  <td className={clsx('min-w-32 align-top', GROUP_STYLE.result.cell)}>
                     {/* মন্তব্য — the ONLY place a remark modal opens (name clicks open the profile). */}
                     <button
                       type="button"
@@ -599,8 +752,9 @@ export default function SpreadsheetMarksGrid({
         </table>
       </div>
 
-      {/* পর্দার নিচে আটকে থাকা স্ক্রল বার — এই গ্রিডের DIRECT child হতে হবে, নইলে
-          sticky কাজ করে না। মোবাইলে ডেস্কটপ টেবিল লুকানো থাকে বলে বার নিজেই লুকিয়ে যায়। */}
+      {/* পর্দার নিচে আটকে থাকা স্ক্রল বার (fixed — পেজ যেখানেই স্ক্রল থাকুক, বার
+          স্ক্রিনের নিচে থাকে; গ্রিড পর্দায় না থাকলে বার নিজে লুকিয়ে যায়)।
+          মোবাইলে ডেস্কটপ টেবিল লুকানো থাকে বলে বার নিজেই লুকিয়ে যায়। */}
       <StickyScrollBar targetRef={tableWrapRef} label="নম্বর গ্রিড পাশে স্ক্রল করুন" />
 
       {/* Mobile: each pupil is a card; গাঠনিক and সামষ্টিক stay in their own tinted areas. */}
@@ -675,7 +829,7 @@ export default function SpreadsheetMarksGrid({
                   </div>
                 ))}
               </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+              <div className={clsx('mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300', GROUP_STYLE.result.cell)}>
                 <span>মোট {toBanglaNumber(result?.totalMarks ?? 0)}</span>
                 <span>· GPA {result?.gpa == null ? '—' : Number(result.gpa).toFixed(2)}</span>
                 <span>· মেধাক্রম {toBanglaNumber(result?.hasAnyMark ? rankRow?.position ?? '—' : '—')}</span>
