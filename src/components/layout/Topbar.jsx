@@ -67,10 +67,12 @@ function usePendingTeachers(schoolId, currentUid, enabled) {
  * Academic-year selector (বার্ষিক উত্তরণ):
  *
  * - Picking a year only CHANGES THE VIEW (`onView` = `setViewYear`): a past
- *   year shows that year's data read-only, the active year is never moved by
- *   a click here. The button shows the VIEWED year, with a "শুধু দেখা" mark
- *   while a past year is on screen; the list marks the active year ("সক্রিয়")
- *   and the viewed year ("দেখছেন").
+ *   year shows that year's data read-only, a FUTURE year shows that year's
+ *   data open and editable (the next year is never locked), and the active
+ *   year is never moved by a click here. The button shows the VIEWED year,
+ *   with a "শুধু দেখা" mark while a past year is on screen; the list marks
+ *   the active year ("সক্রিয়"), the viewed year ("দেখছেন") and past years
+ *   ("লক") — never a future year.
  * - The "new year" form is the ONLY path that activates a year: it creates
  *   the session and then calls `onSelect` (ensure + `saveProfile`), exactly
  *   as before. It is hidden while a past year is being viewed — creating a
@@ -166,6 +168,9 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
             {years.map((year) => {
               const isActive = year === normalizeSessionYear(activeYear);
               const isViewed = year === shownYear;
+              // A past year is locked forever (its work is finished); the next
+              // year is never locked — only past years get the "লক" mark.
+              const isPast = Number(year) < Number(normalizeSessionYear(activeYear));
               return (
                 <li key={year}>
                   <button
@@ -185,6 +190,8 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
                       <span className="badge bg-brand-100 text-brand-800">সক্রিয়</span>
                     ) : isViewed ? (
                       <span className="badge bg-amber-100 text-amber-800">দেখছেন</span>
+                    ) : isPast ? (
+                      <span className="badge bg-slate-200 text-slate-700">লক</span>
                     ) : (
                       <span className="text-[10px] font-medium text-slate-400">নির্বাচন করুন</span>
                     )}

@@ -35,6 +35,7 @@ import {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  isYearReadOnly,
   januaryStatus,
   buildAutoDecisions,
   destinationClassOf,
@@ -126,11 +127,14 @@ export function SchoolDataProvider({ children }) {
   /**
    * View year vs active year (বার্ষিক উত্তরণ):
    *
-   * - `activeYear` is the school's WORKING year (`profile.academicYear`) — the
-   *   only year anything may be written into;
+   * - `activeYear` is the school's WORKING year (`profile.academicYear`);
    * - `viewYear` is the year on screen. By default it follows the active year;
-   *   picking a past year in the Topbar pins the view there, and the whole app
-   *   becomes read-only (`isReadOnly`) until the user returns.
+   *   picking another year in the Topbar pins the view there.
+   * - Only a PAST year is read-only (`isReadOnly`): its work is finished, so
+   *   it shows "কার্যক্রম সম্পূর্ণ" in black, colourless text and nothing in
+   *   it can be edited. The active year AND any FUTURE year stay open and
+   *   editable — the next year is where new work continues, so it must never
+   *   be locked. Years compare as numbers, never as strings.
    *
    * `viewYearOverride === null` means "follow the active year". No year is ever
    * hard-coded here — the next year always derives from `activeYear`.
@@ -147,7 +151,7 @@ export function SchoolDataProvider({ children }) {
   useEffect(() => {
     if (viewYearOverride && viewYearOverride === activeYear) setViewYearOverride(null);
   }, [viewYearOverride, activeYear]);
-  const isReadOnly = viewYear !== activeYear;
+  const isReadOnly = isYearReadOnly(viewYear, activeYear);
   const isReadOnlyRef = useRef(isReadOnly);
   isReadOnlyRef.current = isReadOnly;
 
@@ -165,15 +169,32 @@ export function SchoolDataProvider({ children }) {
   const autoPromotionRanRef = useRef(false);
 
   /**
-   * `true` when a class is frozen: the whole year is read-only, or this class's
-   * year-end promotion is recorded as complete. The archive pseudo-class is
-   * never locked by promotion (its own rules apply).
+   * Promotion log of the year ON SCREEN. `viewedPromotionState` is subscribed
+   * below whenever the viewed year differs from the active year; when the two
+   * are the same year this is simply the active year's log. Class locks, the
+   * modal's completion panels and the "X/৬ শ্রেণি সম্পূর্ণ" strip all read
+   * THIS — never the active year's log directly — so a class promoted in the
+   * viewed year stays locked there, and a class that only exists (open) in
+   * the next year is never locked by the active year's log. The January
+   * logic keeps reading the ACTIVE year's log only.
+   */
+  const [viewedPromotionState, setViewedPromotionState] = useState(() => normalizePromotionState(null));
+  const [viewedPromotionStateLoaded, setViewedPromotionStateLoaded] = useState(false);
+  const viewPromotionState = viewYear === activeYear ? promotionState : viewedPromotionState;
+
+  /**
+   * `true` when a class is frozen: the whole year is read-only (a past year),
+   * or this class's year-end promotion is recorded as complete in the VIEWED
+   * year's log. A promoted class stays locked forever — the completion record
+   * is only ever removed by the guarded undo, never by a year change, a
+   * reload, or the January auto-run. The archive pseudo-class is never locked
+   * by promotion (its own rules apply).
    */
   const isClassLocked = useCallback((classId) => {
     if (!classId || classId === 'archive') return false;
     if (isReadOnly) return true;
-    return isClassPromotionComplete(promotionState, classId);
-  }, [isReadOnly, promotionState]);
+    return isClassPromotionComplete(viewPromotionState, classId);
+  }, [isReadOnly, viewPromotionState]);
   const isClassLockedRef = useRef(isClassLocked);
   isClassLockedRef.current = isClassLocked;
   /** Writes are allowed only for a manager in the ACTIVE year. */
@@ -304,8 +325,8 @@ export function SchoolDataProvider({ children }) {
 
   /* ---------------------------------------------------------------- *
    * Promotion state — one year's log, live from the ACTIVE year.
-   * The viewed year never matters here: a past year is read-only, so every
-   * class is locked by `isReadOnly` alone. The location is remembered again
+   * This subscription drives the January logic and the active-year locks,
+   * and must never follow the viewed year. The location is remembered again
    * here so the promotion path resolves even if this effect runs first.
    * ---------------------------------------------------------------- */
   useEffect(() => {
@@ -322,17 +343,17 @@ export function SchoolDataProvider({ children }) {
   }, [schoolRef, schoolId, activeYear]);
 
   /* ---------------------------------------------------------------- *
-   * Viewed-year promotion state — ONLY for the "কার্যক্রম সম্পূর্ণ" label.
+   * Viewed-year promotion state — the log of the year ON SCREEN.
    * The active-year subscription above drives the January logic and must
-   * never follow the viewed year; but a past year can be complete or not
-   * (a year may have been left by creating a new year manually, or a class
-   * may have been reopened by undo after the year advanced), and the banner
-   * must say "কার্যক্রম সম্পূর্ণ" only when THIS year's promotion really
-   * is complete. A live subscription keeps it honest if another device
-   * writes; a past year never changes under this teacher's hands.
+   * never follow the viewed year; but the viewed year can be complete or
+   * not (a year may have been left by creating a new year manually, or a
+   * class may have been reopened by undo after the year advanced), and the
+   * banner must say "কার্যক্রম সম্পূর্ণ" only when THIS year's promotion
+   * really is complete. The same log also drives the viewed year's class
+   * locks and the "X/৬ শ্রেণি সম্পূর্ণ" strip — a future year has its own
+   * log, so its classes are never locked by the active year's log. A live
+   * subscription keeps it honest if another device writes.
    * ---------------------------------------------------------------- */
-  const [viewedPromotionState, setViewedPromotionState] = useState(() => normalizePromotionState(null));
-  const [viewedPromotionStateLoaded, setViewedPromotionStateLoaded] = useState(false);
   useEffect(() => {
     if (viewYear === activeYear || !schoolRef || !schoolId) {
       setViewedPromotionState(normalizePromotionState(null));
@@ -727,7 +748,14 @@ export function SchoolDataProvider({ children }) {
       return { ...empty, reason: 'invalid-class' };
     }
     if (!canWriteTenant || isReadOnlyRef.current) return { ...empty, reason: 'read-only' };
-    if (isClassPromotionComplete(promotionStateRef.current, fromClassId)) {
+    // The "already complete" guard must read the SOURCE year's log, not the
+    // active year's: promoting a class in a viewed future year is refused
+    // when THAT year already completed it, and is NOT refused because the
+    // active year's same class happens to be complete.
+    const sourceState = sourceYear === activeYear
+      ? promotionStateRef.current
+      : await readPromotionState(schoolId, sourceYear);
+    if (isClassPromotionComplete(sourceState, fromClassId)) {
       return { ...empty, reason: 'already-complete' };
     }
     // 1. Move the roster. The profile year stays put on purpose — one class must
@@ -783,7 +811,11 @@ export function SchoolDataProvider({ children }) {
     //    is only the fallback when that read comes back empty — a stale local
     //    roster must never activate the year while a class still has pupils.
     const freshState = await readPromotionState(schoolId, sourceYear);
-    setPromotionState(freshState);
+    // Refresh the log that owns this promotion — the active year's log when
+    // promoting the active year, the viewed year's log otherwise. Writing the
+    // source year's state into the active year's slot would corrupt it.
+    if (sourceYear === activeYear) setPromotionState(freshState);
+    else setViewedPromotionState(freshState);
     let counts = {};
     try {
       const { students: sourceRoster } = await readYearRoster(schoolId, sourceYear);
@@ -794,7 +826,11 @@ export function SchoolDataProvider({ children }) {
     if (!Object.keys(counts).length) counts = classStudentCounts(datasetRef.current.students);
     const yearComplete = isPromotionCompleteForYear(freshState, counts);
     let yearActivated = false;
-    if (yearComplete) {
+    // Activation belongs to the ACTIVE year only: completing a future year
+    // early must never skip it as the active year — it becomes active when
+    // the year before it completes, and only then may its own completion
+    // activate the year after it.
+    if (yearComplete && sourceYear === activeYear) {
       const activation = await saveProfile({ academicYear: targetYear });
       yearActivated = activation?.synced === true;
     }
@@ -808,9 +844,14 @@ export function SchoolDataProvider({ children }) {
    * removed. The active year is left exactly as it is. The service refuses with
    * a Bangla message when undoing would destroy newer data (new admission,
    * next-year marks/attendance, or an edited pupil).
+   *
+   * This is the ONLY way a promoted class ever reopens — nothing else in the
+   * app removes a completion record: not a year change, not a reload, not the
+   * January auto-run. A promoted class is locked forever unless the teacher
+   * deliberately undoes it here, with the safety check.
    */
-  const undoClassPromotion = useCallback(async (classId) => {
-    const sourceYear = activeYear;
+  const undoClassPromotion = useCallback(async (classId, year = activeYear) => {
+    const sourceYear = normalizeSessionYear(year, activeYear);
     const targetYear = nextSessionYear(sourceYear);
     if (!schoolId || !classId || !canWriteTenant || isReadOnlyRef.current) {
       return { synced: false, reason: 'read-only' };
@@ -820,7 +861,10 @@ export function SchoolDataProvider({ children }) {
       { timeoutMs: 15000 },
     );
     if (result?.synced) {
-      setPromotionState(await readPromotionState(schoolId, sourceYear));
+      // Refresh the log that owned this promotion — the active year's log when
+      // undoing the active year, the viewed year's log otherwise.
+      if (sourceYear === activeYear) setPromotionState(await readPromotionState(schoolId, sourceYear));
+      else setViewedPromotionState(await readPromotionState(schoolId, sourceYear));
     }
     return result;
   }, [schoolId, activeYear, canWriteTenant, runCloudSave]);
@@ -834,6 +878,21 @@ export function SchoolDataProvider({ children }) {
   const promotionCompleted = useMemo(
     () => completedClassIds(promotionState),
     [promotionState],
+  );
+
+  /**
+   * The same two lists for the year ON SCREEN (the "X/৬ শ্রেণি সম্পূর্ণ" strip
+   * and the modal read these). The counts come from the viewed partition's
+   * roster, so they always describe the year on screen — never the active
+   * year's log mixed with another year's roster.
+   */
+  const viewPromotionPending = useMemo(
+    () => pendingPromotionClasses(viewPromotionState, classStudentCounts(dataset.students)),
+    [viewPromotionState, dataset.students],
+  );
+  const viewPromotionCompleted = useMemo(
+    () => completedClassIds(viewPromotionState),
+    [viewPromotionState],
   );
 
   /**
@@ -859,12 +918,16 @@ export function SchoolDataProvider({ children }) {
    * `null` when there is nothing to warn about.
    */
   const januaryWarning = useMemo(() => {
+    // The warning belongs to the ACTIVE year only: its pending list is built
+    // from the active year's log + roster, so it must never be computed while
+    // another year's roster is on screen.
+    if (viewYear !== activeYear) return null;
     if (!promotionStateLoaded) return null;
     const status = januaryStatus(activeYear);
     if (!status.isWarningMonth && !status.isAutoDue) return null;
     if (!promotionPending.length) return null;
     return { ...status, pendingClasses: promotionPending, pendingCount: promotionPending.length };
-  }, [promotionStateLoaded, promotionState, activeYear, promotionPending]);
+  }, [viewYear, promotionStateLoaded, promotionState, activeYear, promotionPending]);
 
   /* ---------------------------------------------------------------- *
    * January auto-promotion — once per session, on load.
@@ -882,6 +945,10 @@ export function SchoolDataProvider({ children }) {
     if (!promotionStateLoaded || hydrating) return;
     if (!schoolId || !schoolRef || !canWriteTenant) return;
     if (isReadOnly) return;
+    // The auto-run belongs to the ACTIVE year only: its pending list and its
+    // decisions are built from the active year's roster. Running it while
+    // another year's roster is on screen would promote the wrong pupils.
+    if (viewYear !== activeYear) return;
     const status = januaryStatus(activeYear);
     if (!status.isAutoDue) return;
     if (promotionState.auto) return;
@@ -914,7 +981,7 @@ export function SchoolDataProvider({ children }) {
     })().catch(() => {});
   }, [
     promotionStateLoaded, hydrating, schoolId, schoolRef, canWriteTenant, isReadOnly,
-    activeYear, promotionState, dataset.students, getStudentResult, advanceClassYear, user?.uid,
+    viewYear, activeYear, promotionState, dataset.students, getStudentResult, advanceClassYear, user?.uid,
   ]);
 
 
@@ -963,6 +1030,9 @@ export function SchoolDataProvider({ children }) {
       promotionState,
       promotionPending,
       promotionCompleted,
+      viewPromotionState,
+      viewPromotionPending,
+      viewPromotionCompleted,
       januaryWarning,
       autoPromotionNotice,
       advanceClassYear,
@@ -1030,6 +1100,9 @@ export function SchoolDataProvider({ children }) {
       promotionState,
       promotionPending,
       promotionCompleted,
+      viewPromotionState,
+      viewPromotionPending,
+      viewPromotionCompleted,
       januaryWarning,
       autoPromotionNotice,
       advanceClassYear,

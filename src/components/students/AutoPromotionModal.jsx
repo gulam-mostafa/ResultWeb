@@ -162,7 +162,7 @@ export default function AutoPromotionModal({
    * action instead of the execute flow — it can never be promoted twice.
    */
   promotionState = null,
-  /** `async (classId) => {synced, message?}` — undoes one class's promotion. */
+  /** `async (classId, year) => {synced, message?}` — undoes one class's promotion from the given year (the year on screen). */
   onUndoClass = null,
 }) {
   const [classId, setClassId] = useState('c5');
@@ -204,7 +204,10 @@ export default function AutoPromotionModal({
       return;
     }
     setUndoBusy(true);
-    const result = await onUndoClass(classId);
+    // Undo runs in the year on screen (currentYear) — never the active year
+    // by default: undoing a future year's promotion must not touch the
+    // active year's classes.
+    const result = await onUndoClass(classId, currentYear);
     setUndoBusy(false);
     setUndoArmed(false);
     if (result?.synced) {

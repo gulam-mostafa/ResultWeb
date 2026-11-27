@@ -37,6 +37,7 @@ import {
   pendingPromotionClasses,
   isPromotionCompleteForYear,
   lockedViewClass,
+  isYearReadOnly,
   yearLockBannerText,
   januaryStatus,
   annualPassOf,
@@ -331,6 +332,16 @@ assert.ok(withAuto.auto?.at, 'auto-run marker recorded');
 assert.equal(withAuto.auto.by, 'system');
 
 /* ------------------------------------------------------------------ *
+ * §19.5b — a promoted class locks FOREVER (until guarded undo).
+ * The c3 record is still there on a fresh re-read (a reload), and the
+ * January auto marker never unlocks a class either — the only code path
+ * that removes a completion record is the guarded undo (§19.7).
+ * ------------------------------------------------------------------ */
+const rereadState = await readPromotionState(SCHOOL, YEAR);
+assert.equal(isClassPromotionComplete(rereadState, 'c3'), true, 'a fresh re-read (reload) keeps the source class locked');
+assert.equal(isClassPromotionComplete(withAuto, 'c3'), true, 'the January auto marker never unlocks a class');
+
+/* ------------------------------------------------------------------ *
  * §19.6 — undo safety: every block reason.
  * ------------------------------------------------------------------ */
 const { students: nextYearStudents } = await readYearRoster(SCHOOL, NEXT);
@@ -409,4 +420,28 @@ assert.equal(repromoted.synced, true, 're-promotion after undo should sync');
 assert.equal(at(`${nextPath}/students/class-4/ক/STU-2031-0002`).roll, 1, 're-promoted rolls match merit order');
 assert.equal(at(`${BASE}/profile`).academicYear, YEAR, 'profile year still 2031');
 
-console.log('PASS — annual promotion (2031→2032): year-agnostic helpers, January dates, per-class lock, merit rolls + section override, undo safety + undo + re-promotion, কার্যক্রম সম্পূর্ণ label + locked-view treatment');
+/* ------------------------------------------------------------------ *
+ * §19.8 — only PAST years are read-only; the next year stays open.
+ * ------------------------------------------------------------------ */
+// (a) The read-only rule: past year locked, active + future years open.
+assert.equal(isYearReadOnly(NEXT, YEAR), false, 'next year (2032) is NOT read-only while 2031 is active');
+assert.equal(isYearReadOnly('2030', YEAR), true, 'past year (2030) is read-only');
+assert.equal(isYearReadOnly(YEAR, YEAR), false, 'active year is not read-only');
+assert.equal(isYearReadOnly('২০৩২', '২০৩১'), false, 'Bangla digits: next year is open');
+assert.equal(isYearReadOnly('২০৩০', '২০৩১'), true, 'Bangla digits: past year is locked');
+assert.equal(isYearReadOnly('', YEAR), false, 'unparseable viewed year never locks');
+assert.equal(isYearReadOnly(YEAR, ''), false, 'unparseable active year never locks');
+
+// (b) The destination class is OPEN in the next year: the next year's log
+// has no completion records at all, so its classes are never locked by the
+// source year's promotion.
+const nextState = await readPromotionState(SCHOOL, NEXT);
+assert.deepEqual(completedClassIds(nextState), [], 'no class is complete in the next year yet');
+assert.equal(isClassPromotionComplete(nextState, 'c4'), false, 'destination class (2032 class-4) is open');
+assert.equal(isPromotionCompleteForYear(nextState, { c3: 1, c4: 2 }), false, 'the next year is not complete — its work continues');
+
+// (c) The January logic keys off the ACTIVE year only, never the viewed year.
+assert.equal(januaryStatus(YEAR, new Date(2032, 1, 1)).isAutoDue, true, 'Jan logic for active 2031: auto due 1 Feb 2032');
+assert.equal(januaryStatus(NEXT, new Date(2032, 1, 1)).isAutoDue, false, 'same date is NOT auto-due for 2032 (its target is 2033)');
+
+console.log('PASS — annual promotion (2031→2032): year-agnostic helpers, January dates, per-class lock, merit rolls + section override, undo safety + undo + re-promotion, কার্যক্রম সম্পূর্ণ label + locked-view treatment, past-year-only read-only + forever-locked source class + open next year');

@@ -137,6 +137,21 @@ export const isPromotionCompleteForYear = (state, counts = {}) =>
 export const lockedViewClass = (isLocked) => (isLocked ? 'locked-view' : '');
 
 /**
+ * `true` only for a PAST year: a viewed year older than the school's active
+ * year is locked (read-only). The active year itself and any FUTURE year are
+ * open — the next year is where new work continues, so it must never be
+ * locked. Years compare as NUMBERS after `normalizeSessionYear` (Bangla
+ * digits become ASCII first), never as strings. An unparseable year never
+ * locks anything: the safe default is editable.
+ */
+export function isYearReadOnly(viewYear, activeYear) {
+  const viewed = Number(normalizeSessionYear(viewYear));
+  const active = Number(normalizeSessionYear(activeYear));
+  if (!viewed || !active) return false;
+  return viewed < active;
+}
+
+/**
  * The read-only banner text for a viewed year. A finished year says
  * "কার্যক্রম সম্পূর্ণ"; a merely locked (not yet complete) year keeps the
  * older wording. The year number comes from the caller (activeYear /
@@ -514,6 +529,7 @@ export default {
   pendingPromotionClasses,
   isPromotionCompleteForYear,
   lockedViewClass,
+  isYearReadOnly,
   yearLockBannerText,
   januaryStatus,
   annualPassOf,

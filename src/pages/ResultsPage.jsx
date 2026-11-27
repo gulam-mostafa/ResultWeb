@@ -56,6 +56,7 @@ export default function ResultsPage() {
     schoolProfile,
     schoolId,
     activeYear,
+    viewYear,
     getResultConfig,
     getStudentResult,
     getTermResult,
@@ -72,7 +73,7 @@ export default function ResultsPage() {
     executePromotion,
     advanceClassYear,
     undoClassPromotion,
-    promotionState,
+    viewPromotionState,
     isReadOnly,
     isClassLocked,
     saveResultConfig,
@@ -303,9 +304,11 @@ export default function ResultsPage() {
    */
   const handleAdvanceYear = useCallback(async (payload = {}) => {
     setYearNotice(null);
+    // Promotion always runs from the year ON SCREEN: viewing the next year
+    // promotes that year into the year after it — never the active year.
     const result = await advanceClassYear?.({
-      year: payload.year || activeYear,
-      nextYear: payload.nextYear || nextSessionYear(activeYear),
+      year: payload.year || viewYear,
+      nextYear: payload.nextYear || nextSessionYear(viewYear),
       decisions: payload.decisions ?? [],
       fromClassId: payload.fromClassId || '',
     });
@@ -333,7 +336,7 @@ export default function ResultsPage() {
     });
     toast.success('সংরক্ষণ হয়েছে');
     return result;
-  }, [advanceClassYear, activeYear]);
+  }, [advanceClassYear, viewYear]);
 
   /* ---------------------------------------------------------------- *
    * Excel: download (direct — 6 sheets, all classes) / upload (strict, all
@@ -951,10 +954,10 @@ export default function ResultsPage() {
         executePromotion(decisions, options);
         toast.success('সংরক্ষণ হয়েছে');
       }}
-      currentYear={activeYear}
-      nextYear={nextSessionYear(activeYear)}
+      currentYear={viewYear}
+      nextYear={nextSessionYear(viewYear)}
       onAdvanceYear={handleAdvanceYear}
-      promotionState={promotionState}
+      promotionState={viewPromotionState}
       onUndoClass={undoClassPromotion}
     />
   </>;

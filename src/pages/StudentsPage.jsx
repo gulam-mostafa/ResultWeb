@@ -29,7 +29,7 @@ import { matchesStudentSearch } from '../utils/studentSearch.js';
 import { nextSessionYear } from '../services/database/sessionService.js';
 
 export default function StudentsPage() {
-  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, viewYear, isReadOnly, isClassLocked, promotionState, promotionPending, promotionCompleted, januaryWarning, autoPromotionNotice, advanceClassYear, undoClassPromotion, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection, isHydrating } = useSchoolData();
+  const { students, studentsByClass, sectionCounts, marks, schoolId, activeYear, viewYear, isReadOnly, isClassLocked, viewPromotionState, viewPromotionPending, viewPromotionCompleted, januaryWarning, autoPromotionNotice, advanceClassYear, undoClassPromotion, addStudent, importStudents, updateStudent, archiveStudent, restoreStudent, getStudentResult, getStudentClassRank, getClassRankMap, getTermResult, getClassAnalytics, getResultConfig, getRemark, executePromotion, getSectionsOfClass, getStudentsOfSection, addSection, renameSection, removeSection, isHydrating } = useSchoolData();
   const { canManageStudents } = useAuth();
   const toast = useToast();
   const [tab, setTab] = useState('pre');
@@ -195,9 +195,11 @@ export default function StudentsPage() {
    * result therefore starts empty and displays `০০` / `ফলাফল নেই`.
    */
   const advanceYear = async (payload = {}) => {
+    // Promotion always runs from the year ON SCREEN: viewing the next year
+    // promotes that year into the year after it — never the active year.
     const result = await advanceClassYear?.({
-      year: payload.year || activeYear,
-      nextYear: payload.nextYear || nextSessionYear(activeYear),
+      year: payload.year || viewYear,
+      nextYear: payload.nextYear || nextSessionYear(viewYear),
       decisions: payload.decisions ?? [],
       fromClassId: payload.fromClassId || '',
     });
@@ -341,11 +343,11 @@ export default function StudentsPage() {
     {(januaryWarning || autoPromotionNotice) && canManageStudents && !isReadOnly ? (
       <PromotionJanuaryWarning warning={januaryWarning} autoNotice={autoPromotionNotice} className="mb-3" />
     ) : null}
-    {!isReadOnly && promotionCompleted.length > 0 ? (
+    {!isReadOnly && viewPromotionCompleted.length > 0 ? (
       <p role="status" className="mb-3 flex flex-wrap items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
-        <span>বার্ষিক উত্তরণ: {toBanglaNumber(promotionCompleted.length)}/৬ শ্রেণি সম্পূর্ণ</span>
-        {promotionPending.length ? (
-          <span>— বাকি: {promotionPending.map(getClassName).join(' · ')}</span>
+        <span>বার্ষিক উত্তরণ: {toBanglaNumber(viewPromotionCompleted.length)}/৬ শ্রেণি সম্পূর্ণ</span>
+        {viewPromotionPending.length ? (
+          <span>— বাকি: {viewPromotionPending.map(getClassName).join(' · ')}</span>
         ) : (
           <span>— সব শ্রেণি সম্পূর্ণ</span>
         )}
@@ -435,10 +437,10 @@ export default function StudentsPage() {
         executePromotion(decisions, options);
         toast.success('সংরক্ষণ হয়েছে');
       }}
-      currentYear={activeYear}
-      nextYear={nextSessionYear(activeYear)}
+      currentYear={viewYear}
+      nextYear={nextSessionYear(viewYear)}
       onAdvanceYear={advanceYear}
-      promotionState={promotionState}
+      promotionState={viewPromotionState}
       onUndoClass={undoClassPromotion}
     />
     <ExcelDownloadWarningModal
