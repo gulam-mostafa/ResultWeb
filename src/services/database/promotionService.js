@@ -36,6 +36,7 @@
  *    where the promotion put them.
  */
 import { CLASS_LEVELS, NEXT_CLASS_MAP } from '../../utils/constants.js';
+import { toBanglaNumber } from '../../utils/banglaNumberFormatter.js';
 import { dbPaths, normalizeSessionYear } from './dbPaths.js';
 import {
   cleanForCloud,
@@ -126,6 +127,27 @@ export function pendingPromotionClasses(state, counts = {}) {
 /** `true` when every class is complete or empty — the year may advance. */
 export const isPromotionCompleteForYear = (state, counts = {}) =>
   pendingPromotionClasses(state, counts).length === 0;
+
+/**
+ * Locked-view CSS class for a finished year or a finished class.
+ * The class itself is only a marker — the monochrome treatment lives in
+ * `src/index.css` (`.locked-view`), so a locked year and a locked class look
+ * exactly the same: black text, no colour anywhere (নিষ্ক্রিয়).
+ */
+export const lockedViewClass = (isLocked) => (isLocked ? 'locked-view' : '');
+
+/**
+ * The read-only banner text for a viewed year. A finished year says
+ * "কার্যক্রম সম্পূর্ণ"; a merely locked (not yet complete) year keeps the
+ * older wording. The year number comes from the caller (activeYear /
+ * viewYear) — never hard-coded.
+ */
+export function yearLockBannerText({ year, isComplete }) {
+  const y = toBanglaNumber(year ?? '');
+  return isComplete
+    ? `${y} সালের কার্যক্রম সম্পূর্ণ — শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।`
+    : `${y} সালের তথ্য দেখছেন — এই সালটি লক করা, শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।`;
+}
 
 /**
  * January rollover status for an active year — pure date logic, no hard-coded year.
@@ -491,6 +513,8 @@ export default {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  lockedViewClass,
+  yearLockBannerText,
   januaryStatus,
   annualPassOf,
   buildAutoDecisions,

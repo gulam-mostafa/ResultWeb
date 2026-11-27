@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { UserPlus, ArrowUpRight, Sparkles, RotateCcw, Search, FileSpreadsheet, Download, Upload } from 'lucide-react';
+import { UserPlus, ArrowUpRight, Sparkles, RotateCcw, Search, FileSpreadsheet, Download, Upload, Lock } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -62,6 +62,14 @@ export default function StudentsPage() {
 
   const classStudents = studentsByClass[tab] ?? [];
   const visibleStudents = sectioned ? getStudentsOfSection(tab, activeSection) : classStudents;
+  /**
+   * A finished class (promotion complete) shows monochrome + a
+   * "কার্যক্রম সম্পূর্ণ" mark. Only in the ACTIVE year: in a past year the
+   * whole shell is already locked-view and the year banner speaks for it,
+   * and `isClassLocked` there is true for every class whether or not its
+   * own promotion finished. The archive tab is never class-locked.
+   */
+  const tabLocked = sectioned && !isReadOnly && isClassLocked(tab);
   /**
    * Roster search (topbar ➔ `/students?q=…`). It filters the current class + শাখা list
    * by name OR any profile field — father's/mother's name, roll, phone (father/mother/
@@ -368,20 +376,27 @@ export default function StudentsPage() {
     ) : null}
     <Card padded={false} className="min-w-0 p-4 sm:p-6">
       <ClassTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setSection(DEFAULT_SECTION_ID); setDemoMessage(''); }} counts={counts} />
-      {sectioned && <SectionSelect
-        value={activeSection}
-        onChange={setSection}
-        options={sections}
-        counts={sectionCounts[tab] ?? {}}
-        total={visibleCount}
-        canManage={canManageStudents && !isReadOnly && !isClassLocked(tab)}
-        onAddSection={(label) => addSection(tab, label)}
-        onRenameSection={(from, to) => renameSection(tab, from, to)}
-        onRemoveSection={(label) => removeSection(tab, label)}
-      />}
-      <StudentTable students={searchedStudents} canEdit={canManageStudents && !isReadOnly && !isClassLocked(tab)} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
-        onShowResult={setResultTarget} getStudentResult={getStudentResult}
-        onRestore={(student) => { setRestoring(student); setRestoreClassId(CLASS_LEVELS.some((item) => item.id === student.previousClassId) ? student.previousClassId : 'pre'); }} />
+      <div className={tabLocked ? 'locked-view' : undefined}>
+        {tabLocked ? (
+          <p role="status" className="mb-3 flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-900">
+            <Lock size={13} aria-hidden="true" /> এই শ্রেণির কার্যক্রম সম্পূর্ণ — শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।
+          </p>
+        ) : null}
+        {sectioned && <SectionSelect
+          value={activeSection}
+          onChange={setSection}
+          options={sections}
+          counts={sectionCounts[tab] ?? {}}
+          total={visibleCount}
+          canManage={canManageStudents && !isReadOnly && !isClassLocked(tab)}
+          onAddSection={(label) => addSection(tab, label)}
+          onRenameSection={(from, to) => renameSection(tab, from, to)}
+          onRemoveSection={(label) => removeSection(tab, label)}
+        />}
+        <StudentTable students={searchedStudents} canEdit={canManageStudents && !isReadOnly && !isClassLocked(tab)} isArchive={tab === 'archive'} onSelect={setSelected} onEdit={setEditing}
+          onShowResult={setResultTarget} getStudentResult={getStudentResult}
+          onRestore={(student) => { setRestoring(student); setRestoreClassId(CLASS_LEVELS.some((item) => item.id === student.previousClassId) ? student.previousClassId : 'pre'); }} />
+      </div>
     </Card>
     <AddStudentModal open={adding} onClose={() => setAdding(false)} onSave={saveStudent} defaultClass={tab === 'archive' ? 'pre' : tab} sectionOptions={sectioned ? sections : []} roster={students} />
     <AddStudentModal open={Boolean(editing)} onClose={() => setEditing(null)} onSave={saveStudent} student={editing} defaultClass={editing?.classId === 'archive' ? (editing?.previousClassId || 'pre') : (editing?.classId || tab)} onArchive={confirmArchive} sectionOptions={editing ? getSectionsOfClass(editing.classId === 'archive' ? (editing.previousClassId || 'pre') : editing.classId) : []} roster={students} getSectionsOfClass={getSectionsOfClass} />

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  ArrowUpRight, Download, FileSpreadsheet, FileText, Printer, Settings2, Sparkles, Upload,
+  ArrowUpRight, Download, FileSpreadsheet, FileText, Lock, Printer, Settings2, Sparkles, Upload,
 } from 'lucide-react';
 
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
@@ -673,7 +673,18 @@ export default function ResultsPage() {
             {isHydrating ? 'ডেটা লোড হচ্ছে…' : 'ফলাফল হিসাব হচ্ছে…'}
           </p>
         ) : null}
-        {isConsolidated ? (
+        {/*
+          A finished class (promotion complete, active year only) shows
+          monochrome + a "কার্যক্রম সম্পূর্ণ" mark. In a past year the whole
+          shell is already locked-view and the year banner speaks for it.
+        */}
+        <div className={!isReadOnly && isClassLocked(classId) ? 'locked-view' : undefined}>
+          {!isReadOnly && isClassLocked(classId) ? (
+            <p role="status" className="mb-3 flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-900">
+              <Lock size={13} aria-hidden="true" /> এই শ্রেণির কার্যক্রম সম্পূর্ণ — শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।
+            </p>
+          ) : null}
+          {isConsolidated ? (
           <ConsolidatedAnnualTable
             rows={classRows}
             weights={weights}
@@ -706,6 +717,7 @@ export default function ResultsPage() {
             saving={syncState === 'saving'}
           />
         )}
+        </div>
       </div>
 
       <div className="flex min-w-0 flex-wrap items-end justify-between gap-3 border-t border-slate-100 p-3 sm:p-4 dark:border-slate-800">

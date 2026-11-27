@@ -527,10 +527,10 @@ export default function AutoPromotionModal({
       {isClassComplete ? (
         <div
           role="status"
-          className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-900/20"
+          className="locked-view rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-900/20"
         >
           <p className="text-base font-extrabold text-emerald-900 dark:text-emerald-100">
-            এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে ✓
+            এই শ্রেণির কার্যক্রম সম্পূর্ণ ✓
           </p>
           <div className="mt-2 space-y-1 text-[12px] font-semibold leading-relaxed text-emerald-900 dark:text-emerald-100">
             <p>

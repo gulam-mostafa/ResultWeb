@@ -11,6 +11,10 @@
  *    pass rule / auto decisions (no I/O);
  *  - lock + completion helpers: empty class counts as complete, pending list,
  *    whole-year completion condition;
+ *  - "কার্যক্রম সম্পূর্ণ" label + locked-view treatment: a finished year says
+ *    কার্যক্রম সম্পূর্ণ (year from the caller, never hard-coded), an
+ *    incomplete locked year keeps the plain wording, locked year/class get
+ *    the monochrome treatment class, open year/class stay colourful;
  *  - RTDB round-trip: `markClassPromotionComplete` / `readPromotionState` /
  *    `markAutoPromotionDone` under `sessions/2031/meta/promotion`;
  *  - `autoPromoteClassDecisions`: stored annual grade decides (A ⇒ promote,
@@ -32,6 +36,8 @@ import {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  lockedViewClass,
+  yearLockBannerText,
   januaryStatus,
   annualPassOf,
   buildAutoDecisions,
@@ -181,6 +187,51 @@ assert.deepEqual(
   { c3: 3, c5: 2 },
   'archive rows are not counted',
 );
+
+/* ------------------------------------------------------------------ *
+ * §19.2b — "কার্যক্রম সম্পূর্ণ" label + locked-view treatment (pure).
+ * A finished year says "কার্যক্রম সম্পূর্ণ"; a merely locked year keeps
+ * the older wording. The treatment class is the single marker the CSS
+ * uses — a locked year and a locked class look exactly the same.
+ * ------------------------------------------------------------------ */
+const allCompleteState = normalizePromotionState({
+  classes: Object.fromEntries(
+    promotionClassIds().map((id) => [id, { completedAt: '2031-12-01T00:00:00.000Z', fromYear: YEAR, toYear: NEXT }]),
+  ),
+});
+assert.equal(
+  isPromotionCompleteForYear(allCompleteState, { pre: 2, c1: 3, c2: 1, c3: 3, c4: 4, c5: 2 }),
+  true,
+  'every class complete ⇒ the year is complete',
+);
+assert.equal(
+  isPromotionCompleteForYear(allCompleteState, { pre: 2, c1: 3 }),
+  true,
+  'empty classes still count as complete',
+);
+const onePendingState = normalizePromotionState({
+  classes: Object.fromEntries(
+    promotionClassIds()
+      .filter((id) => id !== 'c3')
+      .map((id) => [id, { completedAt: '2031-12-01T00:00:00.000Z', fromYear: YEAR, toYear: NEXT }]),
+  ),
+});
+assert.equal(
+  isPromotionCompleteForYear(onePendingState, { c3: 3, c5: 2 }),
+  false,
+  'one pending class ⇒ the year is NOT complete (no "কার্যক্রম সম্পূর্ণ")',
+);
+const completeBanner = yearLockBannerText({ year: YEAR, isComplete: true });
+assert.ok(completeBanner.includes('কার্যক্রম সম্পূর্ণ'), 'a finished year says কার্যক্রম সম্পূর্ণ');
+assert.ok(completeBanner.includes('২০৩১'), 'the banner year comes from the viewed year, not a hard-coded year');
+assert.ok(completeBanner.includes('শুধু দেখা যাবে'), 'a finished year is still view-only');
+const lockedBanner = yearLockBannerText({ year: YEAR, isComplete: false });
+assert.ok(lockedBanner.includes('লক করা'), 'an incomplete locked year keeps the plain locked wording');
+assert.ok(!lockedBanner.includes('কার্যক্রম সম্পূর্ণ'), 'an incomplete year must never claim কার্যক্রম সম্পূর্ণ');
+assert.ok(lockedBanner.includes('২০৩১'));
+assert.equal(lockedViewClass(true), 'locked-view', 'a locked year/class gets the monochrome treatment');
+assert.equal(lockedViewClass(false), '', 'an open year/class stays colourful');
+assert.equal(lockedViewClass(undefined), '', 'unknown is never treated as locked');
 
 /* ------------------------------------------------------------------ *
  * §19.3 — stored-grade auto decisions for class-5 (2031).
@@ -358,4 +409,4 @@ assert.equal(repromoted.synced, true, 're-promotion after undo should sync');
 assert.equal(at(`${nextPath}/students/class-4/ক/STU-2031-0002`).roll, 1, 're-promoted rolls match merit order');
 assert.equal(at(`${BASE}/profile`).academicYear, YEAR, 'profile year still 2031');
 
-console.log('PASS — annual promotion (2031→2032): year-agnostic helpers, January dates, per-class lock, merit rolls + section override, undo safety + undo + re-promotion');
+console.log('PASS — annual promotion (2031→2032): year-agnostic helpers, January dates, per-class lock, merit rolls + section override, undo safety + undo + re-promotion, কার্যক্রম সম্পূর্ণ label + locked-view treatment');

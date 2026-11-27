@@ -322,6 +322,31 @@ export function SchoolDataProvider({ children }) {
   }, [schoolRef, schoolId, activeYear]);
 
   /* ---------------------------------------------------------------- *
+   * Viewed-year promotion state — ONLY for the "কার্যক্রম সম্পূর্ণ" label.
+   * The active-year subscription above drives the January logic and must
+   * never follow the viewed year; but a past year can be complete or not
+   * (a year may have been left by creating a new year manually, or a class
+   * may have been reopened by undo after the year advanced), and the banner
+   * must say "কার্যক্রম সম্পূর্ণ" only when THIS year's promotion really
+   * is complete. A live subscription keeps it honest if another device
+   * writes; a past year never changes under this teacher's hands.
+   * ---------------------------------------------------------------- */
+  const [viewedPromotionState, setViewedPromotionState] = useState(() => normalizePromotionState(null));
+  const [viewedPromotionStateLoaded, setViewedPromotionStateLoaded] = useState(false);
+  useEffect(() => {
+    if (viewYear === activeYear || !schoolRef || !schoolId) {
+      setViewedPromotionState(normalizePromotionState(null));
+      setViewedPromotionStateLoaded(false);
+      return undefined;
+    }
+    rememberSchoolLocation(schoolRef);
+    return subscribePromotionState(schoolId, viewYear, (state) => {
+      setViewedPromotionState(state);
+      setViewedPromotionStateLoaded(true);
+    });
+  }, [schoolRef, schoolId, viewYear, activeYear]);
+
+  /* ---------------------------------------------------------------- *
    * Online / offline listener
    * ---------------------------------------------------------------- */
   useEffect(() => {
@@ -812,6 +837,21 @@ export function SchoolDataProvider({ children }) {
   );
 
   /**
+   * `true` when the VIEWED year's promotion is fully complete — every class
+   * complete or empty. Only then may the read-only banner say "কার্যক্রম
+   * সম্পূর্ণ"; an incomplete viewed year keeps the plain locked wording.
+   * The counts come from the viewed partition's roster (`dataset` follows
+   * `viewYear`), so an empty class counts as complete, exactly like the
+   * active-year rule. Unknown (not loaded yet) never claims complete.
+   */
+  const isViewYearComplete = useMemo(() => {
+    if (viewYear === activeYear) {
+      return promotionStateLoaded && isPromotionCompleteForYear(promotionState, classStudentCounts(dataset.students));
+    }
+    return viewedPromotionStateLoaded && isPromotionCompleteForYear(viewedPromotionState, classStudentCounts(dataset.students));
+  }, [viewYear, activeYear, promotionState, viewedPromotionState, promotionStateLoaded, viewedPromotionStateLoaded, dataset.students]);
+
+  /**
    * January warning for the Dashboard and the Promotion page: in January of the
    * target year ("promote now or it will happen automatically after 31 January"),
    * and it stays visible past 31 January while classes are still pending (the
@@ -918,6 +958,7 @@ export function SchoolDataProvider({ children }) {
       setViewYear,
       isReadOnly,
       isClassLocked,
+      isViewYearComplete,
       // annual promotion state
       promotionState,
       promotionPending,

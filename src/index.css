@@ -266,3 +266,257 @@
     background-size: 28px 28px;
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Locked year / locked class — নিষ্ক্রিয় (monochrome) চেহারা.
+ *
+ * A finished year (viewYear ≠ activeYear) or a finished class shows NO
+ * colour at all: blue links, coloured badges, buttons and accents all
+ * turn black (light mode) / near-white (dark mode) on neutral grey, so
+ * the screen reads as inactive at a glance. Applied by adding the
+ * `locked-view` class to a container (AppLayout shell when isReadOnly,
+ * one class's content when isClassLocked, the completed-class panel in
+ * the promotion modal).
+ *
+ * No `filter` is used on containers: a filter on an ancestor would
+ * become the containing block for `position: fixed` descendants (the
+ * pinned grid bar) and break their sticking. Everything here is a plain
+ * colour override with `!important`, scoped strictly to `.locked-view`.
+ * A grayscale filter is used ONLY on leaf media (canvas/img), which have
+ * no positioned descendants. Slate/white/transparent are already neutral
+ * and are left alone — the modal/sidebar backdrops (`bg-slate-900/…`)
+ * must stay dark. `dark:` variants are covered by the `html.dark` block
+ * below (attribute selectors match the `dark:` prefix in the class list).
+ * ------------------------------------------------------------------ */
+.locked-view ::selection {
+  background-color: #cbd5e1 !important;
+  color: #111827 !important;
+}
+
+/* Text: every coloured text utility turns near-black. */
+.locked-view [class*="text-brand"],
+.locked-view [class*="text-emerald"],
+.locked-view [class*="text-rose"],
+.locked-view [class*="text-sky"],
+.locked-view [class*="text-violet"],
+.locked-view [class*="text-amber"],
+.locked-view [class*="text-orange"],
+.locked-view [class*="text-blue"],
+.locked-view [class*="text-green"],
+.locked-view [class*="text-red"],
+.locked-view [class*="text-teal"],
+.locked-view [class*="text-indigo"],
+.locked-view [class*="text-purple"],
+.locked-view [class*="text-pink"],
+.locked-view [class*="text-yellow"],
+.locked-view [class*="text-lime"],
+.locked-view [class*="text-cyan"],
+.locked-view [class*="text-white"] {
+  color: #111827 !important;
+}
+
+/* Links stay recognisable without colour: black + underline. */
+.locked-view a {
+  color: #111827 !important;
+  text-decoration: underline;
+}
+
+/* Backgrounds: every coloured background utility turns light grey. */
+.locked-view [class*="bg-brand"],
+.locked-view [class*="bg-emerald"],
+.locked-view [class*="bg-rose"],
+.locked-view [class*="bg-sky"],
+.locked-view [class*="bg-violet"],
+.locked-view [class*="bg-amber"],
+.locked-view [class*="bg-orange"],
+.locked-view [class*="bg-blue"],
+.locked-view [class*="bg-green"],
+.locked-view [class*="bg-red"],
+.locked-view [class*="bg-teal"],
+.locked-view [class*="bg-indigo"],
+.locked-view [class*="bg-purple"],
+.locked-view [class*="bg-pink"],
+.locked-view [class*="bg-yellow"],
+.locked-view [class*="bg-lime"],
+.locked-view [class*="bg-cyan"],
+.locked-view [class*="bg-gradient"] {
+  background-color: #f1f5f9 !important;
+  background-image: none !important;
+}
+
+/* Coloured borders turn neutral grey. */
+.locked-view [class*="border-brand"],
+.locked-view [class*="border-emerald"],
+.locked-view [class*="border-rose"],
+.locked-view [class*="border-sky"],
+.locked-view [class*="border-violet"],
+.locked-view [class*="border-amber"],
+.locked-view [class*="border-orange"],
+.locked-view [class*="border-blue"],
+.locked-view [class*="border-green"],
+.locked-view [class*="border-red"],
+.locked-view [class*="border-teal"],
+.locked-view [class*="border-indigo"],
+.locked-view [class*="border-purple"],
+.locked-view [class*="border-pink"],
+.locked-view [class*="border-yellow"],
+.locked-view [class*="border-lime"],
+.locked-view [class*="border-cyan"] {
+  border-color: #cbd5e1 !important;
+}
+
+/* Focus rings turn grey. */
+.locked-view [class*="ring-"] {
+  --tw-ring-color: #94a3b8 !important;
+}
+
+/* Component classes that carry colour via @apply (no utility in the DOM). */
+.locked-view .btn-primary,
+.locked-view .btn-danger,
+.locked-view .btn-emerald {
+  background-color: #f1f5f9 !important;
+  background-image: none !important;
+  color: #111827 !important;
+  border-color: #cbd5e1 !important;
+}
+
+.locked-view .mark-cell-formative,
+.locked-view .mark-cell-summative,
+.locked-view .mark-cell-invalid,
+.locked-view .mark-group-head-formative,
+.locked-view .mark-group-head-summative,
+.locked-view .mark-group-head-result,
+.locked-view .mark-group-cell-formative,
+.locked-view .mark-group-cell-summative,
+.locked-view .mark-group-cell-result,
+.locked-view .table-base thead th.mark-group-head-formative,
+.locked-view .table-base thead th.mark-group-head-summative,
+.locked-view .table-base thead th.mark-group-head-result {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #111827 !important;
+}
+
+.locked-view .table-base tbody tr:hover {
+  background-color: #f1f5f9 !important;
+}
+
+/* Hover/focus must not flash colour back in. */
+.locked-view *:hover,
+.locked-view *:focus {
+  color: #111827 !important;
+}
+
+/* Charts and photos are drawn pixels — grayscale them as leaves. */
+.locked-view canvas,
+.locked-view img {
+  filter: grayscale(1) !important;
+}
+
+/* Dark mode: same treatment, near-white text on dark grey. */
+html.dark .locked-view ::selection {
+  background-color: #475569 !important;
+  color: #f1f5f9 !important;
+}
+
+html.dark .locked-view [class*="text-brand"],
+html.dark .locked-view [class*="text-emerald"],
+html.dark .locked-view [class*="text-rose"],
+html.dark .locked-view [class*="text-sky"],
+html.dark .locked-view [class*="text-violet"],
+html.dark .locked-view [class*="text-amber"],
+html.dark .locked-view [class*="text-orange"],
+html.dark .locked-view [class*="text-blue"],
+html.dark .locked-view [class*="text-green"],
+html.dark .locked-view [class*="text-red"],
+html.dark .locked-view [class*="text-teal"],
+html.dark .locked-view [class*="text-indigo"],
+html.dark .locked-view [class*="text-purple"],
+html.dark .locked-view [class*="text-pink"],
+html.dark .locked-view [class*="text-yellow"],
+html.dark .locked-view [class*="text-lime"],
+html.dark .locked-view [class*="text-cyan"],
+html.dark .locked-view [class*="text-white"] {
+  color: #f1f5f9 !important;
+}
+
+html.dark .locked-view a {
+  color: #f1f5f9 !important;
+}
+
+html.dark .locked-view [class*="bg-brand"],
+html.dark .locked-view [class*="bg-emerald"],
+html.dark .locked-view [class*="bg-rose"],
+html.dark .locked-view [class*="bg-sky"],
+html.dark .locked-view [class*="bg-violet"],
+html.dark .locked-view [class*="bg-amber"],
+html.dark .locked-view [class*="bg-orange"],
+html.dark .locked-view [class*="bg-blue"],
+html.dark .locked-view [class*="bg-green"],
+html.dark .locked-view [class*="bg-red"],
+html.dark .locked-view [class*="bg-teal"],
+html.dark .locked-view [class*="bg-indigo"],
+html.dark .locked-view [class*="bg-purple"],
+html.dark .locked-view [class*="bg-pink"],
+html.dark .locked-view [class*="bg-yellow"],
+html.dark .locked-view [class*="bg-lime"],
+html.dark .locked-view [class*="bg-cyan"],
+html.dark .locked-view [class*="bg-gradient"] {
+  background-color: #334155 !important;
+  background-image: none !important;
+}
+
+html.dark .locked-view [class*="border-brand"],
+html.dark .locked-view [class*="border-emerald"],
+html.dark .locked-view [class*="border-rose"],
+html.dark .locked-view [class*="border-sky"],
+html.dark .locked-view [class*="border-violet"],
+html.dark .locked-view [class*="border-amber"],
+html.dark .locked-view [class*="border-orange"],
+html.dark .locked-view [class*="border-blue"],
+html.dark .locked-view [class*="border-green"],
+html.dark .locked-view [class*="border-red"],
+html.dark .locked-view [class*="border-teal"],
+html.dark .locked-view [class*="border-indigo"],
+html.dark .locked-view [class*="border-purple"],
+html.dark .locked-view [class*="border-pink"],
+html.dark .locked-view [class*="border-yellow"],
+html.dark .locked-view [class*="border-lime"],
+html.dark .locked-view [class*="border-cyan"] {
+  border-color: #475569 !important;
+}
+
+html.dark .locked-view .btn-primary,
+html.dark .locked-view .btn-danger,
+html.dark .locked-view .btn-emerald {
+  background-color: #334155 !important;
+  background-image: none !important;
+  color: #f1f5f9 !important;
+  border-color: #475569 !important;
+}
+
+html.dark .locked-view .mark-cell-formative,
+html.dark .locked-view .mark-cell-summative,
+html.dark .locked-view .mark-cell-invalid,
+html.dark .locked-view .mark-group-head-formative,
+html.dark .locked-view .mark-group-head-summative,
+html.dark .locked-view .mark-group-head-result,
+html.dark .locked-view .mark-group-cell-formative,
+html.dark .locked-view .mark-group-cell-summative,
+html.dark .locked-view .mark-group-cell-result,
+html.dark .locked-view .table-base thead th.mark-group-head-formative,
+html.dark .locked-view .table-base thead th.mark-group-head-summative,
+html.dark .locked-view .table-base thead th.mark-group-head-result {
+  background-color: #1e293b !important;
+  border-color: #475569 !important;
+  color: #f1f5f9 !important;
+}
+
+html.dark .locked-view .table-base tbody tr:hover {
+  background-color: #334155 !important;
+}
+
+html.dark .locked-view *:hover,
+html.dark .locked-view *:focus {
+  color: #f1f5f9 !important;
+}
