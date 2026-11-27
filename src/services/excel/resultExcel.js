@@ -182,8 +182,91 @@ export const MARK_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: '
 export const DERIVED_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
 export const BAND_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
 
+/**
+ * ৫b ব্যাচের ওয়েব গ্রিডের রং (Tailwind) — এক্সেল শিটেও একই রং, যাতে
+ * গাঠনিক/সামষ্টিক চোখেই আলাদা বোঝা যায়। হেডার গাঢ় টিন্ট, নম্বরের সেল
+ * খুব হালকা টিন্ট; একক (split নয়) বিষয়ের জন্য নিরপেক্ষ স্লেট।
+ */
+export const FORMATIVE_HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } }; // sky-100
+export const SUMMATIVE_HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE9FE' } }; // violet-100
+export const SINGLE_HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; // slate-100
+export const FORMATIVE_CELL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F9FF' } }; // sky-50
+export const SUMMATIVE_CELL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F3FF' } }; // violet-50
+export const SINGLE_CELL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }; // slate-50
+/** হালকা টিন্টের হেডারে গাঢ় লেখা (সাদা লেখা পড়া যেত না)। */
+export const FORMATIVE_HEAD_FONT = { bold: true, size: 11, color: { argb: 'FF0C4A6E' } }; // sky-900
+export const SUMMATIVE_HEAD_FONT = { bold: true, size: 11, color: { argb: 'FF4C1D95' } }; // violet-900
+export const SINGLE_HEAD_FONT = { bold: true, size: 11, color: { argb: 'FF334155' } }; // slate-700
+/** গাঠনিক/সামষ্টিকের মাঝের ভাগ-রেখা — মাঝারি, নরম বেগুনি (গ্রিডের violet-400)। */
+export const DIVIDER_BORDER_COLOR = { argb: 'FFA78BFA' }; // violet-400
+
+/** গাঠনিক/সামষ্টিক/একক — কম্পোনেন্ট অনুযায়ী হেডার ও সেলের রং। */
+export function markComponentStyle(component) {
+  if (component === 'formative') {
+    return { headFill: FORMATIVE_HEAD_FILL, headFont: FORMATIVE_HEAD_FONT, cellFill: FORMATIVE_CELL_FILL };
+  }
+  if (component === 'summative') {
+    return { headFill: SUMMATIVE_HEAD_FILL, headFont: SUMMATIVE_HEAD_FONT, cellFill: SUMMATIVE_CELL_FILL };
+  }
+  return { headFill: SINGLE_HEAD_FILL, headFont: SINGLE_HEAD_FONT, cellFill: SINGLE_CELL_FILL };
+}
+
+/**
+ * এক সারির (এক শিক্ষার্থীর) মোট/GPA/গ্রেডের Excel ফর্মুলা — অ্যাপের ইঞ্জিনের
+ * (resultEngine.js) নিয়ম হুবহু ফর্মুলায় লেখা, যাতে এক্সেলে নম্বর বদলালেই
+ * মোট/GPA/গ্রেড নিজে আপডেট হয়:
+ *
+ * - বিষয়ের মোট = গাঠনিক + সামষ্টিক (একক বিষয়ে শুধু ওই এক কলাম); শতকরা হার =
+ *   ROUND(মোট / পূর্ণমান × ১০০, ২) — ইঞ্জিনের round2-এর মতো।
+ * - বিষয়ের গ্রেড পয়েন্ট: ≥৮০→৫, ≥৭০→৪, ≥৬০→৩.৫, ≥৫০→৩, ≥৪০→২, ≥৩৩→১, <৩৩→০
+ *   (GRADE_SCALE, constants.js)।
+ * - GPA = কোনো বিষয় পাস নম্বরের (spec.passMark, ডিফল্ট ৩৩) নিচে থাকলে ০.০০,
+ *   নইলে বিষয়গুলোর পয়েন্টের গড় (ROUND ২ দশমিক); কোনো নম্বর না থাকলে খালি।
+ * - গ্রেড = GPA ০ হলে F, নইলে সর্বমোট শতকরা হারের (মোট / সব বিষয়ের পূর্ণমান)
+ *   গ্রেড — ইঞ্জিন যেমন overall percentage থেকে গ্রেড নেয়।
+ *
+ * ফর্মুলা শুধু প্রান্তিক ট্যাবে (term1/term2/annual) বসে। বার্ষিক ফলাফল
+ * (consolidated) ট্যাবে নয় — সেখানে দেখানো মান ওজনযুক্ত (১৫%+১৫%+৭০%) ফলাফল,
+ * সেলগুলোর যোগফল নয়, তাই সেখানে অ্যাপের হিসাব করা স্ট্যাটিক মানই থাকে।
+ *
+ * @returns {{total:string, gpa:string, grade:string} | null}
+ */
+export function studentResultFormulas({ fields = [], passMark = 33, totalFullMarks = 0, rowNumber }) {
+  const list = fields ?? [];
+  const full = Number(totalFullMarks);
+  if (!list.length || !Number.isFinite(full) || full <= 0 || !Number.isFinite(Number(rowNumber))) return null;
+  const pass = Number(passMark) || 33;
+  // বিষয় অনুযায়ী ফিল্ড গুছানো — পূর্ণমান = কম্পোনেন্টগুলোর max-এর যোগফল
+  // (split বিষয়ে গাঠনিক+সামষ্টিক, একক বিষয়ে ওই একটাই)।
+  const bySubject = new Map();
+  list.forEach((field, index) => {
+    const group = bySubject.get(field.subjectId) ?? { fullMarks: 0, cells: [] };
+    group.fullMarks += Number(field.max) || 0;
+    group.cells.push(`${columnLetter(4 + index)}${rowNumber}`);
+    bySubject.set(field.subjectId, group);
+  });
+  const subjects = [...bySubject.values()].filter((group) => group.fullMarks > 0 && group.cells.length);
+  if (!subjects.length) return null;
+  const percents = subjects.map(
+    (group) => `ROUND((${group.cells.join('+')})/${group.fullMarks}*100,2)`,
+  );
+  const points = percents.map(
+    (pct) => `IF(${pct}>=80,5,IF(${pct}>=70,4,IF(${pct}>=60,3.5,IF(${pct}>=50,3,IF(${pct}>=40,2,IF(${pct}>=33,1,0))))))`,
+  );
+  const firstMark = columnLetter(4);
+  const lastMark = columnLetter(4 + list.length - 1);
+  const range = `${firstMark}${rowNumber}:${lastMark}${rowNumber}`;
+  const totalCol = columnLetter(4 + list.length);
+  const gpaCol = columnLetter(5 + list.length);
+  const total = `SUM(${range})`;
+  const gpa = `IF(COUNT(${range})=0,"",IF(OR(${percents.map((pct) => `${pct}<${pass}`).join(',')}),0,ROUND(AVERAGE(${points.join(',')}),2)))`;
+  const overallPct = `ROUND(${totalCol}${rowNumber}/${full}*100,2)`;
+  const grade = `IF(${gpaCol}${rowNumber}="","",IF(${gpaCol}${rowNumber}=0,"F",IF(${overallPct}>=80,"A+",IF(${overallPct}>=70,"A",IF(${overallPct}>=60,"A-",IF(${overallPct}>=50,"B",IF(${overallPct}>=40,"C",IF(${overallPct}>=33,"D","F")))))))`;
+  return { total, gpa, grade };
+}
+
 /** Builds ONE class sheet inside an ExcelJS workbook. */
-const addClassSheet = (workbook, spec, marks = {}, computed = {}) => {
+const addClassSheet = async (workbook, spec, marks = {}, computed = {}) => {
   const tab = tabById(spec.tabId);
   const columnCount = spec.headers.length;
   const lastLetter = columnLetter(columnCount - 1);
@@ -225,15 +308,34 @@ const addClassSheet = (workbook, spec, marks = {}, computed = {}) => {
   });
   // Row 8 stays blank.
 
-  // Row 9 — header, bold white on a brand fill.
+  // গাঠনিক/সামষ্টিকের মাঝের ভাগ-রেখা বসে প্রথম সামষ্টিক কলামের বাম ধারে
+  // (হেডার + নম্বরের সারি, দুই জায়গাতেই)। একক বিষয়ের শিটে ভাগ-রেখা নেই।
+  const numFormative = spec.fields.filter((field) => field.component === 'formative').length;
+  const numSummative = spec.fields.filter((field) => field.component === 'summative').length;
+  const firstSummativeCol = numFormative > 0 && numSummative > 0 ? 4 + numFormative : -1;
+  const borderFor = (colIndex) => (colIndex === firstSummativeCol
+    ? { ...THIN_BORDER, left: { style: 'medium', color: DIVIDER_BORDER_COLOR } }
+    : THIN_BORDER);
+  // বার্ষিক ফলাফল ট্যাবে সেলগুলো ওজনযুক্ত ফলাফল দেখায় (ইনপুট নয়) — সেখানে
+  // কোনো সেলই এডিট করা যাবে না; প্রান্তিক ট্যাবে শুধু নম্বরের সেল এডিট করা যায়।
+  const isConsolidated = tab.id === 'consolidated';
+
+  // Row 9 — header: পরিচয়/হিসাবের কলাম আগের মতো সবুজ; বিষয়ের কলামে
+  // কম্পোনেন্টের রং (গাঠনিক আকাশি, সামষ্টিক বেগুনি, একক স্লেট)।
   const headerRow = sheet.getRow(HEADER_ROW_INDEX + 1);
   spec.headers.forEach((header, index) => {
     const cell = headerRow.getCell(index + 1);
     cell.value = header;
-    cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
-    cell.fill = HEADER_FILL;
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    cell.border = THIN_BORDER;
+    cell.border = borderFor(index);
+    if (index >= 4 && index < 4 + spec.fields.length) {
+      const style = markComponentStyle(spec.fields[index - 4].component);
+      cell.fill = style.headFill;
+      cell.font = style.headFont;
+    } else {
+      cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
+      cell.fill = HEADER_FILL;
+    }
   });
   headerRow.height = 30;
 
@@ -244,12 +346,17 @@ const addClassSheet = (workbook, spec, marks = {}, computed = {}) => {
     const result = computed?.[student.id] ?? {};
     const cells = spec.fields.map((field) => {
       // Consolidated tab: the subject figure IS the weighted result (read-only sheet).
-      if (tab.id === 'consolidated') {
+      if (isConsolidated) {
         const subject = (result.subjects ?? []).find((item) => item.id === field.subjectId);
         return subject?.total == null ? '' : subject.total;
       }
       const value = currentCellValues(marks, student.id, field, tab);
       return value === null ? '' : value;
+    });
+    // প্রান্তিক ট্যাবে মোট/GPA/গ্রেড ফর্মুলা (নম্বর বদলালেই আপডেট হয়);
+    // বার্ষিক ফলাফলে অ্যাপের হিসাব করা স্ট্যাটিক মান (ওজনযুক্ত ফলাফল)।
+    const formulas = isConsolidated ? null : studentResultFormulas({
+      fields: spec.fields, passMark: spec.passMark, totalFullMarks: spec.fullMarks, rowNumber,
     });
     const values = [
       student.roll,
@@ -257,25 +364,29 @@ const addClassSheet = (workbook, spec, marks = {}, computed = {}) => {
       student.id,
       student.name,
       ...cells,
-      result.totalMarks ?? '',
-      result.gpa ?? '',
-      result.grade ?? '',
+      formulas ? { formula: formulas.total } : (result.totalMarks ?? ''),
+      formulas ? { formula: formulas.gpa } : (result.gpa ?? ''),
+      formulas ? { formula: formulas.grade } : (result.grade ?? ''),
     ];
     values.forEach((value, colIndex) => {
       const cell = row.getCell(colIndex + 1);
       cell.value = value;
-      cell.border = THIN_BORDER;
+      cell.border = borderFor(colIndex);
       cell.font = { size: 11 };
       if (colIndex === 0 || colIndex === 1) cell.alignment = { horizontal: 'center' };
       if (colIndex === 3) cell.font = { size: 11, bold: true };
-      // Mark cells (yellow) vs derived মোট/GPA/গ্রেড (grey); identity cells band.
+      // নম্বরের সেল: কম্পোনেন্টের রং; প্রান্তিক ট্যাবে শুধু এই সেলগুলোই
+      // আনলকড (এডিট করা যায়) — বাকি সব সেল শিট প্রটেকশনে লকড থাকে।
       if (colIndex >= 4 && colIndex < 4 + spec.fields.length) {
-        cell.fill = MARK_FILL;
+        cell.fill = markComponentStyle(spec.fields[colIndex - 4].component).cellFill;
         cell.alignment = { horizontal: 'center' };
+        if (!isConsolidated) cell.protection = { locked: false };
       } else if (colIndex >= 4 + spec.fields.length) {
+        // হিসাবের কলাম (মোট/GPA/গ্রেড) — লকড, ধূসর; GPA দুই দশমিক দেখায়।
         cell.fill = DERIVED_FILL;
         cell.alignment = { horizontal: 'center' };
         if (colIndex === 4 + spec.fields.length) cell.font = { size: 11, bold: true };
+        if (formulas && colIndex === 5 + spec.fields.length) cell.numFmt = '0.00';
       } else if (index % 2 === 1) {
         cell.fill = BAND_FILL;
       }
@@ -290,6 +401,10 @@ const addClassSheet = (workbook, spec, marks = {}, computed = {}) => {
     orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
   };
   sheet.printTitleRows = `${HEADER_ROW_INDEX + 1}:${HEADER_ROW_INDEX + 1}`;
+  // শিট প্রটেকশন — পাসওয়ার্ড ছাড়া (শিক্ষক আটকাবে না), যাতে ভুলে রোল/শাখা/
+  // আইডি/নাম/হেডার/হিসাবের কলাম বদলাতে না পারে। শুধু নম্বরের সেল আনলকড।
+  // ফিল্টার (autoFilter) চালু থাকে; সাজানো/সারি-কলাম ঢোকানো-মোছা বন্ধ থাকে।
+  await sheet.protect('', { autoFilter: true });
   return sheet;
 };
 
@@ -307,7 +422,9 @@ export async function buildResultWorkbook({ specs, spec, marks = {}, computed = 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'ResultWeb';
   workbook.created = new Date();
-  list.forEach((item) => addClassSheet(workbook, item, marks, computed));
+  for (const item of list) {
+    await addClassSheet(workbook, item, marks, computed);
+  }
   return workbook.xlsx.writeBuffer();
 }
 
@@ -336,7 +453,9 @@ export async function downloadResultExcel(options) {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // ডাউনলোড শেষ হওয়ার আগেই URL বাতিল হলে ফাইল কাটা যেতে পারে — ধীর
+  // ডিভাইস/নেটওয়ার্কেও ডাউনলোড শেষ হওয়ার মতো সময় দেওয়া হলো।
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
   return { buffer, name };
 }
 
@@ -469,6 +588,56 @@ const parseSheetMatrix = (matrix, spec, { legacy = false, sheetLabel = '' } = {}
 };
 
 /**
+ * আপলোড করা ফাইলের বাইট শনাক্তকরণ — SheetJS-কে দেওয়ার আগেই, কারণ
+ * কাটা/অসম্পূর্ণ জিপে XLSX.read আটকে যেতে পারে (কোনো এরর না দিয়ে ট্যাব
+ * ফ্রিজ করে দেয়), আর ভুল ফরম্যাটের ফাইলে SheetJS চুপচাপ CSV ধরে নেয়।
+ *
+ * - খালি ফাইল → 'empty'
+ * - `PK\x03\x04` দিয়ে শুরু → 'xlsx' (জিপ; .xlsx/.ods/.xlsb সবই জিপ)
+ * - `D0 CF 11 E0` দিয়ে শুরু → 'xls' (পুরনো BIFF — SheetJS পড়তে পারে)
+ * - বাকি সব → 'other' (.csv/.pdf/টেক্সট/HTML — .xlsx নয়)
+ */
+const sniffWorkbookBytes = (bytes) => {
+  if (!bytes || bytes.length === 0) return 'empty';
+  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) return 'xlsx';
+  if (bytes.length >= 4 && bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0) return 'xls';
+  return 'other';
+};
+
+/**
+ * জিপের End of Central Directory রেকর্ড আছে কিনা — সম্পূর্ণ জিপ ফাইলের
+ * একদম শেষে (শেষ ৬৪KB-এর ভেতরে) `PK\x05\x06` + মন্তব্য থাকে। না থাকলে
+ * ফাইলটি ডাউনলোডের মাঝে কাটা গেছে বা অসম্পূর্ণ।
+ */
+const hasZipEocd = (bytes) => {
+  const end = bytes.length;
+  const start = Math.max(0, end - 22 - 0xffff);
+  for (let i = end - 22; i >= start; i -= 1) {
+    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+      const commentLength = bytes[i + 20] | (bytes[i + 21] << 8);
+      if (i + 22 + commentLength === end) return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * 'bad-file' এর সুনির্দিষ্ট কারণ — ম্যাজিক বাইট দেখে আলাদা করা হয়:
+ * ফাইলটি আদৌ .xlsx নয়, নাকি .xlsx হয়েও অসম্পূর্ণ/নষ্ট।
+ */
+const badFileMessage = (bytes) => {
+  const kind = sniffWorkbookBytes(bytes);
+  if (kind === 'empty') return 'ফাইলটি খালি (০ বাইট) — কিছুই আপলোড হয়নি। আবার ডাউনলোড করে আপলোড করুন।';
+  if (kind === 'other') {
+    return 'ফাইলটি .xlsx নয় — হয়তো .csv, .pdf বা অন্য ফরম্যাটে সেভ হয়েছে। ডাউনলোড করা .xlsx ফাইলটিই আপলোড করুন (ফরম্যাট পরিবর্তন করা যাবে না)।';
+  }
+  if (kind === 'xlsx' && !hasZipEocd(bytes)) {
+    return 'ফাইলটি অসম্পূর্ণ বা নষ্ট — ডাউনলোড শেষ হয়নি বা ফাইলটি কাটা গেছে। আবার ডাউনলোড করে (ডাউনলোড শেষ হওয়া পর্যন্ত অপেক্ষা করে) আপলোড করুন।';
+  }
+  return 'ফাইলটি পড়া যায়নি — ভেতরের গঠন নষ্ট। আবার ডাউনলোড করে আপলোড করুন।';
+};
+
+/**
  * Parses and STRICTLY validates an uploaded workbook against the per-class specs.
  *
  * New format: one sheet per class, named by the class label. Rejected with an
@@ -480,6 +649,10 @@ const parseSheetMatrix = (matrix, spec, { legacy = false, sheetLabel = '' } = {}
  * Old format (one sheet named "নম্বরপত্র", no শাখা column) is still accepted
  * for its own class.
  *
+ * Only the subject-mark cells are read. The হিসাবের কলাম (মোট/GPA/গ্রেড)
+ * কখনোই পড়া হয় না — ফাইলে ওগুলোতে যা-ই লেখা থাকুক (ফর্মুলা, বদলে যাওয়া মান,
+ * আবর্জনা), আপলোডে উপেক্ষা করা হয়; মোট/GPA/গ্রেড অ্যাপ নিজে নম্বর থেকে হিসাব করে।
+ *
  * @param {Uint8Array|ArrayBuffer} fileData
  * @param {object|object[]} specs — one spec per class (or a single spec)
  * @returns {{ok:true, rowsByClass:object, specsByClass:object, metas:object}
@@ -490,13 +663,19 @@ export async function parseResultWorkbook(fileData, specsInput) {
   if (!fileData) return error('no-file', 'কোনো ফাইল নির্বাচন করা হয়নি।');
   if (!specs.length) return error('no-spec', 'যাচাইয়ের টেমপ্লেট পাওয়া যায়নি।');
 
+  const bytes = fileData instanceof Uint8Array ? fileData : new Uint8Array(fileData);
+  const kind = sniffWorkbookBytes(bytes);
+  if (kind === 'empty') return error('bad-file', badFileMessage(bytes));
+  if (kind === 'other') return error('not-xlsx', badFileMessage(bytes));
+  if (kind === 'xlsx' && !hasZipEocd(bytes)) return error('bad-file', badFileMessage(bytes));
+
   let XLSX;
   let book;
   try {
     XLSX = await loadXlsx();
-    book = XLSX.read(fileData, { type: 'array' });
+    book = XLSX.read(bytes, { type: 'array' });
   } catch {
-    return error('bad-file', 'ফাইলটি পড়া যায়নি। শুধুমাত্র .xlsx ফাইল আপলোড করুন — ফরম্যাট পরিবর্তন করা যাবে না।');
+    return error('bad-file', badFileMessage(bytes));
   }
 
   const names = Array.isArray(book?.SheetNames) ? book.SheetNames : [];
@@ -549,4 +728,6 @@ export default {
   parseResultWorkbook,
   expectedHeaders,
   fieldHeaders,
+  markComponentStyle,
+  studentResultFormulas,
 };

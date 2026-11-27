@@ -44,6 +44,8 @@ import {
   parseResultWorkbook,
   resultFileName,
   templateSpec,
+  loadExcelJs,
+  studentResultFormulas,
 } from '../../src/services/excel/resultExcel.js';
 import {
   buildResultListWorkbook,
@@ -1055,3 +1057,107 @@ assert.ok(
 );
 
 console.log('PASS — sticky scroll bar mounts, one pinned header + one top scrollbar, PDF slot geometry, pinned subject row + one-click instant centring');
+
+/* ------------------------------------------------------------------ *
+ * 18. Result Excel — round-trip diagnosis + 5l (colours, divider,
+ * protection, formulas, specific bad-file reasons)
+ * ------------------------------------------------------------------ */
+// Root cause (proven by rebuilding every variant in Node + LibreOffice):
+// the download → upload round-trip itself was NEVER broken — the direct
+// file, a LibreOffice re-save (.xlsx/.xls/.ods), and a mark edit followed
+// by a LibreOffice re-save all parse fine. The ONLY input that produced
+// 'bad-file' was a corrupt/truncated zip (SheetJS.read throws); a
+// severely truncated zip (first ~100 bytes) did not even throw — it hung
+// SheetJS in an infinite loop, freezing the tab with no error at all.
+// So the fix sniffs the bytes BEFORE calling XLSX.read: empty → 'খালি',
+// not a zip/CFB → 'not-xlsx' (.xlsx নয়), a zip without its End of
+// Central Directory record → 'bad-file' (অসম্পূর্ণ/নষ্ট).
+const emptyParsed = await parseResultWorkbook(new Uint8Array(0), [specC1, specPre]);
+assert.equal(emptyParsed.ok, false);
+assert.equal(emptyParsed.code, 'bad-file');
+assert.ok(emptyParsed.message.includes('খালি'), 'an empty upload says the file is empty');
+const truncatedParsed = await parseResultWorkbook(new Uint8Array(buffer.slice(0, 100)), [specC1, specPre]);
+assert.equal(truncatedParsed.ok, false);
+assert.equal(truncatedParsed.code, 'bad-file');
+assert.ok(truncatedParsed.message.includes('অসম্পূর্ণ'), 'a truncated zip says the file is incomplete, and returns instead of hanging');
+const textParsed = await parseResultWorkbook(
+  new Uint8Array(new TextEncoder().encode('hello, this is not a spreadsheet\n')),
+  [specC1, specPre],
+);
+assert.equal(textParsed.ok, false);
+assert.equal(textParsed.code, 'not-xlsx');
+assert.ok(textParsed.message.includes('.xlsx নয়'), 'a non-workbook file is told it is not .xlsx');
+
+// The হিসাবের কলাম (মোট/GPA/গ্রেড) are display-only: garbage written
+// into them must NOT reject the file, and only the mark cells are read.
+const derivedBook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+derivedBook.Sheets['১ম শ্রেণি'].M10 = { t: 'n', v: 99999 };
+derivedBook.Sheets['১ম শ্রেণি'].N10 = { t: 's', v: 'XX' };
+derivedBook.Sheets['১ম শ্রেণি'].O10 = { t: 's', v: 'ZZ' };
+const derivedParsed = await parseResultWorkbook(
+  new Uint8Array(XLSX.write(derivedBook, { bookType: 'xlsx', type: 'array' })),
+  [specC1, specPre],
+);
+assert.equal(derivedParsed.ok, true, 'changed মোট/GPA/গ্রেড values never reject the file');
+assert.equal(derivedParsed.rowsByClass.c1.s1['bangla:formative'], 30, 'only the mark cells are read');
+
+// Section routing: a খ-section pupil's marks land under their own id.
+const sectionMarks = { s3: splitMarks('bangla', 'term1', 22, 55) };
+const sectionBuffer = await buildResultWorkbook({ specs: [specC1, specPre], marks: sectionMarks, computed: {} });
+const sectionParsed = await parseResultWorkbook(new Uint8Array(sectionBuffer), [specC1, specPre]);
+assert.equal(sectionParsed.ok, true);
+assert.equal(sectionParsed.rowsByClass.c1.s3['bangla:formative'], 22, 'a খ-section pupil’s marks parse under their own id');
+assert.equal(sectionParsed.rowsByClass.c1.s3['bangla:summative'], 55);
+
+// Colours, divider, protection and formulas — read the built file back
+// with ExcelJS (c1 has 4 split subjects: E–H গাঠনিক, I–L সামষ্টিক,
+// M মোট, N GPA, O গ্রেড; row 10 is the first pupil).
+const { default: ExcelJS } = await loadExcelJs();
+const builtWorkbook = new ExcelJS.Workbook();
+await builtWorkbook.xlsx.load(buffer);
+const c1Sheet = builtWorkbook.getWorksheet('১ম শ্রেণি');
+assert.equal(c1Sheet.getCell('E9').fill?.fgColor?.argb, 'FFE0F2FE', 'গাঠনিক header is light sky (sky-100)');
+assert.equal(c1Sheet.getCell('I9').fill?.fgColor?.argb, 'FFEDE9FE', 'সামষ্টিক header is light purple (violet-100)');
+assert.equal(c1Sheet.getCell('E10').fill?.fgColor?.argb, 'FFF0F9FF', 'গাঠনিক mark cells are light sky (sky-50)');
+assert.equal(c1Sheet.getCell('I10').fill?.fgColor?.argb, 'FFF5F3FF', 'সামষ্টিক mark cells are light purple (violet-50)');
+assert.equal(c1Sheet.getCell('I9').border?.left?.style, 'medium', 'a medium divider sits on the first সামষ্টিক header cell');
+assert.equal(c1Sheet.getCell('I9').border?.left?.color?.argb, 'FFA78BFA', 'the divider is soft violet, not heavy');
+assert.equal(c1Sheet.getCell('I10').border?.left?.style, 'medium', 'the divider runs through the mark rows too');
+assert.notEqual(c1Sheet.getCell('E10').border?.left?.style, 'medium', 'no divider inside the গাঠনিক area');
+assert.ok(c1Sheet.sheetProtection, 'the sheet is protected (no password)');
+assert.equal(c1Sheet.getCell('E10').protection?.locked, false, 'mark cells are unlocked for entry');
+assert.notEqual(c1Sheet.getCell('C10').protection?.locked, false, 'the ID cell stays locked');
+assert.notEqual(c1Sheet.getCell('D10').protection?.locked, false, 'the name cell stays locked');
+assert.notEqual(c1Sheet.getCell('M10').protection?.locked, false, 'the মোট cell stays locked');
+const totalValue = c1Sheet.getCell('M10').value;
+assert.ok(typeof totalValue === 'object' && String(totalValue?.formula ?? '').startsWith('SUM('), 'মোট is a formula, not a static value');
+const gpaValue = c1Sheet.getCell('N10').value;
+assert.ok(typeof gpaValue === 'object' && String(gpaValue?.formula ?? '').includes('AVERAGE('), 'GPA is a formula (fail ⇒ 0, else the mean of subject points)');
+const gradeValue = c1Sheet.getCell('O10').value;
+assert.ok(typeof gradeValue === 'object' && String(gradeValue?.formula ?? '').includes('"A+"'), 'গ্রেড is a formula (fail ⇒ F, else the overall percentage band)');
+// The formula builder mirrors the engine: one failed subject ⇒ GPA 0 + F.
+const formulaCheck = studentResultFormulas({
+  fields: specC1.fields, passMark: specC1.passMark, totalFullMarks: specC1.fullMarks, rowNumber: 10,
+});
+assert.ok(formulaCheck.total.startsWith('SUM(E10:L10)'), 'মোট sums the whole mark range');
+assert.ok(formulaCheck.gpa.includes('<33'), 'the GPA formula fails a subject below the pass mark');
+assert.ok(formulaCheck.grade.includes('"F"'), 'the grade formula gives F when the GPA is 0');
+// Pre-primary (single-mark subjects): slate cells, no divider, still formulas.
+const preSheet = builtWorkbook.getWorksheet('প্রাক-প্রাথমিক');
+assert.equal(preSheet.getCell('E9').fill?.fgColor?.argb, 'FFF1F5F9', 'একক header is slate-100');
+assert.equal(preSheet.getCell('E10').fill?.fgColor?.argb, 'FFF8FAFC', 'একক mark cells are slate-50');
+assert.notEqual(preSheet.getCell('E10').border?.left?.style, 'medium', 'no divider where there is no গাঠনিক/সামষ্টিক split');
+// Consolidated: no formulas (the shown values are weighted, not a sum of
+// the cells) and every cell stays locked.
+const consMarksBuffer = await buildResultWorkbook({
+  specs: [{ ...specC1, tabId: 'consolidated', tabName: 'বার্ষিক ফলাফল' }, { ...specPre, tabId: 'consolidated', tabName: 'বার্ষিক ফলাফল' }],
+  marks, computed: {},
+});
+const consWorkbook = new ExcelJS.Workbook();
+await consWorkbook.xlsx.load(consMarksBuffer);
+const consSheet = consWorkbook.getWorksheet('১ম শ্রেণি');
+const consTotal = consSheet.getCell('M10').value;
+assert.ok(!consTotal || typeof consTotal !== 'object', 'consolidated মোট stays a static value, not a formula');
+assert.notEqual(consSheet.getCell('E10').protection?.locked, false, 'consolidated mark cells stay locked (read-only sheet)');
+
+console.log('PASS — result Excel round-trip: specific bad-file reasons, derived columns ignored, section routing, colours + divider + protection + formulas');
