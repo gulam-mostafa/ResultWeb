@@ -1101,6 +1101,13 @@ const derivedParsed = await parseResultWorkbook(
 assert.equal(derivedParsed.ok, true, 'changed মোট/GPA/গ্রেড values never reject the file');
 assert.equal(derivedParsed.rowsByClass.c1.s1['bangla:formative'], 30, 'only the mark cells are read');
 
+// 5l2 — লাইব্রেরি লোড ব্যর্থতা আর ফাইল নষ্ট হওয়া আলাদা: loadXlsx()
+// ব্যর্থ হলে 'load-failed' আসে, XLSX.read ব্যর্থ হলে 'bad-file'। ২০২৬-১১-২৭-এ
+// গুলামের সম্পূর্ণ বৈধ ফাইলে (২৮,৮৬০ বাইট, সব শিট পড়া যায়) "ভেতরের গঠন
+// নষ্ট" এসেছিল, কারণ দুটো ব্যর্থতা একই catch-এ 'bad-file' হিসেবে ধরা হতো —
+// ফাইল ঠিক থাকলেও দোষ ফাইলের ঘাড়ে চাপত। বৈধ ফাইলে কখনো 'load-failed' আসে না:
+assert.notEqual(derivedParsed.code, 'load-failed', 'a valid file never reports a library load failure');
+
 // Section routing: a খ-section pupil's marks land under their own id.
 const sectionMarks = { s3: splitMarks('bangla', 'term1', 22, 55) };
 const sectionBuffer = await buildResultWorkbook({ specs: [specC1, specPre], marks: sectionMarks, computed: {} });

@@ -670,9 +670,15 @@ export async function parseResultWorkbook(fileData, specsInput) {
   if (kind === 'xlsx' && !hasZipEocd(bytes)) return error('bad-file', badFileMessage(bytes));
 
   let XLSX;
-  let book;
   try {
     XLSX = await loadXlsx();
+  } catch {
+    // লাইব্রেরি লোড হয়নি — ফাইলের দোষ নয়, তাই 'bad-file' বলা যাবে না।
+    // নইলে ভালো ফাইলেও "ভেতরের গঠন নষ্ট" দেখাত (যেমনটা হয়েছে)।
+    return error('load-failed', 'এক্সেল পড়ার লাইব্রেরি লোড হয়নি — ফাইলটি ঠিক আছে। dev সার্ভার বন্ধ করে আবার চালু করুন, প্রয়োজনে npm install চালিয়ে আবার চেষ্টা করুন।');
+  }
+  let book;
+  try {
     book = XLSX.read(bytes, { type: 'array' });
   } catch {
     return error('bad-file', badFileMessage(bytes));
