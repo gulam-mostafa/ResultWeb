@@ -832,6 +832,44 @@ const compactQr = printCss.match(/\.rsheet--compact\s+\.rsheet__qr\s*\{[^}]*\}/)
 assert.ok(compactQr.includes('width: 24mm'), 'the pair QR is smaller (24mm, not 30mm)');
 assert.ok(printCss.includes('min-height: 258.9mm'), 'the 1-per-A4 full sheet is untouched');
 
+// 5j2 — the pair table text is CENTRED, not just kept inside a taller row.
+// Root cause (proven by the 5j agent): html2canvas 1.4.1's font-baseline
+// probe measures from the REAL document.body line-height (Tailwind preflight
+// 1.5), not the clone — at 7pt Noto Sans Bengali the metric is 16px instead
+// of the browser's ~10.5px, so the PDF drew the text ~5.5px too low and the
+// digits sat on the bottom border, cut. The 5j print.css workaround (rows
+// ~5.4mm via line-height 1.85) kept the text inside but sitting LOW in the
+// row, so it is REVERTED: print.css is back to HEAD (rows ~4.12mm, sheet
+// padding 4mm). The real fix is in downloadPdf.js only: the capture loop
+// temporarily sets document.body.style.lineHeight to '5px' (the probe then
+// measures ~5px and the text lands dead-centre; the sheet layout itself
+// does not change) and restores the previous value in a finally, so the
+// live page is untouched after the download.
+const compactTable = printCss.match(/\.rsheet--compact\s+\.doc-table\s*\{[^}]*\}/)?.[0] ?? '';
+assert.ok(
+  !compactTable.includes('line-height: 1.85'),
+  'the 5j workaround is reverted — pair table rows are back to ~4.12mm (the centring comes from the capture, not taller rows)',
+);
+const compactSheet = printCss.match(/\.rsheet--compact\s*\{[^}]*\}/)?.[0] ?? '';
+assert.ok(compactSheet.includes('padding: 4mm 9mm'), 'pair sheet padding is back to 4mm');
+const downloadPdfSrc = readFileSync(path.join(process.cwd(), 'src/utils/downloadPdf.js'), 'utf8');
+assert.ok(
+  downloadPdfSrc.includes("bodyEl.style.lineHeight = '5px'")
+    && downloadPdfSrc.includes('prevBodyLineHeight')
+    && downloadPdfSrc.includes('document.body'),
+  'the PDF capture temporarily sets the body line-height to 5px and saves the previous value',
+);
+assert.ok(
+  downloadPdfSrc.includes('} finally {')
+    && downloadPdfSrc.includes('bodyEl.style.lineHeight = prevBodyLineHeight'),
+  'the previous body line-height is restored in a finally, even if a capture fails',
+);
+assert.ok(
+  downloadPdfSrc.indexOf("bodyEl.style.lineHeight = '5px'")
+    < downloadPdfSrc.indexOf('for (let index = 0; index < sheets.length; index += 1)'),
+  'the body line-height is set BEFORE the capture loop starts',
+);
+
 console.log('PASS — result list download (exact list, per-term file) + pair-marksheet geometry');
 
 /* ------------------------------------------------------------------ *

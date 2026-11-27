@@ -152,44 +152,63 @@ export async function downloadSheetsAsPdf(containerEl, { filename = 'marksheet.p
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
   let pageCount = 0;
 
-  for (let index = 0; index < sheets.length; index += 1) {
-    const sheet = sheets[index];
-    const isCompact = sheet.classList?.contains('print-sheet--compact') ?? false;
-    const canvas = await html2canvas(sheet, {
-      scale: CANVAS_SCALE,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      /**
-       * ক্যাপচারের আগেই ক্লোন করা শিটকে স্লটের ঠিক মাপে বসানো — আসল পেজ
-       * ছোঁয়া হয় না। চওড়া ১৭১.৯ মিমি আর কমপক্ষে স্লটের উচ্চতা থাকলে
-       * ক্যাপচার করা ছবির অনুপাত স্লটের সঙ্গে হুবহু মেলে, ফলে
-       * `fitSheetIntoSlot` সেটাকে স্লটে একদম ভরে দেয়। compact (অর্ধেক-পেজ)
-       * শিটে `overflow: hidden`-ও দেওয়া হয়, যাতে লম্বা বিষয়বস্তু বাক্সের
-       * বাইরে গিয়ে ক্যানভাসটা স্লটের চেয়ে লম্বা করে না ফেলে (বিষয়বস্তু
-       * ১২৯.৪ মিমিতে ধরার মতো করে সাজানো — ছোট ফন্ট, ছোট মন্তব্য)।
-       */
-      onclone: (clonedDoc, clonedSheet) => {
-        swapSvgsForImages(clonedDoc);
-        if (clonedSheet && clonedSheet.style) {
-          clonedSheet.style.width = `${CONTENT_W_MM}mm`;
-          clonedSheet.style.minHeight = `${slotH}mm`;
-          if (isCompact) clonedSheet.style.overflow = 'hidden';
-        }
-      },
-    });
-    const imgData = canvas.toDataURL('image/jpeg', 0.92);
-    // ক্যানভাস পিক্সেল = CSS পিক্সেল × CANVAS_SCALE — মিমিতে ফেরাতে SCALE দিয়ে ভাগ।
-    const imgW = (canvas.width / CANVAS_SCALE / 96) * MM_PER_INCH;
-    const imgH = (canvas.height / CANVAS_SCALE / 96) * MM_PER_INCH;
-    const slotIndex = index % perPage;
-    if (slotIndex === 0) {
-      if (index > 0) pdf.addPage('a4', 'portrait');
-      pageCount += 1;
+  /**
+   * আসল ফিক্স (ব্যাচ ৫j2): html2canvas ১.৪.১-এর ফন্ট-বেসলাইন প্রোব আসল
+   * document.body-র line-height (Tailwind preflight ১.৫) থেকে মাপে, ক্লোন
+   * থেকে নয় — ৭pt বাংলায় মেট্রিক ১৬px হয়, ব্রাউজারের ~১০.৫px-এর বদলে,
+   * তাই PDF-এ লেখা ~৫.৫px নিচে আঁকা হতো আর নিচের বর্ডারে বসে কাটা যেত।
+   * ক্যাপচারের সময় body-র line-height সাময়িক '5px' করলে প্রোব ~৫px মাপে
+   * আর লেখা সারির একদম মাঝখানে বসে; শিটের লেআউট একটুও বদলায় না (শিটের
+   * নিজের লাইন-হাইট আলাদা করে দেওয়া আছে)। লুপ শেষে — বা কোনো ক্যাপচার
+   * ব্যর্থ হলেও — আগের মান finally-তে ফেরানো হয়, তাই লাইভ পেজে এর ছাপ
+   * থাকে না (শুধু ক্যাপচার চলাকালীন কয়েক সেকেন্ড body-নির্ভর লেখা
+   * সাময়িক চাপা দেখাতে পারে)।
+   */
+  const bodyEl = typeof document !== 'undefined' ? document.body : null;
+  const prevBodyLineHeight = bodyEl?.style?.lineHeight ?? '';
+  if (bodyEl) bodyEl.style.lineHeight = '5px';
+  try {
+    for (let index = 0; index < sheets.length; index += 1) {
+      const sheet = sheets[index];
+      const isCompact = sheet.classList?.contains('print-sheet--compact') ?? false;
+      const canvas = await html2canvas(sheet, {
+        scale: CANVAS_SCALE,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        /**
+         * ক্যাপচারের আগেই ক্লোন করা শিটকে স্লটের ঠিক মাপে বসানো — আসল পেজ
+         * ছোঁয়া হয় না। চওড়া ১৭১.৯ মিমি আর কমপক্ষে স্লটের উচ্চতা থাকলে
+         * ক্যাপচার করা ছবির অনুপাত স্লটের সঙ্গে হুবহু মেলে, ফলে
+         * `fitSheetIntoSlot` সেটাকে স্লটে একদম ভরে দেয়। compact (অর্ধেক-পেজ)
+         * শিটে `overflow: hidden`-ও দেওয়া হয়, যাতে লম্বা বিষয়বস্তু বাক্সের
+         * বাইরে গিয়ে ক্যানভাসটা স্লটের চেয়ে লম্বা করে না ফেলে (বিষয়বস্তু
+         * ১২৯.৪ মিমিতে ধরার মতো করে সাজানো — ছোট ফন্ট, ছোট মন্তব্য)।
+         */
+        onclone: (clonedDoc, clonedSheet) => {
+          swapSvgsForImages(clonedDoc);
+          if (clonedSheet && clonedSheet.style) {
+            clonedSheet.style.width = `${CONTENT_W_MM}mm`;
+            clonedSheet.style.minHeight = `${slotH}mm`;
+            if (isCompact) clonedSheet.style.overflow = 'hidden';
+          }
+        },
+      });
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      // ক্যানভাস পিক্সেল = CSS পিক্সেল × CANVAS_SCALE — মিমিতে ফেরাতে SCALE দিয়ে ভাগ।
+      const imgW = (canvas.width / CANVAS_SCALE / 96) * MM_PER_INCH;
+      const imgH = (canvas.height / CANVAS_SCALE / 96) * MM_PER_INCH;
+      const slotIndex = index % perPage;
+      if (slotIndex === 0) {
+        if (index > 0) pdf.addPage('a4', 'portrait');
+        pageCount += 1;
+      }
+      const slotTop = MARGIN_MM + slotIndex * slotH;
+      const placed = fitSheetIntoSlot(imgW, imgH, CONTENT_W_MM, slotH);
+      pdf.addImage(imgData, 'JPEG', MARGIN_MM + placed.x, slotTop + placed.y, placed.w, placed.h);
     }
-    const slotTop = MARGIN_MM + slotIndex * slotH;
-    const placed = fitSheetIntoSlot(imgW, imgH, CONTENT_W_MM, slotH);
-    pdf.addImage(imgData, 'JPEG', MARGIN_MM + placed.x, slotTop + placed.y, placed.w, placed.h);
+  } finally {
+    if (bodyEl) bodyEl.style.lineHeight = prevBodyLineHeight;
   }
 
   pdf.save(sanitizePdfFilename(filename));
