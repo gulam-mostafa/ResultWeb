@@ -1,1 +1,4 @@
 node_modules
+
+# Browser render check artifacts (screenshots are kept as proof, the build is not)
+dist-render-check

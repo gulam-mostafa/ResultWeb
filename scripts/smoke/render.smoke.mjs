@@ -87,4 +87,62 @@ assert.ok(editSource.includes('নতুন শাখা'), 'the edit form offer
 assert.ok(editSource.includes('section: DEFAULT_SECTION_ID'), 'the destination শাখা defaults to ক');
 assert.ok(editSource.includes('name="classChangeSection"'), 'the destination শাখা is typed/suggested freely');
 
+/* ------------------------------------------------------------------ *
+ * Annual promotion modal — delivery guarantees of the 2026-11-27 additions
+ * ------------------------------------------------------------------ *
+ * `Modal` renders through a portal, so the modal cannot be static-rendered
+ * without a `document`. These assertions therefore check the component source
+ * for the structural guarantees the user asked for — each one is a behaviour
+ * that silently broke before:
+ *  - EVERY promoted class visibly says "সম্পূর্ণ" (dropdown + status list);
+ *  - the default class is the FIRST unpromoted one (not a hard-coded class);
+ *  - the execute confirmation is a CENTERED overlay (a portal), not an inline
+ *    block under the button;
+ *  - a locked class offers the "আনলক করুন" button and shows who unlocked it.
+ * ------------------------------------------------------------------ */
+assert.ok(
+  promotionSource.includes('classPromotionStatuses'),
+  'the modal builds its six-row class status list from the shared helper',
+);
+assert.ok(
+  promotionSource.includes("' — সম্পূর্ণ'"),
+  'every promoted class is marked সম্পূর্ণ in the class dropdown',
+);
+assert.ok(
+  promotionSource.includes('>সম্পূর্ণ<'),
+  'the class-status list paints a সম্পূর্ণ chip for every promoted class',
+);
+assert.ok(
+  promotionSource.includes('defaultPromotionClassId'),
+  'the default class comes from the first-unpromoted helper, never a hard-coded class',
+);
+assert.ok(
+  !promotionSource.includes("useState('c5')"),
+  'the modal no longer hard-codes class-5 as its opening class',
+);
+assert.ok(
+  promotionSource.includes('createPortal'),
+  'the execute confirmation is a centred overlay (portal), not an inline block',
+);
+assert.ok(
+  promotionSource.includes('role="alertdialog"'),
+  'the confirmation is a real alert dialog',
+);
+assert.ok(
+  promotionSource.includes('আনলক করুন'),
+  'a locked class offers the "আনলক করুন" (unlock) action',
+);
+assert.ok(
+  promotionSource.includes('আনলক করেছেন'),
+  'the promotion panel shows WHO unlocked the class (audit trail)',
+);
+assert.ok(
+  promotionSource.includes('runUndo'),
+  'unlock and undo share ONE guarded code path',
+);
+assert.ok(
+  promotionSource.includes('<PromotionJanuaryWarning'),
+  'the January warning is shown on the promotion page too',
+);
+
 console.log('PASS — badge DOM removal + roster entry points + duplicate-roll scoping');

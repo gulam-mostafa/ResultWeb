@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, GraduationCap, Undo2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ArrowUpRight, Check, GraduationCap, Lock, Unlock, Undo2 } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 import { Badge } from '../ui/Primitives.jsx';
 import { CLASS_LEVELS, NEXT_CLASS_MAP, getClassName } from '../../utils/constants.js';
 import { formatOfficialBanglaDate, toBanglaNumber, toBanglaOrdinal, toEnglishNumber } from '../../utils/banglaNumberFormatter.js';
 import { DEFAULT_SECTION_ID } from '../../services/database/dbPaths.js';
+import {
+  classPromotionStatuses,
+  classStudentCounts,
+  defaultPromotionClassId,
+  unlockHistoryOf,
+} from '../../services/database/promotionService.js';
 import PromotionBadge from './PromotionBadge.jsx';
+import PromotionJanuaryWarning from './PromotionJanuaryWarning.jsx';
 import StudentDetailsModal from './StudentDetailsModal.jsx';
 import StudentResultModal from '../results/StudentResultModal.jsx';
 import {
@@ -164,8 +172,20 @@ export default function AutoPromotionModal({
   promotionState = null,
   /** `async (classId, year) => {synced, message?}` — undoes one class's promotion from the given year (the year on screen). */
   onUndoClass = null,
+  /**
+   * What this session's automatic 31-January run did (or `null`). The promotion
+   * page shows the same warning/notice strip as the Dashboard, because the teacher
+   * standing on this page must see that the remaining classes are about to be
+   * promoted for them.
+   */
+  januaryWarning = null,
+  autoPromotionNotice = null,
 }) {
-  const [classId, setClassId] = useState('c5');
+  /**
+   * The class on screen. It starts as the first class that still has to be
+   * promoted (see the `open` effect below) and the teacher may pick any other.
+   */
+  const [classId, setClassId] = useState(() => defaultPromotionClassId(promotionState));
   const [overrides, setOverrides] = useState({});     // {studentId: 'promote' | 'retain'}
   const [sectionOverrides, setSectionOverrides] = useState({}); // {studentId: 'ক' | 'খ' | …}
   const [targetSection, setTargetSection] = useState(DEFAULT_SECTION_ID);
@@ -194,15 +214,26 @@ export default function AutoPromotionModal({
   );
   /** Undo flow state: first click arms the confirm step, second click runs it. */
   const [undoArmed, setUndoArmed] = useState(false);
+  /** `'unlock'` (আনলক করুন) | `'undo'` (প্রমোশন ফেরান) — same guards, different wording. */
+  const [undoMode, setUndoMode] = useState('unlock');
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoMessage, setUndoMessage] = useState('');
-  const requestUndo = async () => {
+  /**
+   * The previous unlock of this class (who + when), straight from the promotion
+   * log — `meta/promotion/unlocks/{classId}`, newest first. Shown under the
+   * completed panel so a reopened + re-promoted class still says who reopened it.
+   */
+  const lastUnlock = useMemo(() => unlockHistoryOf(promotionState, classId)[0] ?? null, [promotionState, classId]);
+
+  /**
+   * Runs the guarded undo. The SAME write is the "আনলক করুন" (unlock) action —
+   * identical safety blocks, identical outcome — and the actor (name + email +
+   * uid) is recorded in the promotion log by the provider.
+   *
+   * `mode` only changes the wording; the guards never differ.
+   */
+  const runUndo = useCallback(async (mode = undoMode) => {
     if (!isClassComplete || undoBusy || !onUndoClass) return;
-    if (!undoArmed) {
-      setUndoArmed(true);
-      setUndoMessage('');
-      return;
-    }
     setUndoBusy(true);
     // Undo runs in the year on screen (currentYear) — never the active year
     // by default: undoing a future year's promotion must not touch the
@@ -211,10 +242,24 @@ export default function AutoPromotionModal({
     setUndoBusy(false);
     setUndoArmed(false);
     if (result?.synced) {
-      setUndoMessage('প্রমোশন ফেরানো হয়েছে — শ্রেণিটি আবার "প্রমোশন হয়নি" অবস্থায় ফিরেছে, পরের সালের ভর্তি ও আর্কাইভ মুছে গেছে। সক্রিয় সাল যেমন ছিল তেমনই আছে।');
-    } else {
-      setUndoMessage(result?.message || 'প্রমোশন ফেরানো যায়নি — আবার চেষ্টা করুন।');
+      setUndoMessage(mode === 'undo'
+        ? 'প্রমোশন ফেরানো হয়েছে — শ্রেণিটি আবার "প্রমোশন হয়নি" অবস্থায় ফিরেছে, পরের সালের ভর্তি ও আর্কাইভ মুছে গেছে। সক্রিয় সাল যেমন ছিল তেমনই আছে।'
+        : 'শ্রেণিটি আনলক করা হয়েছে — এখন আবার প্রমোশন করা যাবে। পরের সালে এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে গেছে; সক্রিয় সাল যেমন ছিল তেমনই আছে।');
+      return;
     }
+    setUndoMessage(result?.message || 'প্রমোশন ফেরানো যায়নি — আবার চেষ্টা করুন।');
+  }, [isClassComplete, undoBusy, onUndoClass, classId, currentYear, undoMode]);
+
+  /** Two-step confirm: the first click arms the panel, the second runs it. */
+  const requestUndo = (mode = 'unlock') => {
+    if (!isClassComplete || undoBusy || !onUndoClass) return;
+    setUndoMode(mode);
+    if (!undoArmed) {
+      setUndoArmed(true);
+      setUndoMessage('');
+      return;
+    }
+    runUndo(mode);
   };
   const classStudents = useMemo(
     () => students.filter((student) => student.classId === classId),
@@ -272,16 +317,52 @@ export default function AutoPromotionModal({
     setUndoMessage('');
   }, [classId]);
 
-  // Opening the modal starts on the class the caller came from (the Results page
-  // passes its selected class). Without a hint the roster keeps whatever the teacher
-  // last picked, exactly as before.
+  /**
+   * Opening the modal selects a class automatically:
+   *
+   * 1. the FIRST class that is still unpromoted, in school order (pre, c1 … c5);
+   * 2. when every class is promoted, the caller's hint (the Results page's class)
+   *    if it is a real class, otherwise the LAST class.
+   *
+   * The rule itself lives in `defaultPromotionClassId`, so this default, the status
+   * list and the provider's default can never disagree. The teacher may pick any
+   * class afterwards; a manual pick is only abandoned when THAT class has just been
+   * promoted (then the flow moves on to the next unpromoted class).
+   */
+  const classStatuses = useMemo(
+    () => classPromotionStatuses(promotionState, students),
+    [promotionState, students],
+  );
+  const autoSelectedRef = useRef('');
   useEffect(() => {
-    if (!open || !defaultClassId) return;
-    if (!CLASS_LEVELS.some((level) => level.id === defaultClassId)) return;
+    if (!open) {
+      autoSelectedRef.current = '';
+      return;
+    }
+    const currentComplete = Boolean(promotionState?.classes?.[classId]?.completedAt);
+    // Keep the teacher's own pick: a roster refresh (new `students` identity) must
+    // never silently jump to another class or clear the manual decisions.
+    if (autoSelectedRef.current && !currentComplete) return;
+    const counts = classStudentCounts(students);
+    const anyPending = classStatuses.some((status) => !status.complete);
+    const hinted = CLASS_LEVELS.some((level) => level.id === defaultClassId) ? defaultClassId : '';
+    const next = anyPending
+      ? defaultPromotionClassId(promotionState, counts)
+      : (hinted || defaultPromotionClassId(promotionState, counts));
+    autoSelectedRef.current = next;
     setOverrides({});
     setSectionOverrides({});
-    setClassId((current) => (current === defaultClassId ? current : defaultClassId));
-  }, [open, defaultClassId]);
+    setClassId((current) => (current === next ? current : next));
+    // `classId` is read for the "just promoted" test on purpose — it is NOT a
+    // trigger, otherwise every manual pick would re-run the auto selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, defaultClassId, classStatuses, promotionState, students]);
+
+  /** A manual class pick wins until that class is promoted or the modal reopens. */
+  const pickClass = (nextClassId) => {
+    autoSelectedRef.current = nextClassId;
+    setClassId(nextClassId);
+  };
 
   /** Fast lookup of the ranked row per pupil (avoids a linear scan per render). */
   const rowById = useMemo(() => new Map(ranked.map((row) => [row.student.id, row])), [ranked]);
@@ -514,11 +595,30 @@ export default function AutoPromotionModal({
     onClose?.();
   };
 
+  /**
+   * Escape closes the centred confirm dialog FIRST (it is the top-most overlay),
+   * so the teacher can never dismiss the promotion modal through a hidden confirm
+   * and lose the pending batch.
+   */
+  useEffect(() => {
+    if (!confirmed || !open || typeof document === 'undefined') return undefined;
+    const handleKey = (event) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      if (!running) setConfirmed(false);
+    };
+    document.addEventListener('keydown', handleKey, true);
+    return () => document.removeEventListener('keydown', handleKey, true);
+  }, [confirmed, open, running]);
+
   return <>
     <Modal open={open} onClose={closeParent} title="বার্ষিক শ্রেণি উত্তরণ" subtitle="মেধাক্রম অনুযায়ী উত্তীর্ণ / একই শ্রেণিতে রাখুন এবং শাখা বণ্টন" icon={GraduationCap} size="xl">
     <div className="space-y-4">
+      {/* জানুয়ারি ওয়ার্নিং / অটো-প্রমোশন নোটিশ — প্রমোশন পেজেও ড্যাশবোর্ডের মতোই */}
+      <PromotionJanuaryWarning warning={januaryWarning} autoNotice={autoPromotionNotice} />
+
       <div className="flex flex-wrap items-end gap-3">
-        <label><span className="label-base mb-0">শ্রেণি</span><select className="input-base max-w-xs" value={classId} onChange={(event) => setClassId(event.target.value)}>{CLASS_LEVELS.map((item) => <option key={item.id} value={item.id}>{item.name}{isClassCompleteFor(item.id) ? ' ✓ সম্পূর্ণ' : ''}</option>)}</select></label>
+        <label><span className="label-base mb-0">শ্রেণি</span><select className="input-base max-w-xs" value={classId} onChange={(event) => pickClass(event.target.value)}>{CLASS_LEVELS.map((item) => { const done = isClassCompleteFor(item.id); return <option key={item.id} value={item.id}>{done ? '✓ ' : ''}{item.name}{done ? ' — সম্পূর্ণ' : ''}</option>; })}</select></label>
         <label><span className="label-base mb-0">পরবর্তী শ্রেণি</span><p className="input-base max-w-xs bg-slate-50 text-xs font-bold dark:bg-slate-800">{isGraduating ? 'আর্কাইভ (পাসড আর্কাইভ)' : getClassName(nextClassId)}</p></label>
         <Badge tone="emerald">উত্তীর্ণ: {toBanglaNumber(passedCount)}</Badge>
         <Badge tone="rose">এই ক্লাসেই থাকুক: {toBanglaNumber(failedCount)}</Badge>
@@ -526,16 +626,57 @@ export default function AutoPromotionModal({
         <Badge tone="slate">{PROMOTION_ORIGIN_LABELS[PROMOTION_ORIGIN.EXISTING]}: {toBanglaNumber(existingOriginCount)}</Badge>
       </div>
 
-      {/* A completed class is frozen: what happened, and the safe way back. */}
+      {/*
+        All six classes at a glance: EVERY promoted class says "সম্পূর্ণ" here,
+        next to its pupil count, with a one-click jump. An empty class counts as
+        done for the year but reads "শিক্ষার্থী নেই" — only a RECORDED promotion is
+        ever painted as সম্পূর্ণ.
+      */}
+      <div role="group" aria-label="ছয় শ্রেণির প্রমোশন অবস্থা">
+        <p className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-slate-500">
+          <span>প্রমোশনের অবস্থা — ছয় শ্রেণি</span>
+          <span>সম্পূর্ণ: {toBanglaNumber(classStatuses.filter((status) => status.complete).length)}/৬</span>
+        </p>
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+          {classStatuses.map((status) => {
+            const selected = status.classId === classId;
+            return (
+              <button
+                key={status.classId}
+                type="button"
+                onClick={() => pickClass(status.classId)}
+                aria-pressed={selected}
+                className={`flex flex-col items-start gap-0.5 rounded-xl border px-2.5 py-2 text-left text-[11px] font-bold transition ${
+                  selected
+                    ? 'border-brand-600 bg-brand-50 text-brand-900 dark:border-brand-400 dark:bg-brand-900/30 dark:text-brand-100'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                }`}
+              >
+                <span className="w-full truncate">{status.name}</span>
+                <span className="flex w-full items-center justify-between gap-1">
+                  <span className="text-[10px] font-medium opacity-75">{status.students ? `${toBanglaNumber(status.students)} জন` : 'শিক্ষার্থী নেই'}</span>
+                  {status.complete ? (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white"><Check size={9} strokeWidth={3} aria-hidden="true" />সম্পূর্ণ</span>
+                  ) : status.pending ? (
+                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-800">বাকি</span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* A completed class is frozen: what happened, who unlocked it before, and the safe way back. */}
       {isClassComplete ? (
         <div
           role="status"
-          className="locked-view rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-900/20"
+          className="locked-view rounded-xl border border-slate-300 bg-slate-100 p-4 text-sm"
         >
-          <p className="text-base font-extrabold text-emerald-900 dark:text-emerald-100">
-            এই শ্রেণির কার্যক্রম সম্পূর্ণ ✓
+          <p className="flex items-center gap-1.5 text-base font-extrabold text-slate-900">
+            <Lock size={16} aria-hidden="true" /> এই শ্রেণির কার্যক্রম সম্পূর্ণ — শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।
           </p>
-          <div className="mt-2 space-y-1 text-[12px] font-semibold leading-relaxed text-emerald-900 dark:text-emerald-100">
+          <div className="mt-2 space-y-1 text-[12px] font-semibold leading-relaxed text-slate-900">
             <p>
               {completion.completedAt ? `${formatOfficialBanglaDate(new Date(completion.completedAt))} · ` : ''}
               উত্তীর্ণ: <b>{toBanglaNumber(completion.promoted ?? 0)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(completion.retained ?? 0)}</b> জন
@@ -546,19 +687,27 @@ export default function AutoPromotionModal({
             <p className="text-[11px] font-normal">
               এই শ্রেণির {toBanglaNumber(currentYear)} সালের তথ্য এখন লক — দেখা যাবে, এডিট করা যাবে না। আবার প্রমোশন করা যাবে না।
             </p>
+            {lastUnlock?.at ? (
+              <p className="text-[11px] font-normal">
+                আনলক করেছেন: <b>{lastUnlock.name || lastUnlock.email || lastUnlock.uid || '—'}</b>
+                {' • '}{formatOfficialBanglaDate(new Date(lastUnlock.at))}
+                {lastUnlock.name && lastUnlock.email ? ` • ${lastUnlock.email}` : ''}
+              </p>
+            ) : null}
           </div>
           {onUndoClass ? (
             <div className="mt-3">
               {undoArmed ? (
-                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[12px] leading-relaxed text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
-                  <p className="font-bold">প্রমোশন ফেরাবেন?</p>
+                <div className="rounded-lg border border-slate-300 bg-white p-3 text-[12px] leading-relaxed text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+                  <p className="font-bold">{undoMode === 'undo' ? 'প্রমোশন ফেরাবেন?' : 'এই শ্রেণিটি আনলক করবেন?'}</p>
                   <p className="mt-1">
-                    পরের সালে ({toBanglaNumber(nextYear)}) এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে যাবে, আর শ্রেণিটি আবার "প্রমোশন হয়নি" হবে। সক্রিয় সাল যেমন আছে তেমনই থাকবে।
-                    পরের সালে নতুন ভর্তি হয়ে থাকলে বা কারো নম্বর/উপস্থিতি লেখা হয়ে থাকলে ফেরানো যাবে না।
+                    পরের সালে ({toBanglaNumber(nextYear)}) এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে যাবে, আর শ্রেণিটি আবার &quot;প্রমোশন হয়নি&quot; হবে — এরপর একই নিয়মে আবার প্রমোশন করা যাবে। সক্রিয় সাল যেমন আছে তেমনই থাকবে।
+                    কে আনলক করলেন (নাম, ইমেইল ও সময়) প্রমোশন রেকর্ডে সংরক্ষিত হবে।
+                    পরের সালে নতুন ভর্তি হয়ে থাকলে বা কারো নম্বর/উপস্থিতি লেখা হয়ে থাকলে আনলক করা যাবে না।
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary btn-sm" onClick={requestUndo} disabled={undoBusy}>
-                      <Undo2 size={14} /> {undoBusy ? 'ফেরানো হচ্ছে…' : 'হ্যাঁ, প্রমোশন ফেরান'}
+                    <button type="button" className="btn-primary btn-sm" onClick={() => runUndo(undoMode)} disabled={undoBusy}>
+                      {undoMode === 'undo' ? <Undo2 size={14} /> : <Unlock size={14} />} {undoBusy ? 'অপেক্ষা করুন…' : (undoMode === 'undo' ? 'হ্যাঁ, প্রমোশন ফেরান' : 'হ্যাঁ, আনলক করুন')}
                     </button>
                     <button type="button" className="btn-secondary btn-sm" onClick={() => setUndoArmed(false)} disabled={undoBusy}>
                       না, থাক
@@ -566,9 +715,14 @@ export default function AutoPromotionModal({
                   </div>
                 </div>
               ) : (
-                <button type="button" className="btn-secondary btn-sm" onClick={requestUndo} disabled={undoBusy}>
-                  <Undo2 size={14} /> প্রমোশন ফেরান
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="btn-primary btn-sm" onClick={() => requestUndo('unlock')} disabled={undoBusy} title="প্রমোশনটি ফিরিয়ে শ্রেণিটি আবার খুলে দেয় (একই নিরাপত্তা যাচাই সহ)">
+                    <Unlock size={14} /> আনলক করুন
+                  </button>
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => requestUndo('undo')} disabled={undoBusy} title="প্রমোশন ফেরান (আনলকের মতোই নিরাপত্তা যাচাই)">
+                    <Undo2 size={14} /> প্রমোশন ফেরান
+                  </button>
+                </div>
               )}
             </div>
           ) : null}
@@ -656,13 +810,27 @@ export default function AutoPromotionModal({
         <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running || isClassComplete} title={isClassComplete ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — আবার করা যাবে না' : undefined}><ArrowUpRight size={15}/> {isClassComplete ? 'প্রমোশন সম্পূর্ণ ✓' : `উত্তরণ কার্যকর (${toBanglaNumber(ranked.length)} জন)`}</button>
       </div>
 
-      {/* একক ব্যাচ নিশ্চিতকরণ — কোনো লেখার আগে একটি বাংলা ডায়ালগ। */}
-      {confirmed ? (
+    </div>
+    </Modal>
+
+    {/*
+      একক ব্যাচ নিশ্চিতকরণ — একটি CENTERED-modal overlay (portal), তাই "উত্তরণ
+      কার্যকর" চাপার পরামর্শ কখনোই বোতামের নিচে লুকিয়ে থাকতে পারে না: স্ক্রিনের
+      মাঝখানে ব্লক করা ডায়ালগই একমাত্র পথ।
+      The promotion dialog itself must not close on Escape while this confirm
+      is armed — Escape closes the confirm first.
+    */}
+    {confirmed && open ? createPortal(
+      <div
+        className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-slate-900/60 p-3 backdrop-blur-sm sm:p-4"
+        role="presentation"
+        onMouseDown={(event) => { if (event.target === event.currentTarget && !running) setConfirmed(false); }}
+      >
         <div
-          role="dialog"
+          role="alertdialog"
           aria-modal="true"
           aria-label="বার্ষিক উত্তরণ নিশ্চিতকরণ"
-          className="rounded-xl border-2 border-brand-500 bg-brand-50 p-4 text-sm dark:border-brand-400 dark:bg-brand-900/30"
+          className="my-6 w-full max-w-lg animate-fade-in rounded-2xl border-2 border-brand-500 bg-white p-4 text-sm shadow-float dark:border-brand-400 dark:bg-slate-900 sm:p-5"
         >
           <p className="text-base font-extrabold text-brand-900 dark:text-brand-100">
             {canAdvanceYear ? 'নতুন শিক্ষাবর্ষ শুরু করবেন?' : 'বার্ষিক শ্রেণি উত্তরণ নিশ্চিত করুন'}
@@ -670,10 +838,10 @@ export default function AutoPromotionModal({
           <div className="mt-2 space-y-1.5 text-[12px] font-semibold leading-relaxed text-brand-900 dark:text-brand-100">
             {canAdvanceYear ? (
               <>
-                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                <p className="rounded-lg bg-brand-50 p-2.5 dark:bg-slate-800">
                   {toBanglaNumber(currentYear)} শিক্ষাবর্ষ শেষ করে {toBanglaNumber(nextYear)} শিক্ষাবর্ষ শুরু হবে।
                 </p>
-                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                <p className="rounded-lg bg-brand-50 p-2.5 dark:bg-slate-800">
                   উত্তীর্ণ: <b>{toBanglaNumber(passedCount)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(failedCount)}</b> জন
                   {' · '}আর্কাইভ: <b>{toBanglaNumber(isGraduating ? passedCount : 0)}</b> জন
                 </p>
@@ -688,10 +856,10 @@ export default function AutoPromotionModal({
               </>
             ) : (
               <>
-                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                <p className="rounded-lg bg-brand-50 p-2.5 dark:bg-slate-800">
                   <b>{getClassName(classId)}</b> শ্রেণির {toBanglaNumber(ranked.length)} জন শিক্ষার্থীর সিদ্ধান্ত এখন সংরক্ষিত হবে।
                 </p>
-                <p className="rounded-lg bg-white/70 p-2.5 dark:bg-slate-900/50">
+                <p className="rounded-lg bg-brand-50 p-2.5 dark:bg-slate-800">
                   উত্তীর্ণ: <b>{toBanglaNumber(passedCount)}</b> জন · একই শ্রেণিতে থাকবে: <b>{toBanglaNumber(failedCount)}</b> জন
                   {isGraduating ? <> · আর্কাইভ: <b>{toBanglaNumber(passedCount)}</b> জন</> : null}
                 </p>
@@ -701,18 +869,18 @@ export default function AutoPromotionModal({
               </>
             )}
           </div>
-          <div className="mt-3 flex flex-wrap justify-end gap-2">
-            <button type="button" className="btn-secondary btn-sm" onClick={() => setConfirmed(false)}>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" className="btn-secondary btn-sm" onClick={() => setConfirmed(false)} disabled={running}>
               না, বাতিল করুন
             </button>
-            <button type="button" className="btn-primary btn-sm" onClick={confirmExecute} disabled={running}>
+            <button type="button" className="btn-primary btn-sm" onClick={confirmExecute} disabled={running} autoFocus>
               <ArrowUpRight size={14} /> {canAdvanceYear ? 'হ্যাঁ, শুরু করুন' : 'হ্যাঁ, উত্তরণ করুন'}
             </button>
           </div>
         </div>
-      ) : null}
-    </div>
-    </Modal>
+      </div>,
+      document.body,
+    ) : null}
     {/* Drill-down popups — inspection only, the promotion state underneath is untouched. */}
     <StudentDetailsModal
       open={Boolean(profileTarget)}

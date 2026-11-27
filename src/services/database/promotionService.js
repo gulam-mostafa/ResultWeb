@@ -13,8 +13,11 @@
  *     moved: [studentMasterId…],          // promoted + retained (enrolled next year)
  *     graduatedIds: [studentMasterId…],   // Class-5 leavers (passedArchive)
  *     destinations: { [studentMasterId]: targetClassId },
- *     auto: boolean                        // true when the January auto-run did it
+ *     auto: boolean,                       // true when the January auto-run did it
+ *     unlockedAt, unlockedBy, unlockedByName, unlockedByEmail,
+ *     reopenedAt, reopenedBy, reopenedByName
  *   } },
+ *   unlocks: { [classId]: { [unlockId]: { at, by, uid, name, email } } },
  *   auto: { at, by } | null                // set once the January auto-run finishes
  * ```
  *
@@ -69,7 +72,7 @@ export const promotionMetaPath = (schoolId, year) => {
  * Pure state helpers (no I/O — unit-testable, year-agnostic)
  * ------------------------------------------------------------------ */
 
-/** Normalises a raw promotion node into `{ classes, auto }`. */
+/** Normalises a raw promotion node into `{ classes, auto, unlocks }`. */
 export function normalizePromotionState(raw) {
   const source = asRecord(raw);
   const classes = {};
@@ -79,6 +82,7 @@ export function normalizePromotionState(raw) {
       completedAt: record.completedAt ?? '',
       completedBy: record.completedBy ?? '',
       completedByName: record.completedByName ?? '',
+      completedByEmail: record.completedByEmail ?? '',
       fromYear: normalizeSessionYear(record.fromYear),
       toYear: normalizeSessionYear(record.toYear),
       promoted: Number(record.promoted) || 0,
@@ -88,9 +92,42 @@ export function normalizePromotionState(raw) {
       graduatedIds: asList(record.graduatedIds).map(toId).filter(Boolean),
       destinations: asRecord(record.destinations),
       auto: record.auto === true,
+      unlockedAt: record.unlockedAt ?? '',
+      unlockedBy: record.unlockedBy ?? '',
+      unlockedByName: record.unlockedByName ?? '',
+      unlockedByEmail: record.unlockedByEmail ?? '',
     };
   });
-  return { classes, auto: asRecord(source.auto).at ? { at: source.auto.at, by: source.auto.by ?? '' } : null };
+  /**
+   * Unlock audit trail, newest first per class:
+   * `{ [classId]: [{ at, by, uid, name, email }] }`.
+   *
+   * It lives NEXT TO `classes` on purpose: an unlock deletes the class's
+   * completion record, so the audit can never live inside it — otherwise it
+   * would be erased by the very action it records.
+   */
+  const unlocks = {};
+  Object.entries(asRecord(source.unlocks)).forEach(([classId, entries]) => {
+    const list = Object.values(asRecord(entries))
+      .map((entry) => {
+        const item = asRecord(entry);
+        return {
+          at: item.at ?? '',
+          by: item.by ?? '',
+          uid: item.uid ?? '',
+          name: item.name ?? '',
+          email: item.email ?? '',
+        };
+      })
+      .filter((item) => Boolean(item.at))
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    if (list.length) unlocks[classId] = list;
+  });
+  return {
+    classes,
+    unlocks,
+    auto: asRecord(source.auto).at ? { at: source.auto.at, by: source.auto.by ?? '' } : null,
+  };
 }
 
 /** `true` when this class's promotion is recorded as complete. */
@@ -127,6 +164,102 @@ export function pendingPromotionClasses(state, counts = {}) {
 /** `true` when every class is complete or empty — the year may advance. */
 export const isPromotionCompleteForYear = (state, counts = {}) =>
   pendingPromotionClasses(state, counts).length === 0;
+
+/**
+ * The class the promotion modal opens on: the FIRST class that is not promoted
+ * yet, in school order (pre, c1 … c5). When every class is done it falls back to
+ * the LAST class, so the dialog always opens on something the teacher can act on.
+ *
+ * `counts` is optional: without it "not promoted" means "no completion record"
+ * (an empty, unpromoted class is still the first one the teacher reaches).
+ */
+export function defaultPromotionClassId(state, counts = null) {
+  const ids = promotionClassIds();
+  const hasCounts = counts && typeof counts === 'object';
+  const firstPending = ids.find((classId) => {
+    if (isClassPromotionComplete(state, classId)) return false;
+    if (!hasCounts) return true;
+    return (Number(counts[classId]) || 0) > 0;
+  });
+  return firstPending ?? ids[ids.length - 1];
+}
+
+/**
+ * One row per class for the modal's status list:
+ * `[{ classId, name, complete, pending, students }]`, in school order.
+ * A class with pupils but no completion record is `pending`; a class with no
+ * pupils counts as done (`complete` is only the RECORDED completion, which is
+ * what the UI paints as "সম্পূর্ণ").
+ */
+export function classPromotionStatuses(state, students = []) {
+  const counts = classStudentCounts(students);
+  return promotionClassIds().map((classId) => {
+    const level = CLASS_LEVELS.find((item) => item.id === classId);
+    const complete = isClassPromotionComplete(state, classId);
+    return {
+      classId,
+      name: level?.name ?? classId,
+      complete,
+      pending: !complete && (Number(counts[classId]) || 0) > 0,
+      students: Number(counts[classId]) || 0,
+    };
+  });
+}
+
+/** Unlock audit of one class, newest first (`[]` when it was never unlocked). */
+export const unlockHistoryOf = (state, classId) => asList(asRecord(state?.unlocks)[classId]);
+
+/**
+ * `true` when this class of the VIEWED year must be edited read-only: the whole
+ * year is a past year, or this class's promotion is recorded as complete in that
+ * year's log. A promoted class never reopens by itself — only the guarded
+ * unlock/undo removes the record.
+ */
+export function isClassReadOnly({ viewYear, activeYear, state, classId } = {}) {
+  if (!classId || classId === 'archive') return false;
+  if (isYearReadOnly(viewYear, activeYear)) return true;
+  return isClassPromotionComplete(state, classId);
+}
+
+/**
+ * The year every class of `state` was promoted into (`''` when nothing is
+ * recorded). Used to decide that a finished year now moves the school on.
+ */
+export function promotionTargetYear(state) {
+  const targets = completedClassIds(state)
+    .map((classId) => normalizeSessionYear(asRecord(state?.classes)[classId]?.toYear))
+    .filter(Boolean)
+    .sort((a, b) => Number(b) - Number(a));
+  return targets[0] ?? '';
+}
+
+/**
+ * Auto-activation decision after ONE class was promoted — pure, so the rule is
+ * testable without a database.
+ *
+ * - the school's active year may only move when the promoted class belongs to
+ *   the ACTIVE year (`promoting a future year early never skips it`);
+ * - it moves only when EVERY class of that year is complete or empty;
+ * - it moves to the next year the promotion recorded (never a hard-coded year).
+ *
+ * @param {{sourceYear?:string, activeYear?:string, state?:object,
+ *   counts?:object, students?:Array<object>}} args
+ *   `counts` ({classId: n}) wins; `students` is accepted for convenience.
+ * @returns {{activate:boolean, targetYear:string, reason:string}}
+ */
+export function activationAfterPromotion({ sourceYear, activeYear, state, counts = null, students = [] } = {}) {
+  const source = normalizeSessionYear(sourceYear);
+  const active = normalizeSessionYear(activeYear);
+  if (!source || !active) return { activate: false, targetYear: '', reason: 'invalid-year' };
+  if (source !== active) return { activate: false, targetYear: '', reason: 'not-active-year' };
+  const classCounts = counts && typeof counts === 'object' ? counts : classStudentCounts(students);
+  if (!isPromotionCompleteForYear(state, classCounts)) {
+    return { activate: false, targetYear: '', reason: 'classes-pending' };
+  }
+  const target = promotionTargetYear(state) || nextSessionYear(source);
+  if (!target || target === source) return { activate: false, targetYear: '', reason: 'invalid-target' };
+  return { activate: true, targetYear: target, reason: 'year-complete' };
+}
 
 /**
  * Locked-view CSS class for a finished year or a finished class.
@@ -368,6 +501,7 @@ export async function markClassPromotionComplete(schoolId, {
   auto = false,
   completedBy = '',
   completedByName = '',
+  completedByEmail = '',
 } = {}) {
   const path = promotionMetaPath(schoolId, year);
   if (!path || !classId) return { synced: false };
@@ -375,6 +509,7 @@ export async function markClassPromotionComplete(schoolId, {
     completedAt: new Date().toISOString(),
     completedBy,
     completedByName,
+    completedByEmail,
     fromYear: normalizeSessionYear(year),
     toYear: normalizeSessionYear(toYear, nextSessionYear(year)),
     promoted: Number(promoted) || 0,
@@ -386,6 +521,39 @@ export async function markClassPromotionComplete(schoolId, {
     auto: auto === true,
   });
   return safeUpdate(path, { classes: { [classId]: record } });
+}
+
+/** RTDB-safe unique key for one audit row (no `.`/`:`/`$`/`#`/`[`/`]`/`/`). */
+const auditKey = () => `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+/**
+ * Records WHO unlocked (= undid) one class's promotion and WHEN.
+ *
+ * Stored at `sessions/{year}/meta/promotion/unlocks/{classId}/{key}` — a sibling
+ * of `classes`, because the undo deletes the class's completion record and an
+ * audit living inside it would be erased by the very action it records.
+ */
+export async function recordPromotionUnlock(schoolId, {
+  year = '',
+  classId = '',
+  actor = null,
+  mode = 'unlock',
+  message = '',
+} = {}) {
+  const path = promotionMetaPath(schoolId, year);
+  if (!path || !classId) return { synced: false };
+  const record = cleanForCloud({
+    at: new Date().toISOString(),
+    uid: actor?.uid ?? '',
+    name: actor?.name ?? '',
+    email: actor?.email ?? '',
+    by: actor?.role ?? '',
+    mode: mode === 'undo' ? 'undo' : 'unlock',
+    message: String(message ?? ''),
+    classId,
+    year: normalizeSessionYear(year),
+  });
+  return safeUpdate(`${path}/unlocks`, { [classId]: { [auditKey()]: record } });
 }
 
 /** Marks the January auto-run as done for a year (idempotency across sessions). */
@@ -427,12 +595,20 @@ export async function autoPromoteClassDecisions(schoolId, year, classId) {
  * year, and removes the completion record. The profile's active year is left
  * exactly as it is, so an undo can never yank the school back a year.
  *
+ * The undo is ALSO the "আনলক করুন" (unlock) path: same guards, same write. When
+ * `actor` is supplied the action is recorded in
+ * `sessions/{year}/meta/promotion/unlocks/{classId}` (who: name + email + uid,
+ * and when), so every unlock is auditable and the UI can say
+ * "আনলক করেছেন: <name> • <date>".
+ *
  * @returns {{synced:boolean, reason?:string, message?:string, undone?:object}}
  */
 export async function undoClassPromotion(schoolId, {
   year = '',
   nextYear = '',
   classId = '',
+  actor = null,
+  mode = 'unlock',
 } = {}) {
   const fromYear = normalizeSessionYear(year);
   const toYear = normalizeSessionYear(nextYear, fromYear ? nextSessionYear(fromYear) : '');
@@ -512,8 +688,25 @@ export async function undoClassPromotion(schoolId, {
 
   const result = await safeMultiPathUpdate(entries);
   if (result?.synced === false) return { ...empty, reason: 'write-failed' };
+  /**
+   * Record the unlock (who + when) NEXT TO the deleted completion record. A
+   * failed audit write is not fatal — the promotion really was undone — but it
+   * is reported so the caller can say the class reopened without its audit row.
+   */
+  let audit = null;
+  if (actor) {
+    const auditResult = await recordPromotionUnlock(schoolId, {
+      year: fromYear,
+      classId,
+      actor,
+      mode,
+      message: mode === 'undo' ? 'প্রমোশন ফেরানো হয়েছে' : 'শ্রেণি আনলক করা হয়েছে',
+    });
+    audit = { synced: auditResult?.synced !== false };
+  }
   return {
     synced: true,
+    audit,
     undone: { promoted, retained, graduated: graduatedIds.length },
   };
 }
@@ -528,6 +721,12 @@ export default {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  defaultPromotionClassId,
+  classPromotionStatuses,
+  unlockHistoryOf,
+  isClassReadOnly,
+  promotionTargetYear,
+  activationAfterPromotion,
   lockedViewClass,
   isYearReadOnly,
   yearLockBannerText,
@@ -539,6 +738,7 @@ export default {
   subscribePromotionState,
   readPromotionState,
   markClassPromotionComplete,
+  recordPromotionUnlock,
   markAutoPromotionDone,
   autoPromoteClassDecisions,
   undoClassPromotion,

@@ -293,7 +293,20 @@
   color: #111827 !important;
 }
 
-/* Text: every coloured text utility turns near-black. */
+/*
+ * Text: EVERYTHING turns near-black. A blanket rule is used on purpose — the
+ * colour often comes from `@apply` inside a component class (`btn-secondary`,
+ * `table-base tbody td`, `input-base`, `label-base`), so there is no
+ * `text-slate-*` utility in the DOM for an attribute selector to match. The
+ * requirement is literally "ALL text turns black", so nothing may keep colour.
+ */
+.locked-view,
+.locked-view *,
+.locked-view [class*="text-slate"],
+.locked-view [class*="text-gray"],
+.locked-view [class*="text-zinc"],
+.locked-view [class*="text-neutral"],
+.locked-view [class*="text-stone"],
 .locked-view [class*="text-brand"],
 .locked-view [class*="text-emerald"],
 .locked-view [class*="text-rose"],
@@ -319,6 +332,20 @@
 .locked-view a {
   color: #111827 !important;
   text-decoration: underline;
+}
+
+/*
+ * A dark neutral chip that carried white text (the banner's "সক্রিয় সালে ফিরুন"
+ * button) would become black-on-dark; in a locked view it turns into the same
+ * light grey chip with black text as every other control.
+ */
+.locked-view [class*="bg-slate-7"][class*="text-white"],
+.locked-view [class*="bg-slate-8"][class*="text-white"],
+.locked-view [class*="bg-slate-9"][class*="text-white"],
+.locked-view [class*="bg-black"][class*="text-white"] {
+  background-color: #f1f5f9 !important;
+  background-image: none !important;
+  color: #111827 !important;
 }
 
 /* Backgrounds: every coloured background utility turns light grey. */
@@ -419,6 +446,13 @@ html.dark .locked-view ::selection {
   color: #f1f5f9 !important;
 }
 
+html.dark .locked-view,
+html.dark .locked-view *,
+html.dark .locked-view [class*="text-slate"],
+html.dark .locked-view [class*="text-gray"],
+html.dark .locked-view [class*="text-zinc"],
+html.dark .locked-view [class*="text-neutral"],
+html.dark .locked-view [class*="text-stone"],
 html.dark .locked-view [class*="text-brand"],
 html.dark .locked-view [class*="text-emerald"],
 html.dark .locked-view [class*="text-rose"],
@@ -441,6 +475,15 @@ html.dark .locked-view [class*="text-white"] {
 }
 
 html.dark .locked-view a {
+  color: #f1f5f9 !important;
+}
+
+html.dark .locked-view [class*="bg-slate-7"][class*="text-white"],
+html.dark .locked-view [class*="bg-slate-8"][class*="text-white"],
+html.dark .locked-view [class*="bg-slate-9"][class*="text-white"],
+html.dark .locked-view [class*="bg-black"][class*="text-white"] {
+  background-color: #334155 !important;
+  background-image: none !important;
   color: #f1f5f9 !important;
 }
 

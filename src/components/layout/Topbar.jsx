@@ -185,11 +185,9 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
                       !canManage && !isActive && 'cursor-not-allowed opacity-50',
                     )}
                   >
-                    <span className="tabular">{toBanglaNumber(year)}</span>
+                    <span className="tabular">{toBanglaNumber(year)}{isViewed && !isActive ? ' · দেখছেন' : ''}</span>
                     {isActive ? (
                       <span className="badge bg-brand-100 text-brand-800">সক্রিয়</span>
-                    ) : isViewed ? (
-                      <span className="badge bg-amber-100 text-amber-800">দেখছেন</span>
                     ) : isPast ? (
                       <span className="badge bg-slate-200 text-slate-700">লক</span>
                     ) : (

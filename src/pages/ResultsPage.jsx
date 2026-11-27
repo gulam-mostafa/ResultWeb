@@ -80,6 +80,8 @@ export default function ResultsPage() {
     resetResultConfig,
     syncState,
     isHydrating,
+    januaryWarning,
+    autoPromotionNotice,
   } = useSchoolData();
   const { canManageStudents, canEditMarks, canPrintDocuments } = useAuth();
   const toast = useToast();
@@ -959,6 +961,8 @@ export default function ResultsPage() {
       onAdvanceYear={handleAdvanceYear}
       promotionState={viewPromotionState}
       onUndoClass={undoClassPromotion}
+      januaryWarning={januaryWarning}
+      autoPromotionNotice={autoPromotionNotice}
     />
   </>;
 }

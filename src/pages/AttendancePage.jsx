@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CalendarCheck, Save } from 'lucide-react';
+import { CalendarCheck, Lock, Save } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAttendance } from '../hooks/useAttendance.js';
@@ -37,8 +37,15 @@ export default function AttendancePage() {
   });
 
   const options = Object.entries(STATUS_LABELS);
-  return <div className="space-y-4">
+  /** A promoted class (active year) shows the same monochrome mark as every other page. */
+  const classLockChip = classLocked && !isReadOnly;
+  return <div className={`space-y-4 ${classLockChip ? 'locked-view' : ''}`}>
     <header><h1 className="text-xl font-extrabold">দৈনিক উপস্থিতি</h1><p className="mt-1 text-sm text-slate-500">বিদ্যালয়ের সব অনুমোদিত শিক্ষক একই উপস্থিতির তথ্য দেখতে ও সম্পাদনা করতে পারবেন।</p></header>
+    {classLockChip ? (
+      <p role="status" className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-900">
+        <Lock size={13} aria-hidden="true" /> এই শ্রেণির কার্যক্রম সম্পূর্ণ — শুধু দেখা যাবে। কিছুই এডিট করা যাবে না।
+      </p>
+    ) : null}
     <Card>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="grid flex-1 gap-3 sm:grid-cols-2">

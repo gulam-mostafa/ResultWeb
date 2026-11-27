@@ -11,7 +11,8 @@
     "lint": "echo \"no lint configured\"",
     "smoke": "node scripts/smoke/run.mjs",
     "smoke:sections": "node scripts/smoke/sectionRegistry.run.mjs",
-    "check:undefined": "node scripts/check-undefined.mjs"
+    "check:undefined": "node scripts/check-undefined.mjs",
+    "verify:render": "node scripts/browser/render-check.mjs"
   },
   "dependencies": {
     "chart.js": "^4.4.4",

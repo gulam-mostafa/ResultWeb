@@ -442,6 +442,8 @@ export default function StudentsPage() {
       onAdvanceYear={advanceYear}
       promotionState={viewPromotionState}
       onUndoClass={undoClassPromotion}
+      januaryWarning={januaryWarning}
+      autoPromotionNotice={autoPromotionNotice}
     />
     <ExcelDownloadWarningModal
       open={downloadWarningOpen}

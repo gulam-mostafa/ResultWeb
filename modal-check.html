@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="bn">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>প্রমোশন মডাল — রেন্ডার যাচাই</title>
+    <!--
+      Focused harness page for the browser render check
+      (`scripts/browser/render-check.mjs`). It lives at the project root because
+      Vite resolves HTML entry points relative to the project root; it is NOT part
+      of the production build (`vite.config.js` only builds `index.html`).
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/scripts/browser/modalEntry.jsx"></script>
+  </body>
+</html>

@@ -35,6 +35,9 @@ import {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  activationAfterPromotion,
+  defaultPromotionClassId,
+  classPromotionStatuses,
   isYearReadOnly,
   januaryStatus,
   buildAutoDecisions,
@@ -301,7 +304,23 @@ export function SchoolDataProvider({ children }) {
       isRemoteUpdate.current = true;
       const normalized = normalizeSchoolProfile(profile);
       setSchoolProfile((previous) => {
-        const next = { ...previous, ...normalized };
+        /**
+         * An EMPTY snapshot must never erase a known profile. When the tenant's
+         * profile node cannot be read (offline, a blocked/slow connection, a cold
+         * cache) the service emits the empty template; merging that verbatim wiped
+         * `academicYear`, which made the ACTIVE year unknown — and a past year then
+         * silently looked like a FUTURE (editable) year. Blank values are therefore
+         * ignored; a real edit always carries a value.
+         */
+        const patch = Object.fromEntries(
+          Object.entries(normalized).filter(([, value]) => {
+            if (value === undefined || value === null) return false;
+            if (typeof value === 'string') return value.trim() !== '';
+            return true;
+          }),
+        );
+        if (!Object.keys(patch).length) return previous;
+        const next = { ...previous, ...patch };
         if (JSON.stringify(previous) === JSON.stringify(next)) return previous;
         return next;
       });
@@ -804,6 +823,7 @@ export function SchoolDataProvider({ children }) {
       auto: auto === true,
       completedBy: user?.uid ?? '',
       completedByName: user?.name ?? '',
+      completedByEmail: user?.email ?? '',
     }), { timeoutMs: 8000 });
     const completionRecorded = recordResult?.synced !== false;
     // 3. Fresh state, then: all six classes done ⇒ activate the next year. The
@@ -824,18 +844,25 @@ export function SchoolDataProvider({ children }) {
       counts = {};
     }
     if (!Object.keys(counts).length) counts = classStudentCounts(datasetRef.current.students);
-    const yearComplete = isPromotionCompleteForYear(freshState, counts);
+    // The activation rule lives in ONE tested helper: only the ACTIVE year may
+    // advance, only when every class is complete or empty, and only into the next
+    // year the promotion recorded (never a hard-coded year). Completing a future
+    // year early must never skip it as the active year.
+    const activation = activationAfterPromotion({
+      sourceYear,
+      activeYear,
+      state: freshState,
+      counts,
+    });
+    const yearComplete = activation.reason === 'year-complete'
+      || isPromotionCompleteForYear(freshState, counts);
     let yearActivated = false;
-    // Activation belongs to the ACTIVE year only: completing a future year
-    // early must never skip it as the active year — it becomes active when
-    // the year before it completes, and only then may its own completion
-    // activate the year after it.
-    if (yearComplete && sourceYear === activeYear) {
-      const activation = await saveProfile({ academicYear: targetYear });
-      yearActivated = activation?.synced === true;
+    if (activation.activate) {
+      const saved = await saveProfile({ academicYear: activation.targetYear });
+      yearActivated = saved?.synced === true;
     }
     return { ...result, completionRecorded, yearActivated, yearComplete };
-  }, [schoolId, activeYear, canWriteTenant, advanceAcademicYear, runCloudSave, saveProfile, user?.uid, user?.name]);
+  }, [schoolId, activeYear, canWriteTenant, advanceAcademicYear, runCloudSave, saveProfile, user?.uid, user?.name, user?.email]);
 
   /**
    * Undoes ONE class's promotion (safe, standard): the next-year enrolments and
@@ -856,8 +883,11 @@ export function SchoolDataProvider({ children }) {
     if (!schoolId || !classId || !canWriteTenant || isReadOnlyRef.current) {
       return { synced: false, reason: 'read-only' };
     }
+    // The actor travels with the undo so the promotion log records WHO unlocked
+    // this class and WHEN (`meta/promotion/unlocks/{classId}`): name + email + uid.
+    const actor = { uid: user?.uid ?? '', name: user?.name ?? '', email: user?.email ?? '', role: user?.role ?? '' };
     const result = await runCloudSave(
-      () => undoClassPromotionService(schoolId, { year: sourceYear, nextYear: targetYear, classId }),
+      () => undoClassPromotionService(schoolId, { year: sourceYear, nextYear: targetYear, classId, actor }),
       { timeoutMs: 15000 },
     );
     if (result?.synced) {
@@ -867,7 +897,7 @@ export function SchoolDataProvider({ children }) {
       else setViewedPromotionState(await readPromotionState(schoolId, sourceYear));
     }
     return result;
-  }, [schoolId, activeYear, canWriteTenant, runCloudSave]);
+  }, [schoolId, activeYear, canWriteTenant, runCloudSave, user?.uid, user?.name, user?.email, user?.role]);
 
   /** Classes still waiting for promotion (with pupils, no completion record). */
   const promotionPending = useMemo(
@@ -893,6 +923,21 @@ export function SchoolDataProvider({ children }) {
   const viewPromotionCompleted = useMemo(
     () => completedClassIds(viewPromotionState),
     [viewPromotionState],
+  );
+  /**
+   * The six class rows of the year ON SCREEN for the promotion modal
+   * (`{ classId, name, complete, pending, students }`, school order) and the class
+   * the modal opens on — the FIRST unpromoted class, falling back to the last one
+   * once everything is done. Both come from ONE pure helper so the dropdown, the
+   * status list and the default selection can never disagree.
+   */
+  const viewClassPromotionStatuses = useMemo(
+    () => classPromotionStatuses(viewPromotionState, dataset.students),
+    [viewPromotionState, dataset.students],
+  );
+  const viewPromotionDefaultClassId = useMemo(
+    () => defaultPromotionClassId(viewPromotionState, classStudentCounts(dataset.students)),
+    [viewPromotionState, dataset.students],
   );
 
   /**
@@ -1036,6 +1081,8 @@ export function SchoolDataProvider({ children }) {
       januaryWarning,
       autoPromotionNotice,
       advanceClassYear,
+      viewClassPromotionStatuses,
+      viewPromotionDefaultClassId,
       undoClassPromotion,
       // sync status
       syncState,
@@ -1106,6 +1153,8 @@ export function SchoolDataProvider({ children }) {
       januaryWarning,
       autoPromotionNotice,
       advanceClassYear,
+      viewClassPromotionStatuses,
+      viewPromotionDefaultClassId,
       undoClassPromotion,
       syncState,
       isOnline,

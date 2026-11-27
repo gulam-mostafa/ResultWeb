@@ -36,6 +36,12 @@ import {
   classStudentCounts,
   pendingPromotionClasses,
   isPromotionCompleteForYear,
+  defaultPromotionClassId,
+  classPromotionStatuses,
+  unlockHistoryOf,
+  isClassReadOnly,
+  promotionTargetYear,
+  activationAfterPromotion,
   lockedViewClass,
   isYearReadOnly,
   yearLockBannerText,
@@ -46,6 +52,7 @@ import {
   UNDO_BLOCK_MESSAGES,
   markClassPromotionComplete,
   readPromotionState,
+  recordPromotionUnlock,
   markAutoPromotionDone,
   autoPromoteClassDecisions,
   undoClassPromotion,
@@ -143,8 +150,8 @@ assert.deepEqual(promotionClassIds(), ['pre', 'c1', 'c2', 'c3', 'c4', 'c5']);
 assert.equal(destinationClassOf('pre'), 'c1');
 assert.equal(destinationClassOf('c3'), 'c4');
 assert.equal(destinationClassOf('c5'), 'archive');
-assert.deepEqual(normalizePromotionState(null), { classes: {}, auto: null });
-assert.deepEqual(normalizePromotionState({}), { classes: {}, auto: null });
+assert.deepEqual(normalizePromotionState(null), { classes: {}, unlocks: {}, auto: null });
+assert.deepEqual(normalizePromotionState({}), { classes: {}, unlocks: {}, auto: null });
 
 const jan15 = januaryStatus(YEAR, new Date(2032, 0, 15));
 assert.equal(jan15.targetYear, '2032');
@@ -233,6 +240,105 @@ assert.ok(lockedBanner.includes('২০৩১'));
 assert.equal(lockedViewClass(true), 'locked-view', 'a locked year/class gets the monochrome treatment');
 assert.equal(lockedViewClass(false), '', 'an open year/class stays colourful');
 assert.equal(lockedViewClass(undefined), '', 'unknown is never treated as locked');
+
+/* ------------------------------------------------------------------ *
+ * §19.2c — promotion modal defaults: the FIRST unpromoted class wins
+ * (pre ➔ c1 ➔ … ➔ c5); when everything is done it falls back to the LAST
+ * class. The six-row status list paints "সম্পূর্ণ" only for a RECORDED
+ * promotion, and an empty class never blocks the year.
+ * ------------------------------------------------------------------ */
+const partialState = normalizePromotionState({
+  classes: {
+    pre: { completedAt: '2031-11-01T00:00:00.000Z', fromYear: YEAR, toYear: NEXT },
+    c1: { completedAt: '2031-11-02T00:00:00.000Z', fromYear: YEAR, toYear: NEXT },
+  },
+});
+assert.equal(
+  defaultPromotionClassId(normalizePromotionState(null), { pre: 2, c1: 3, c2: 1 }),
+  'pre',
+  'nothing promoted yet ⇒ pre-primary is the default',
+);
+assert.equal(
+  defaultPromotionClassId(partialState, { pre: 2, c1: 3, c2: 1, c4: 5 }),
+  'c2',
+  'default = the FIRST still-unpromoted class in school order',
+);
+assert.equal(
+  defaultPromotionClassId(allCompleteState, { pre: 2, c1: 3 }),
+  'c5',
+  'every class promoted ⇒ the LAST class is the fallback',
+);
+assert.equal(
+  defaultPromotionClassId(normalizePromotionState(null), { c3: 2 }),
+  'c3',
+  'empty classes are skipped by the default selection',
+);
+assert.equal(
+  defaultPromotionClassId(normalizePromotionState(null)),
+  'pre',
+  'without counts the first class without a record is the default',
+);
+
+const statuses = classPromotionStatuses(partialState, [
+  { id: 'x1', classId: 'c2' },
+  { id: 'x2', classId: 'c2' },
+  { id: 'x3', classId: 'c5' },
+]);
+assert.deepEqual(statuses.map((row) => row.classId), ['pre', 'c1', 'c2', 'c3', 'c4', 'c5'], 'all six classes, in order');
+assert.deepEqual(
+  statuses.map((row) => row.complete),
+  [true, true, false, false, false, false],
+  'only the RECORDED promotions are সম্পূর্ণ',
+);
+assert.deepEqual(
+  statuses.map((row) => row.students),
+  [0, 0, 2, 0, 0, 1],
+  'every row carries its pupil count',
+);
+assert.equal(statuses.find((row) => row.classId === 'c2').pending, true, 'a class with pupils and no record is pending');
+assert.equal(statuses.find((row) => row.classId === 'c3').pending, false, 'an empty class is never pending');
+assert.equal(statuses[0].name, 'প্রাক-প্রাথমিক', 'the row carries the Bangla class name');
+assert.equal(isPromotionCompleteForYear(partialState, { c2: 2, c5: 1 }), false, 'the year is not complete yet');
+
+/* ------------------------------------------------------------------ *
+ * §19.2d — a class is read-only ONLY in a past year or when THAT class is
+ * promoted; the destination class of the next year stays open.
+ * ------------------------------------------------------------------ */
+assert.equal(isClassReadOnly({ viewYear: YEAR, activeYear: YEAR, state: partialState, classId: 'pre' }), true, 'a promoted class is read-only in the active year');
+assert.equal(isClassReadOnly({ viewYear: YEAR, activeYear: YEAR, state: partialState, classId: 'c3' }), false, 'an unpromoted class stays editable');
+assert.equal(isClassReadOnly({ viewYear: YEAR, activeYear: YEAR, state: partialState, classId: 'archive' }), false, 'the archive pseudo-class is never class-locked');
+assert.equal(isClassReadOnly({ viewYear: NEXT, activeYear: YEAR, state: normalizePromotionState(null), classId: 'c4' }), false, 'the next year (destination class) is editable');
+assert.equal(isClassReadOnly({ viewYear: '2030', activeYear: YEAR, state: normalizePromotionState(null), classId: 'c4' }), true, 'a past year is read-only for every class');
+
+/* ------------------------------------------------------------------ *
+ * §19.2e — auto-activation: ONE class never moves the year; the ACTIVE year
+ * moves only when every class is done, into the year the promotion recorded.
+ * ------------------------------------------------------------------ */
+assert.equal(promotionTargetYear(partialState), NEXT, 'the recorded destination year is read from the log');
+assert.deepEqual(
+  activationAfterPromotion({ sourceYear: YEAR, activeYear: YEAR, state: partialState, counts: { c2: 2, c5: 1 } }),
+  { activate: false, targetYear: '', reason: 'classes-pending' },
+  'one pending class ⇒ no activation',
+);
+assert.equal(
+  activationAfterPromotion({ sourceYear: YEAR, activeYear: YEAR, state: partialState, counts: { c2: 2, c5: 1 } }).activate,
+  false,
+);
+assert.deepEqual(
+  activationAfterPromotion({ sourceYear: YEAR, activeYear: YEAR, state: allCompleteState, counts: { pre: 2, c5: 2 } }),
+  { activate: true, targetYear: NEXT, reason: 'year-complete' },
+  'every class done ⇒ the next year becomes active',
+);
+assert.equal(
+  activationAfterPromotion({ sourceYear: NEXT, activeYear: YEAR, state: allCompleteState, counts: {} }).reason,
+  'not-active-year',
+  'completing a FUTURE year early never skips it as the active year',
+);
+assert.equal(
+  activationAfterPromotion({ sourceYear: YEAR, activeYear: YEAR, state: allCompleteState, counts: {} }).activate,
+  true,
+  'empty classes count as complete ⇒ the year may advance',
+);
 
 /* ------------------------------------------------------------------ *
  * §19.3 — stored-grade auto decisions for class-5 (2031).
@@ -445,3 +551,122 @@ assert.equal(januaryStatus(YEAR, new Date(2032, 1, 1)).isAutoDue, true, 'Jan log
 assert.equal(januaryStatus(NEXT, new Date(2032, 1, 1)).isAutoDue, false, 'same date is NOT auto-due for 2032 (its target is 2033)');
 
 console.log('PASS — annual promotion (2031→2032): year-agnostic helpers, January dates, per-class lock, merit rolls + section override, undo safety + undo + re-promotion, কার্যক্রম সম্পূর্ণ label + locked-view treatment, past-year-only read-only + forever-locked source class + open next year');
+
+/* ------------------------------------------------------------------ *
+ * §19.9 — "আনলক করুন" (unlock) is the same guarded undo + an audit row.
+ *
+ * The class is promoted again above, then unlocked by a named admin:
+ *  - a BLOCKED unlock keeps the class locked and writes no audit row;
+ *  - a clean unlock reopens the class and records WHO (name + email + uid +
+ *    role) and WHEN in `sessions/{year}/meta/promotion/unlocks/{classId}`;
+ *  - the audit survives the next promotion (it is a SIBLING of `classes`);
+ *  - the active year never moves on an unlock.
+ * ------------------------------------------------------------------ */
+const repromotionRecord = await markClassPromotionComplete(SCHOOL, {
+  year: YEAR,
+  classId: 'c3',
+  toYear: NEXT,
+  promoted: 2,
+  retained: 1,
+  graduated: 0,
+  moved: ['STU-2031-0001', 'STU-2031-0002', 'STU-2031-0003'],
+  graduatedIds: [],
+  destinations: {
+    'STU-2031-0001': 'c4',
+    'STU-2031-0002': 'c4',
+    'STU-2031-0003': 'c3',
+  },
+  auto: false,
+  completedBy: 'u1',
+  completedByName: 'শিক্ষক',
+  completedByEmail: 'teacher@example.com',
+});
+assert.equal(repromotionRecord.synced, true, 'the class is promoted again before the unlock');
+const lockedState = await readPromotionState(SCHOOL, YEAR);
+assert.equal(isClassPromotionComplete(lockedState, 'c3'), true, 'a promoted class is locked');
+assert.equal(lockedState.classes.c3.completedByEmail, 'teacher@example.com', 'the promoter email is stored');
+
+// (a) A blocked unlock keeps the class locked and records NOTHING.
+seed(`${nextPath}/results/class-4/final/STU-2031-0002`, { meritPosition: 1, gpa: 5, grade: 'A+' });
+const blockedUnlock = await undoClassPromotion(SCHOOL, {
+  year: YEAR,
+  nextYear: NEXT,
+  classId: 'c3',
+  actor: { uid: 'admin-9', name: 'অ্যাডমিন', email: 'admin@example.com', role: 'school_admin' },
+});
+assert.equal(blockedUnlock.synced, false, 'the unlock is refused while next-year marks exist');
+assert.equal(blockedUnlock.blockReason, 'has-marks', 'the block reason is the guarded-undo reason');
+assert.equal(typeof blockedUnlock.message, 'string', 'a Bangla block message is returned');
+const stillLocked = await readPromotionState(SCHOOL, YEAR);
+assert.equal(isClassPromotionComplete(stillLocked, 'c3'), true, 'a blocked unlock never reopens the class');
+assert.deepEqual(unlockHistoryOf(stillLocked, 'c3'), [], 'a blocked unlock writes no audit row');
+
+// (b) A clean unlock reopens the class AND records the actor.
+delete at(`${nextPath}/results/class-4/final`)['STU-2031-0002'];
+const unlock = await undoClassPromotion(SCHOOL, {
+  year: YEAR,
+  nextYear: NEXT,
+  classId: 'c3',
+  actor: { uid: 'admin-9', name: 'মোছাঃ সালমা আক্তার', email: 'salma@example.com', role: 'school_admin' },
+});
+assert.equal(unlock.synced, true, 'the unlock runs when nothing newer exists');
+assert.deepEqual(unlock.audit, { synced: true }, 'the audit write is reported');
+assert.deepEqual(unlock.undone, { promoted: 2, retained: 1, graduated: 0 });
+const unlockedState = await readPromotionState(SCHOOL, YEAR);
+assert.equal(isClassPromotionComplete(unlockedState, 'c3'), false, 'the unlocked class is editable again');
+const auditRows = unlockHistoryOf(unlockedState, 'c3');
+assert.equal(auditRows.length, 1, 'exactly one unlock is recorded');
+assert.equal(auditRows[0].name, 'মোছাঃ সালমা আক্তার', 'the audit stores the admin name');
+assert.equal(auditRows[0].email, 'salma@example.com', 'the audit stores the admin email');
+assert.equal(auditRows[0].uid, 'admin-9', 'the audit stores the admin uid');
+assert.equal(auditRows[0].by, 'school_admin', 'the audit stores the admin role');
+assert.ok(auditRows[0].at && !Number.isNaN(Date.parse(auditRows[0].at)), 'the audit stores a real timestamp');
+assert.equal(at(`${BASE}/profile`).academicYear, YEAR, 'an unlock never changes the active year');
+assert.equal(at(`${nextPath}/students/class-4/ক/STU-2031-0002`), undefined, 'the unlock deleted the next-year enrolment');
+assert.equal(at(`${BASE}/studentMaster/STU-2031-0002`).currentClassId, 'c3', 'the pupil points back at the source class');
+// The unlock audit lives NEXT TO `classes`, so it cannot be wiped by the next promotion.
+assert.ok(at(`${yearPath}/meta/promotion/unlocks/c3`), 'the audit node is a sibling of the class records');
+
+// (c) Promote again: the class locks again and the audit still names the unlocker.
+await promoteSession(SCHOOL, { year: YEAR, nextYear: NEXT, decisions, advanceProfileYear: false });
+await markClassPromotionComplete(SCHOOL, {
+  year: YEAR,
+  classId: 'c3',
+  toYear: NEXT,
+  promoted: 2,
+  retained: 1,
+  moved: ['STU-2031-0001', 'STU-2031-0002', 'STU-2031-0003'],
+  destinations: { 'STU-2031-0001': 'c4', 'STU-2031-0002': 'c4', 'STU-2031-0003': 'c3' },
+  completedBy: 'u1',
+  completedByName: 'শিক্ষক',
+});
+const afterRepromote = await readPromotionState(SCHOOL, YEAR);
+assert.equal(isClassPromotionComplete(afterRepromote, 'c3'), true, 'the class is locked again after the unlock + re-promotion');
+assert.equal(unlockHistoryOf(afterRepromote, 'c3')[0].name, 'মোছাঃ সালমা আক্তার', 'the unlock audit survives the next promotion');
+
+// (d) A second unlock is appended (newest first), never overwriting the first.
+const secondUnlock = await undoClassPromotion(SCHOOL, {
+  year: YEAR,
+  nextYear: NEXT,
+  classId: 'c3',
+  actor: { uid: 'admin-10', name: 'পরিচালক', email: 'director@example.com' },
+  mode: 'undo',
+});
+assert.equal(secondUnlock.synced, true, 'the class can be unlocked again');
+const twoUnlocks = unlockHistoryOf(await readPromotionState(SCHOOL, YEAR), 'c3');
+assert.equal(twoUnlocks.length, 2, 'both unlocks are kept');
+assert.equal(twoUnlocks[0].name, 'পরিচালক', 'the newest unlock is listed first');
+assert.equal(twoUnlocks[1].name, 'মোছাঃ সালমা আক্তার', 'the older unlock is still there');
+
+// (e) `recordPromotionUnlock` is the audit writer on its own.
+const directAudit = await recordPromotionUnlock(SCHOOL, {
+  year: YEAR,
+  classId: 'c5',
+  actor: { uid: 'admin-11', name: 'নিরীক্ষক', email: 'auditor@example.com' },
+});
+assert.equal(directAudit.synced, true, 'the audit writer works standalone');
+const c5Audit = unlockHistoryOf(await readPromotionState(SCHOOL, YEAR), 'c5');
+assert.equal(c5Audit.length, 1);
+assert.equal(c5Audit[0].email, 'auditor@example.com');
+
+console.log('PASS — unlock (আনলক করুন): same guarded undo + audit of name/email/uid/time, a blocked unlock writes nothing, the audit survives re-promotion, no year change');
