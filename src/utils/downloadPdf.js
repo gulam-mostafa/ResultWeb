@@ -49,14 +49,44 @@ export function sanitizePdfFilename(name) {
 }
 
 /**
+ * একটি SVG-এর RENDER করা (CSS) মাপ — PDF ক্যাপচারে SVG-কে `<img>` দিয়ে
+ * বদলানোর সময় এই মাপটাই ব্যবহার হয়, SVG-র `width` অ্যাট্রিবিউট নয়।
+ *
+ * কেন: QRCodeSVG-তে `size={160}` থাকায় SVG-র width অ্যাট্রিবিউট 160 —
+ * পুরনো কোড সেটাই ছবির মাপ ধরত (160px ≈ 42mm), ফলে কমপ্যাক্ট শিটে
+ * CSS-এর 24mm QR-ও PDF-এ 42mm হয়ে যেত; বাড়তি ~18mm-এ শিটের
+ * বিষয়বস্তু 129.4mm বাক্স ছাড়িয়ে যেত, টেবিলের সারি চাপা পড়ত আর
+ * স্বাক্ষর কাটা যেত। রেন্ডার করা মাপ নিলে ছবিটা স্ক্রিনের মতোই 24mm থাকে।
+ *
+ * ক্রম: getBoundingClientRect (CSS-প্রযোজ্য আসল মাপ) → getComputedStyle →
+ * width/height অ্যাট্রিবিউট → 160।
+ */
+export function svgRenderSize(svg) {
+  const rect = svg?.getBoundingClientRect?.();
+  if (rect && rect.width > 0 && rect.height > 0) {
+    return { width: rect.width, height: rect.height };
+  }
+  const view = svg?.ownerDocument?.defaultView;
+  const computed = view?.getComputedStyle?.(svg);
+  const cw = Number.parseFloat(computed?.width ?? '');
+  const ch = Number.parseFloat(computed?.height ?? '');
+  if (Number.isFinite(cw) && cw > 0 && Number.isFinite(ch) && ch > 0) {
+    return { width: cw, height: ch };
+  }
+  const aw = Number(svg?.getAttribute?.('width') || 0);
+  const ah = Number(svg?.getAttribute?.('height') || 0);
+  return { width: aw > 0 ? aw : 160, height: ah > 0 ? ah : 160 };
+}
+
+/**
  * ক্লোন করা ডকুমেন্টের প্রতিটি ইনলাইন SVG-কে data-URL ছবি দিয়ে বদলে দেওয়া —
  * html2canvas SVG আঁকতে পারে না, `<img>` পারে। QR কোড এভাবেই PDF-এ আসে।
+ * ছবির মাপ SVG-র রেন্ডার করা মাপ (উপরের `svgRenderSize`) — অ্যাট্রিবিউট নয়।
  */
 function swapSvgsForImages(clonedDoc) {
   clonedDoc.querySelectorAll('svg').forEach((svg) => {
     try {
-      const width = Number(svg.getAttribute('width') || svg.clientWidth || 160);
-      const height = Number(svg.getAttribute('height') || svg.clientHeight || 160);
+      const { width, height } = svgRenderSize(svg);
       const clone = svg.cloneNode(true);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       clone.setAttribute('width', String(width));
@@ -66,6 +96,9 @@ function swapSvgsForImages(clonedDoc) {
       )}`;
       const img = clonedDoc.createElement('img');
       img.src = dataUrl;
+      // SVG-র ক্লাস (যেমন .rsheet__qr / .doc-qr) ছবিতেও রাখা হয়, যাতে
+      // CSS-এর বাকি নিয়ম (display, margin) একই থাকে।
+      if (svg.getAttribute('class')) img.setAttribute('class', svg.getAttribute('class'));
       img.width = width;
       img.height = height;
       img.style.width = `${width}px`;

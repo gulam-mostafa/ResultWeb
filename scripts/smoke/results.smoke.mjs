@@ -917,9 +917,21 @@ const fadeInBlock = tailwindConfigSrc.slice(fadeInAt, tailwindConfigSrc.indexOf(
 assert.ok(!fadeInBlock.includes('transform'), 'the fade-in keyframes keep no transform on <main> after the animation');
 assert.ok(fadeInBlock.includes('opacity'), 'the fade-in animation still fades in');
 
+// 5i — <main> must not carry `animate-fade-in` at all (belt & braces with
+// the 5h keyframes fix): the class is what put a transform on <main>, and a
+// tailwind.config.js change does not reliably reach an already-running Vite
+// dev server, so the robust fix removes the class from the JSX itself —
+// Vite HMR picks a JSX change up immediately, and even a stale cached CSS
+// cannot put a transform on <main> when the class is gone.
+const appLayoutSrc = readFileSync(
+  path.join(process.cwd(), 'src/components/layout/AppLayout.jsx'), 'utf8',
+);
+assert.ok(!appLayoutSrc.includes('animate-fade-in'), 'the app <main> carries no fade-in animation, so no transform can ever make it a containing block for the pinned header');
+assert.ok(appLayoutSrc.includes('key={location.pathname}'), 'the <main> still remounts per route');
+
 // PDF slot geometry: a sheet whose aspect matches the slot fills it exactly
 // (no centring gap); a genuinely short sheet still centres (nothing cut).
-const { fitSheetIntoSlot } = await import('../../src/utils/downloadPdf.js');
+const { fitSheetIntoSlot, svgRenderSize } = await import('../../src/utils/downloadPdf.js');
 assert.deepEqual(
   fitSheetIntoSlot(171.9, 129.4, 171.9, 129.45),
   { x: 0, y: 0, w: 171.9, h: 129.45 },
@@ -941,6 +953,38 @@ assert.ok(
 assert.ok(
   compactBase.some((rule) => rule.includes('overflow: hidden')),
   'a pair sheet can never spill past its half-page box (print or screen)',
+);
+
+// 5i — the PDF QR swap must use the SVG's RENDERED size, not its `width`
+// attribute: QRCodeSVG carries size={160}, so the old swap forced the PDF QR
+// to 160px (≈42mm) and squished the half-page sheet (rows cut, signatures
+// clipped). The rendered size is the CSS 24mm (≈91px) in compact layout.
+assert.deepEqual(
+  svgRenderSize({ getBoundingClientRect: () => ({ width: 90.7, height: 90.7 }), getAttribute: () => '160' }),
+  { width: 90.7, height: 90.7 },
+  'the swap sizes the QR image from its rendered (CSS) size, not the 160px width attribute',
+);
+assert.deepEqual(
+  svgRenderSize({
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ width: '120px', height: '120px' }) } },
+    getAttribute: () => '160',
+  }),
+  { width: 120, height: 120 },
+  'with no layout box, the swap falls back to the computed style size',
+);
+assert.deepEqual(
+  svgRenderSize({
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ width: 'auto', height: 'auto' }) } },
+    getAttribute: (name) => (name === 'width' ? '160' : '160'),
+  }),
+  { width: 160, height: 160 },
+  'with neither layout nor computed size, the swap falls back to the width attribute',
+);
+assert.ok(
+  pdfSrc.includes('svgRenderSize(svg)') && !pdfSrc.includes("svg.getAttribute('width') || svg.clientWidth"),
+  'swapSvgsForImages sizes every replacement image from the rendered size',
 );
 
 console.log('PASS — sticky scroll bar mounts, one pinned header + one top scrollbar, PDF slot geometry');
