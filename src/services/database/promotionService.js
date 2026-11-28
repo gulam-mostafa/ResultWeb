@@ -49,7 +49,7 @@ import {
   safeMultiPathUpdate,
 } from './dbFallback.js';
 import { nextSessionYear } from './sessionService.js';
-import { readYearRoster, toDbClassId } from './studentService.js';
+import { readYearRoster, toAppClassId, toDbClassId } from './studentService.js';
 
 const asRecord = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 const asList = (value) => (Array.isArray(value) ? value.filter(Boolean) : []);
@@ -520,8 +520,110 @@ export async function markClassPromotionComplete(schoolId, {
     destinations: asRecord(destinations),
     auto: auto === true,
   });
-  return safeUpdate(path, { classes: { [classId]: record } });
+  // RTDB `update()` replaces the whole `classes` node with the patch value, so
+  // writing `{ classes: { [classId]: record } }` DELETED every other class's
+  // completion record — each promotion wiped the earlier "সম্পূর্ণ" badges.
+  // The slash-key writes only this class's leaf, so records accumulate.
+  return safeUpdate(path, { [`classes/${classId}`]: record });
 }
+
+/**
+ * Repairs completion records lost by the old write bug: `markClassPromotionComplete`
+ * used to write `{ classes: { [classId]: record } }` through `safeUpdate`, and an
+ * RTDB `update()` replaces the WHOLE `classes` node with that one class — so every
+ * promotion silently deleted the earlier classes' records and their "সম্পূর্ণ"
+ * badges flipped back to "বাকি". (The write now uses the slash-key
+ * `classes/{classId}`, so new promotions accumulate correctly.)
+ *
+ * A lost record is rebuilt from the NEXT year's roster: a pupil sitting there with
+ * `promotedFromYear === year` and `promotedFromClass === classId` arrived through
+ * that class's promotion. Class-5 leavers are rebuilt from the year's
+ * `passedArchive` instead (they never enrol next year). Classes that already have
+ * a record are never touched, so the repair is idempotent and safe to run after
+ * every promotion.
+ */
+export async function backfillMissingPromotionRecords(schoolId, {
+  year = '',
+  toYear = '',
+  by = null,
+} = {}) {
+  const fromYear = normalizeSessionYear(year);
+  const targetYear = normalizeSessionYear(toYear, fromYear ? nextSessionYear(fromYear) : '');
+  if (!schoolId || !fromYear || !targetYear || targetYear === fromYear) {
+    return { synced: false, repaired: [] };
+  }
+  const state = await readPromotionState(schoolId, fromYear);
+  const { students: nextYearStudents, archive } = await readYearRoster(schoolId, targetYear);
+  const orderOf = (classId) => CLASS_LEVELS.findIndex((level) => level.id === classId);
+  // Pupils the source year already moved into the target year, grouped by the
+  // class they were promoted FROM (stored as DB keys — normalised to app ids).
+  const bySourceClass = new Map();
+  asList(nextYearStudents).forEach((student) => {
+    if (!student?.promotedAt) return;
+    if (normalizeSessionYear(student?.promotedFromYear) !== fromYear) return;
+    const sourceClass = toAppClassId(student?.promotedFromClass || student?.previousClassId || '');
+    if (!sourceClass) return;
+    const list = bySourceClass.get(sourceClass) ?? [];
+    list.push(student);
+    bySourceClass.set(sourceClass, list);
+  });
+  // Class-5 leavers: they never enrol next year, they sit in passedArchive.
+  const graduatedByClass = new Map();
+  asList(archive).forEach((row) => {
+    if (normalizeSessionYear(row?.passedYear) !== fromYear) return;
+    const sourceClass = toAppClassId(row?.archivedFromClass || '');
+    if (!sourceClass) return;
+    const list = graduatedByClass.get(sourceClass) ?? [];
+    list.push(row);
+    graduatedByClass.set(sourceClass, list);
+  });
+  const repaired = [];
+  const classes = new Set([...bySourceClass.keys(), ...graduatedByClass.keys()]);
+  for (const classId of classes) {
+    if (asRecord(state.classes[classId]).completedAt) continue;
+    const movedRows = bySourceClass.get(classId) ?? [];
+    const graduatedRows = graduatedByClass.get(classId) ?? [];
+    if (movedRows.length === 0 && graduatedRows.length === 0) continue;
+    const moved = [];
+    const destinations = {};
+    let promoted = 0;
+    let retained = 0;
+    const sourceOrder = orderOf(classId);
+    movedRows.forEach((student) => {
+      const id = toId(student?.studentMasterId || student?.id);
+      const destClass = student?.classId;
+      if (!id || !destClass) return;
+      moved.push(id);
+      destinations[id] = destClass;
+      const destOrder = orderOf(destClass);
+      if (destOrder === sourceOrder) retained += 1;
+      else if (destOrder > sourceOrder) promoted += 1;
+      // A demoted pupil (destOrder < sourceOrder) is in `moved` but counts in
+      // neither `promoted` nor `retained` — same as the live path.
+    });
+    const graduatedIds = graduatedRows
+      .map((row) => toId(row?.studentMasterId || row?.id))
+      .filter(Boolean);
+    const result = await markClassPromotionComplete(schoolId, {
+      year: fromYear,
+      classId,
+      toYear: targetYear,
+      promoted,
+      retained,
+      graduated: graduatedIds.length,
+      moved,
+      graduatedIds,
+      destinations,
+      auto: false,
+      completedBy: by?.uid ?? '',
+      completedByName: by?.name ?? '',
+      completedByEmail: by?.email ?? '',
+    });
+    if (result?.synced !== false) repaired.push(classId);
+  }
+  return { synced: true, repaired };
+}
+
 
 /** RTDB-safe unique key for one audit row (no `.`/`:`/`$`/`#`/`[`/`]`/`/`). */
 const auditKey = () => `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -553,7 +655,10 @@ export async function recordPromotionUnlock(schoolId, {
     classId,
     year: normalizeSessionYear(year),
   });
-  return safeUpdate(`${path}/unlocks`, { [classId]: { [auditKey()]: record } });
+  // Slash-key, same reason as markClassPromotionComplete: a nested object here
+  // would replace the whole `unlocks` node and erase other classes' audit rows.
+  const key = auditKey();
+  return safeUpdate(`${path}/unlocks`, { [`${classId}/${key}`]: record });
 }
 
 /** Marks the January auto-run as done for a year (idempotency across sessions). */

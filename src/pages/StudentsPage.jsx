@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { UserPlus, ArrowUpRight, Sparkles, RotateCcw, Search, FileSpreadsheet, Download, Upload, Lock } from 'lucide-react';
+import { UserPlus, ArrowUpRight, Sparkles, RotateCcw, Search, FileSpreadsheet, Download, Upload, Lock, Unlock } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -41,6 +41,12 @@ export default function StudentsPage() {
   const [restoring, setRestoring] = useState(null);
   const [restoreClassId, setRestoreClassId] = useState('pre');
   const [promoting, setPromoting] = useState(false);
+  const [unlockOnly, setUnlockOnly] = useState(false);
+  // দেখা সালে অন্তত একটা শ্রেণির প্রমোশন সম্পূর্ণ হলে তবেই আনলক বাটন চালু হবে।
+  const hasCompletedClass = CLASS_LEVELS.some((level) => viewPromotionState?.classes?.[level.id]?.completedAt);
+  // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, যদি তার
+  // গন্তব্য সালটাই সক্রিয় সাল হয় (যেমন ২০২৬ → ২০২৭, যখন ২০২৭ সক্রিয়)।
+  const canLatePromote = isReadOnly && String(nextSessionYear(viewYear)) === String(activeYear);
   const [demoMessage, setDemoMessage] = useState('');
   /* ---- 6-sheet Excel download / upload ---- */
   const [downloadWarningOpen, setDownloadWarningOpen] = useState(false);
@@ -65,9 +71,9 @@ export default function StudentsPage() {
   /**
    * A finished class (promotion complete) shows monochrome + a
    * "কার্যক্রম সম্পূর্ণ" mark. Only in the ACTIVE year: in a past year the
-   * whole shell is already locked-view and the year banner speaks for it,
-   * and `isClassLocked` there is true for every class whether or not its
-   * own promotion finished. The archive tab is never class-locked.
+   * whole shell is already locked-view and the year banner speaks for it.
+   * A class locks ONLY when its own promotion finishes — never just
+   * because the year is past. The archive tab is never class-locked.
    */
   const tabLocked = sectioned && !isReadOnly && isClassLocked(tab);
   /**
@@ -336,7 +342,8 @@ export default function StudentsPage() {
           <Upload size={15} /> {parsing ? 'যাচাই হচ্ছে…' : 'এক্সেল আপলোড'}
           <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={parsing || isReadOnly} aria-label="শিক্ষার্থী এক্সেল আপলোড" />
         </label>
-        <button className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly} title={isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
+        <button className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly && !canLatePromote} title={canLatePromote ? 'আগের সালের বাকি শ্রেণির প্রমোশন করা যাবে — শিক্ষার্থীরা সক্রিয় সালে যাবে' : (isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined)}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
+        <button className="btn-secondary" onClick={() => { setUnlockOnly(true); setPromoting(true); }} disabled={!hasCompletedClass} title={hasCompletedClass ? 'সম্পূর্ণ শ্রেণির প্রমোশন ফিরিয়ে আনলক করুন' : 'আনলক করার মতো সম্পূর্ণ শ্রেণি নেই — আগে কোনো শ্রেণির প্রমোশন সম্পূর্ণ করুন'}><Unlock size={15} /> আনলক করুন</button>
         <button className="btn-primary" onClick={() => setAdding(true)} disabled={isReadOnly || isClassLocked(tab)} title={isClassLocked(tab) ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — নতুন ভর্তি নেওয়া যাবে না' : undefined}><UserPlus size={15} /> নতুন ভর্তি</button>
       </>}
     </div>
@@ -417,7 +424,10 @@ export default function StudentsPage() {
     </Modal>
     <AutoPromotionModal
       open={promoting}
-      onClose={() => setPromoting(false)}
+      onClose={() => { setPromoting(false); setUnlockOnly(false); }}
+      unlockOnly={unlockOnly}
+      isReadOnly={isReadOnly}
+      canLatePromote={canLatePromote}
       students={students}
       allStudents={students}
       marks={marks}

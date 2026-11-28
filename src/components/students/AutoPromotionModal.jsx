@@ -172,6 +172,12 @@ export default function AutoPromotionModal({
   promotionState = null,
   /** `async (classId, year) => {synced, message?}` — undoes one class's promotion from the given year (the year on screen). */
   onUndoClass = null,
+  /** `true` = মোডাল শুধু আনলকের জন্য খুলেছে — প্রথম সম্পূর্ণ শ্রেণি সিলেক্ট হবে। */
+  unlockOnly = false,
+  /** `true` = দেখা সালটি লক করা (আগের সাল) — নতুন প্রমোশন করা যাবে না, শুধু আনলক করা যাবে; ব্যতিক্রম: canLatePromote হলে এই সালের বাকি শ্রেণির প্রমোশন করা যাবে। */
+  isReadOnly = false,
+  /** `true` = দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, কারণ তার গন্তব্য সালটাই সক্রিয় সাল। */
+  canLatePromote = false,
   /**
    * What this session's automatic 31-January run did (or `null`). The promotion
    * page shows the same warning/notice strip as the Dashboard, because the teacher
@@ -346,9 +352,12 @@ export default function AutoPromotionModal({
     const counts = classStudentCounts(students);
     const anyPending = classStatuses.some((status) => !status.complete);
     const hinted = CLASS_LEVELS.some((level) => level.id === defaultClassId) ? defaultClassId : '';
-    const next = anyPending
-      ? defaultPromotionClassId(promotionState, counts)
-      : (hinted || defaultPromotionClassId(promotionState, counts));
+    const firstCompleted = classStatuses.find((status) => status.complete)?.classId;
+    const next = unlockOnly && firstCompleted
+      ? firstCompleted
+      : (anyPending
+        ? defaultPromotionClassId(promotionState, counts)
+        : (hinted || defaultPromotionClassId(promotionState, counts)));
     autoSelectedRef.current = next;
     setOverrides({});
     setSectionOverrides({});
@@ -356,7 +365,7 @@ export default function AutoPromotionModal({
     // `classId` is read for the "just promoted" test on purpose — it is NOT a
     // trigger, otherwise every manual pick would re-run the auto selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, defaultClassId, classStatuses, promotionState, students]);
+  }, [open, defaultClassId, unlockOnly, classStatuses, promotionState, students]);
 
   /** A manual class pick wins until that class is promoted or the modal reopens. */
   const pickClass = (nextClassId) => {
@@ -727,7 +736,9 @@ export default function AutoPromotionModal({
             </div>
           ) : null}
         </div>
-      ) : null}
+      ) : (unlockOnly ? (
+        <p className="rounded-xl border border-slate-300 bg-slate-100 p-4 text-sm font-semibold text-slate-900">{canLatePromote ? 'আনলক করতে উপরের তালিকা থেকে সম্পূর্ণ শ্রেণি বাছুন — অথবা নিচের "উত্তরণ কার্যকর" চাপলে এই শ্রেণির প্রমোশন হবে।' : 'আনলক করতে উপরের তালিকা থেকে সম্পূর্ণ শ্রেণি বাছুন — শুধু সম্পূর্ণ শ্রেণিই আনলক করা যায়।'}</p>
+      ) : null)}
       {undoMessage ? (
         <p
           role="status"
@@ -807,7 +818,7 @@ export default function AutoPromotionModal({
 
       <div className="flex justify-end gap-2">
         <button className="btn-secondary" onClick={onClose}>বাতিল</button>
-        <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running || isClassComplete} title={isClassComplete ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — আবার করা যাবে না' : undefined}><ArrowUpRight size={15}/> {isClassComplete ? 'প্রমোশন সম্পূর্ণ ✓' : `উত্তরণ কার্যকর (${toBanglaNumber(ranked.length)} জন)`}</button>
+        <button className="btn-primary" onClick={requestExecute} disabled={!ranked.length || running || isClassComplete || (isReadOnly && !canLatePromote)} title={isClassComplete ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — আবার করা যাবে না' : ((isReadOnly && !canLatePromote) ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined)}><ArrowUpRight size={15}/> {isClassComplete ? 'প্রমোশন সম্পূর্ণ ✓' : `উত্তরণ কার্যকর (${toBanglaNumber(ranked.length)} জন)`}</button>
       </div>
 
     </div>

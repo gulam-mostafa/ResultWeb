@@ -45,6 +45,7 @@ import {
   subscribePromotionState,
   readPromotionState,
   markClassPromotionComplete,
+  backfillMissingPromotionRecords,
   markAutoPromotionDone,
   undoClassPromotion as undoClassPromotionService,
 } from '../services/database/promotionService.js';
@@ -161,8 +162,9 @@ export function SchoolDataProvider({ children }) {
   /**
    * One year's promotion log (`sessions/{activeYear}/meta/promotion`), live:
    * which classes are complete, when, by whom, and who moved where. The viewed
-   * year never matters here — a past year is read-only, so every class is
-   * locked by `isReadOnly` alone.
+   * year never matters here — a past year is read-only at the year level
+   * (`isReadOnly` blocks writes), while a class counts as locked only when
+   * its own promotion is recorded complete.
    */
   const [promotionState, setPromotionState] = useState(() => normalizePromotionState(null));
   const [promotionStateLoaded, setPromotionStateLoaded] = useState(false);
@@ -186,18 +188,20 @@ export function SchoolDataProvider({ children }) {
   const viewPromotionState = viewYear === activeYear ? promotionState : viewedPromotionState;
 
   /**
-   * `true` when a class is frozen: the whole year is read-only (a past year),
-   * or this class's year-end promotion is recorded as complete in the VIEWED
-   * year's log. A promoted class stays locked forever — the completion record
-   * is only ever removed by the guarded undo, never by a year change, a
-   * reload, or the January auto-run. The archive pseudo-class is never locked
-   * by promotion (its own rules apply).
+   * `true` when a class is frozen: ONLY when this class's year-end promotion
+   * is recorded as complete in the VIEWED year's log. A class is NEVER locked
+   * just because its year is past — the past year is read-only at the YEAR
+   * level (`isReadOnly` blocks every write there), but the class itself
+   * counts as locked only after its own promotion finishes. A promoted
+   * class stays locked forever — the completion record is only ever removed
+   * by the guarded undo (the Unlock button), never by a year change, a
+   * reload, or the January auto-run. The archive pseudo-class is never
+   * locked by promotion (its own rules apply).
    */
   const isClassLocked = useCallback((classId) => {
     if (!classId || classId === 'archive') return false;
-    if (isReadOnly) return true;
     return isClassPromotionComplete(viewPromotionState, classId);
-  }, [isReadOnly, viewPromotionState]);
+  }, [viewPromotionState]);
   const isClassLockedRef = useRef(isClassLocked);
   isClassLockedRef.current = isClassLocked;
   /** Writes are allowed only for a manager in the ACTIVE year. */
@@ -766,7 +770,11 @@ export function SchoolDataProvider({ children }) {
     if (!fromClassId || !CLASS_LEVELS.some((item) => item.id === fromClassId)) {
       return { ...empty, reason: 'invalid-class' };
     }
-    if (!canWriteTenant || isReadOnlyRef.current) return { ...empty, reason: 'read-only' };
+    // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, যদি তার
+    // গন্তব্য সালটাই সক্রিয় সাল হয় (যেমন ২০২৬ → ২০২৭, যখন ২০২৭ সক্রিয়)।
+    // অন্য সব ক্ষেত্রে লক করা সালে প্রমোশন আগের মতোই বন্ধ থাকবে।
+    const isLatePromotion = Number(sourceYear) < Number(activeYear) && targetYear === activeYear;
+    if (!canWriteTenant || (isReadOnlyRef.current && !isLatePromotion)) return { ...empty, reason: 'read-only' };
     // The "already complete" guard must read the SOURCE year's log, not the
     // active year's: promoting a class in a viewed future year is refused
     // when THAT year already completed it, and is NOT refused because the
@@ -826,6 +834,20 @@ export function SchoolDataProvider({ children }) {
       completedByEmail: user?.email ?? '',
     }), { timeoutMs: 8000 });
     const completionRecorded = recordResult?.synced !== false;
+    // 2b. মেরামত: পুরনো লেখার বাগে (classes নোড পুরোটা বদলে যেত) আগের শ্রেণিগুলোর
+    // সম্পূর্ণ-রেকর্ড মুছে গিয়েছিল। পরের সালের রোস্টার দেখে সেই রেকর্ডগুলো
+    // ফিরিয়ে আনো — যে শ্রেণির শিক্ষার্থী ইতিমধ্যে পরের সালে আছে অথচ রেকর্ড
+    // নেই, তাদের রেকর্ড লিখে দাও। রেকর্ড আছে এমন শ্রেণি ছোঁয়া হয় না।
+    // মেরামত ব্যর্থ হলেও প্রমোশন ব্যর্থ হবে না।
+    try {
+      await backfillMissingPromotionRecords(schoolId, {
+        year: sourceYear,
+        toYear: targetYear,
+        by: { uid: user?.uid ?? '', name: user?.name ?? '', email: user?.email ?? '' },
+      });
+    } catch {
+      // Repair is best-effort: the promotion itself already succeeded.
+    }
     // 3. Fresh state, then: all six classes done ⇒ activate the next year. The
     //    class counts come from the CLOUD roster (authoritative); the local roster
     //    is only the fallback when that read comes back empty — a stale local
@@ -880,7 +902,10 @@ export function SchoolDataProvider({ children }) {
   const undoClassPromotion = useCallback(async (classId, year = activeYear) => {
     const sourceYear = normalizeSessionYear(year, activeYear);
     const targetYear = nextSessionYear(sourceYear);
-    if (!schoolId || !classId || !canWriteTenant || isReadOnlyRef.current) {
+    // আনলক (undo) লক করা সালেও চলবে — এটাই লক করা শ্রেণি ঠিক করার একমাত্র রাস্তা।
+    // নতুন প্রমোশন advanceClassYear-এর read-only গেটেই আটকায়; এখানে শুধু
+    // সার্ভিসের নিজের নিরাপত্তা যাচাই (পরের সালে ভর্তি/নম্বর/উপস্থিতি) প্রযোজ্য।
+    if (!schoolId || !classId || !canWriteTenant) {
       return { synced: false, reason: 'read-only' };
     }
     // The actor travels with the undo so the promotion log records WHO unlocked

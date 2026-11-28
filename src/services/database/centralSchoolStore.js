@@ -410,6 +410,13 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
     safeRead(`${basePath}/studentMaster`, {}),
   ]);
 
+  // দেরিতে প্রমোশন: গন্তব্য সালে আগেই শিক্ষার্থী থাকতে পারে (নতুন ভর্তি, বা আগের
+  // প্রমোশন)। গন্তব্যের রোস্টার এখানে পড়া হয়; নতুন রোলের হিসাব নিচে, রোল
+  // বণ্টনের ঠিক আগে করা হয় — যাতে এই প্রমোশনে যাওয়া শিক্ষার্থীরা নিজেরাই
+  // হিসাব থেকে বাদ যায় (একই শ্রেণি আবার প্রমোশন করলে রোল বদলাবে না)।
+  const targetStudentsNode = await safeRead(`${toYearPath}/students`, {});
+  const targetEnrollment = flattenEnrollmentNode(targetStudentsNode);
+
   // Older rosters may still be keyed by the app ids (`pre`, `c5`) and older rows may
   // sit directly under the class node instead of a শাখা folder: both layouts are
   // normalised so one class/section can never be promoted twice.
@@ -496,6 +503,20 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
   const archiveUpdates = {};
   const masterUpdates = {};
 
+  // নতুন রোল ওই শ্রেণি + শাখায় এখনো থাকা সর্বোচ্চ রোলের পর থেকে শুরু হয় —
+  // ১ থেকে আবার শুরু করলে দুজন শিক্ষার্থীর একই রোল হয়ে যেত। তবে এই প্রমোশনে
+  // যাওয়া শিক্ষার্থীরা হিসাব থেকে বাদ যায়: একই শ্রেণি আবার প্রমোশন করলে
+  // তাদের রোল আগের মতোই থাকে (মেধাক্রম অনুযায়ী), বদলে যায় না।
+  const batchIds = new Set(promotions.map((move) => move.studentMasterId));
+  const existingMaxRoll = new Map();
+  Object.entries(asRecord(targetEnrollment)).forEach(([classId, byStudent]) => {
+    Object.entries(asRecord(byStudent)).forEach(([studentMasterId, row]) => {
+      if (batchIds.has(studentMasterId)) return;
+      const key = `${classId}/${sectionSegment(row?.section)}`;
+      existingMaxRoll.set(key, Math.max(existingMaxRoll.get(key) ?? 0, Number(row?.roll) || 0));
+    });
+  });
+
   // Rolls are re-numbered ১..n per destination class AND শাখা, ordered by each
   // pupil's published final merit position in the class they are leaving. A pupil
   // stays in their own section folder (the default `ক` when they never had one).
@@ -515,7 +536,7 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
           studentMasterId: entry.studentMasterId,
           legacyId: entry.record?.legacyId ?? entry.record?.id ?? entry.studentMasterId,
           classId: targetClassId,
-          roll: index + 1,
+          roll: (existingMaxRoll.get(`${targetClassId}/${section}`) ?? 0) + index + 1,
           section,
           status: 'active',
           year: toYear,
