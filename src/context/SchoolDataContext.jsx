@@ -48,6 +48,7 @@ import {
   backfillMissingPromotionRecords,
   markAutoPromotionDone,
   undoClassPromotion as undoClassPromotionService,
+  lockAllClasses as lockAllClassesService,
   reactivateYear as reactivateYearService,
 } from '../services/database/promotionService.js';
 import { normalizeResultConfig, defaultResultConfig } from '../utils/resultConfig.js';
@@ -930,6 +931,29 @@ export function SchoolDataProvider({ children }) {
   }, [schoolId, activeYear, canWriteTenant, runCloudSave, user?.uid, user?.name, user?.email, user?.role]);
 
   /**
+   * Locks EVERY class of a locked (past) year in one click — the "লক" button.
+   * Only the promotion log changes; pupil data is never touched. The RAW
+   * write right is used (like the undo): a locked year is read-only, yet its
+   * lock-all must still run.
+   */
+  const lockAllClasses = useCallback(async (year = activeYear) => {
+    const sourceYear = normalizeSessionYear(year, activeYear);
+    if (!schoolId || !canWriteTenant) {
+      return { synced: false, locked: [] };
+    }
+    const actor = { uid: user?.uid ?? '', name: user?.name ?? '', email: user?.email ?? '', role: user?.role ?? '' };
+    const result = await runCloudSave(
+      () => lockAllClassesService(schoolId, { year: sourceYear, actor }),
+      { timeoutMs: 30000 },
+    );
+    if (result?.synced) {
+      if (sourceYear === activeYear) setPromotionState(await readPromotionState(schoolId, sourceYear));
+      else setViewedPromotionState(await readPromotionState(schoolId, sourceYear));
+    }
+    return result;
+  }, [schoolId, activeYear, canWriteTenant, runCloudSave, user?.uid, user?.name, user?.email, user?.role]);
+
+  /**
    * Reactivates a year (Topbar year form): the year becomes active, and if it
    * was LOCKED, every completed class of that year goes back to "বাকি" —
    * exactly like before any promotion, nothing stays locked. The unlock is
@@ -1136,6 +1160,7 @@ export function SchoolDataProvider({ children }) {
       viewClassPromotionStatuses,
       viewPromotionDefaultClassId,
       undoClassPromotion,
+      lockAllClasses,
       reactivateYear,
       // sync status
       syncState,
@@ -1209,6 +1234,7 @@ export function SchoolDataProvider({ children }) {
       viewClassPromotionStatuses,
       viewPromotionDefaultClassId,
       undoClassPromotion,
+      lockAllClasses,
       reactivateYear,
       syncState,
       isOnline,

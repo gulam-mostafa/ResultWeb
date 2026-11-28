@@ -703,6 +703,11 @@ export default function AutoPromotionModal({
             <p className="text-[11px] font-normal">
               এই শ্রেণির {toBanglaNumber(currentYear)} সালের তথ্য এখন লক — দেখা যাবে, এডিট করা যাবে না। আবার প্রমোশন করা যাবে না।
             </p>
+            {completion.manuallyLocked ? (
+              <p className="text-[11px] font-normal">
+                এই শ্রেণিটি &quot;লক&quot; বাটনে হাতে লক করা হয়েছে — আগের প্রমোশনের রেকর্ড পাওয়া যায়নি, তাই উত্তীর্ণের সংখ্যা এখানে নেই।
+              </p>
+            ) : null}
             {lastUnlock?.at ? (
               <p className="text-[11px] font-normal">
                 আনলক করেছেন: <b>{lastUnlock.name || lastUnlock.email || lastUnlock.uid || '—'}</b>

@@ -652,6 +652,8 @@ export async function recordPromotionUnlock(schoolId, {
   actor = null,
   mode = 'unlock',
   message = '',
+  /** The completion record the undo just deleted (for a later re-lock). */
+  previousCompletion = null,
 } = {}) {
   const path = promotionMetaPath(schoolId, year);
   if (!path || !classId) return { synced: false };
@@ -661,10 +663,13 @@ export async function recordPromotionUnlock(schoolId, {
     name: actor?.name ?? '',
     email: actor?.email ?? '',
     by: actor?.role ?? '',
-    mode: mode === 'undo' ? 'undo' : mode === 'reactivate' ? 'reactivate' : 'unlock',
+    mode: mode === 'undo' ? 'undo' : mode === 'reactivate' ? 'reactivate' : mode === 'relock' ? 'relock' : mode === 'lock' ? 'lock' : 'unlock',
     message: String(message ?? ''),
     classId,
     year: normalizeSessionYear(year),
+    // The undone record, stashed so the class can be re-locked if it is closed
+    // without a re-promotion. `cleanForCloud` deep-clones it (JSON-safe).
+    previousCompletion: previousCompletion ? cleanForCloud(previousCompletion) : null,
   });
   // Slash-key, same reason as markClassPromotionComplete: a nested object here
   // would replace the whole `unlocks` node and erase other classes' audit rows.
@@ -821,6 +826,10 @@ export async function undoClassPromotion(schoolId, {
       actor,
       mode,
       message: mode === 'undo' ? 'প্রমোশন ফেরানো হয়েছে' : 'শ্রেণি আনলক করা হয়েছে',
+      // Stash the record being deleted: closing the modal without a
+      // re-promotion writes it back (re-lock), so a stray unlock never leaves
+      // a finished class open.
+      previousCompletion: record,
     });
     audit = { synced: auditResult?.synced !== false };
   }
@@ -830,6 +839,98 @@ export async function undoClassPromotion(schoolId, {
     undone: { promoted, retained, graduated: graduatedIds.length },
     warning: safety.warning || '',
   };
+}
+
+
+/**
+ * Re-locks a class that was unlocked but never re-promoted: the completion
+ * record stashed in the unlock audit is written back, so the class shows
+ * সম্পূর্ণ and locked again. The next-year enrolments the undo deleted are NOT
+ * restored — only a real re-promotion re-creates them — so a re-locked class is
+ * locked with its original record, exactly like a class whose next-year data
+ * was deleted by hand. A later unlock + re-promotion heals it fully.
+ * No stash (unlocked before this change, or reactivated years) ⇒ nothing to
+ * restore. Already complete ⇒ no-op.
+ */
+export async function relockClassPromotion(schoolId, { year = '', classId = '', actor = null } = {}) {
+  const yearKey = normalizeSessionYear(year);
+  if (!schoolId || !yearKey || !classId) return { synced: false, relocked: false };
+  const state = await readPromotionState(schoolId, yearKey);
+  if (isClassPromotionComplete(state, classId)) return { synced: true, relocked: false, reason: 'already-complete' };
+  const stashed = unlockHistoryOf(state, classId)
+    .filter((entry) => entry && entry.previousCompletion && entry.previousCompletion.completedAt)
+    .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))[0]?.previousCompletion;
+  if (!stashed) return { synced: false, relocked: false, reason: 'no-stash' };
+  const path = promotionMetaPath(schoolId, yearKey);
+  const restored = await safeUpdate(path, { [`classes/${classId}`]: cleanForCloud(stashed) });
+  if (restored?.synced === false) return { synced: false, relocked: false, reason: 'write-failed' };
+  await recordPromotionUnlock(schoolId, {
+    year: yearKey,
+    classId,
+    actor,
+    mode: 'relock',
+    message: 'আনলক করে প্রমোশন না করায় শ্রেণি আবার লক করা হয়েছে',
+  });
+  return { synced: true, relocked: true };
+}
+
+
+/**
+ * Locks EVERY class of a (locked, past) year in one click — whatever state
+ * each class is in. A class with a stashed record gets it back (true re-lock,
+ * via relockClassPromotion); a class with no record at all gets a hand-locked
+ * record (`manuallyLocked: true`) so it shows সম্পূর্ণ and can no longer be
+ * promoted. Pupil data is NEVER touched — only the promotion log changes —
+ * so a hand-locked class keeps its pupils where they are, and a later
+ * per-class unlock + re-promotion still works normally.
+ */
+export async function lockAllClasses(schoolId, { year = '', actor = null } = {}) {
+  const yearKey = normalizeSessionYear(year);
+  if (!schoolId || !yearKey) return { synced: false, locked: [], relocked: [], manual: [], alreadyLocked: [] };
+  const { students } = await readYearRoster(schoolId, yearKey);
+  const perClass = {};
+  asList(students).forEach((student) => {
+    const classId = toId(student?.classId);
+    if (classId) perClass[classId] = (perClass[classId] ?? 0) + 1;
+  });
+  const locked = [];
+  const relocked = [];
+  const manual = [];
+  const alreadyLocked = [];
+  const now = new Date().toISOString();
+  for (const classId of promotionClassIds()) {
+    const state = await readPromotionState(schoolId, yearKey);
+    if (isClassPromotionComplete(state, classId)) { alreadyLocked.push(classId); continue; }
+    const restored = await relockClassPromotion(schoolId, { year: yearKey, classId, actor });
+    if (restored?.synced && restored?.relocked) { locked.push(classId); relocked.push(classId); continue; }
+    // No stash to restore (unlocked before the stash existed, reactivated, or
+    // never promoted): hand-lock with a record that says so.
+    const path = promotionMetaPath(schoolId, yearKey);
+    const record = cleanForCloud({
+      completedAt: now,
+      manuallyLocked: true,
+      promoted: 0,
+      retained: perClass[classId] ?? 0,
+      graduated: 0,
+      moved: [],
+      graduatedIds: [],
+      destinations: {},
+      auto: false,
+      toYear: nextSessionYear(yearKey),
+      completedBy: actor?.uid ?? '',
+      completedByName: actor?.name ?? '',
+      completedByEmail: actor?.email ?? '',
+    });
+    const written = await safeUpdate(path, { [`classes/${classId}`]: record });
+    if (written?.synced === false) return { synced: false, locked, relocked, manual, alreadyLocked };
+    await recordPromotionUnlock(schoolId, {
+      year: yearKey, classId, actor, mode: 'lock',
+      message: 'সব লক করা হয়েছে — শ্রেণি হাতে লক করা হয়েছে',
+    });
+    locked.push(classId);
+    manual.push(classId);
+  }
+  return { synced: true, locked, relocked, manual, alreadyLocked };
 }
 
 
@@ -892,4 +993,6 @@ export default {
   markAutoPromotionDone,
   autoPromoteClassDecisions,
   undoClassPromotion,
+  relockClassPromotion,
+  lockAllClasses,
 };

@@ -73,6 +73,7 @@ export default function ResultsPage() {
     executePromotion,
     advanceClassYear,
     undoClassPromotion,
+    lockAllClasses,
     viewPromotionState,
     viewPromotionPending,
     isReadOnly,
@@ -106,6 +107,18 @@ export default function ResultsPage() {
   // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, যদি তার
   // গন্তব্য সালটাই সক্রিয় সাল হয় (যেমন ২০২৬ → ২০২৭, যখন ২০২৭ সক্রিয়)।
   const canLatePromote = isReadOnly && String(nextSessionYear(viewYear)) === String(activeYear);
+  // লক করা সালে বাকি শ্রেণি থাকলে "আনলক করুন"-এর বদলে "লক" দেখাবে — এক ক্লিকে
+  // সব শ্রেণি লক হবে। সক্রিয় সালে এই বাটন কখনো আসবে না।
+  const showLockAll = isReadOnly && viewPromotionPending.length > 0;
+  const [lockingAll, setLockingAll] = useState(false);
+  const handleLockAll = async () => {
+    if (lockingAll) return;
+    setLockingAll(true);
+    const result = await lockAllClasses(viewYear);
+    setLockingAll(false);
+    if (result?.synced) toast.success('সব শ্রেণি লক হয়েছে');
+    else toast.error('লক করা যায়নি — আবার চেষ্টা করুন');
+  };
   const [profileTarget, setProfileTarget] = useState(null);
   const [resultTarget, setResultTarget] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -608,9 +621,15 @@ export default function ResultsPage() {
               <button type="button" className="btn-secondary" onClick={() => setPromoting(true)} disabled={(isReadOnly && !canLatePromote) || !hasPendingClass} title={!hasPendingClass ? 'সব শ্রেণির প্রমোশন সম্পূর্ণ — শুধু আনলক করা যাবে' : (canLatePromote ? 'আগের সালের বাকি শ্রেণির প্রমোশন করা যাবে — শিক্ষার্থীরা সক্রিয় সালে যাবে' : (isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined))}>
                 <ArrowUpRight size={15} /> বার্ষিক শ্রেণি উত্তরণ
               </button>
-              <button type="button" className="btn-secondary" onClick={() => { setUnlockOnly(true); setPromoting(true); }} disabled={!hasCompletedClass} title={hasCompletedClass ? 'সম্পূর্ণ শ্রেণির প্রমোশন ফিরিয়ে আনলক করুন' : 'আনলক করার মতো সম্পূর্ণ শ্রেণি নেই — আগে কোনো শ্রেণির প্রমোশন সম্পূর্ণ করুন'}>
-                <Unlock size={15} /> আনলক করুন
-              </button>
+              {showLockAll ? (
+                <button type="button" className="btn-secondary" onClick={handleLockAll} disabled={lockingAll} title="এই সালের সব শ্রেণি একসাথে লক হবে — যেটা যেমনি থাকুক না কেন">
+                  <Lock size={15} /> {lockingAll ? 'লক হচ্ছে…' : 'লক'}
+                </button>
+              ) : (
+                <button type="button" className="btn-secondary" onClick={() => { setUnlockOnly(true); setPromoting(true); }} disabled={!hasCompletedClass} title={hasCompletedClass ? 'সম্পূর্ণ শ্রেণির প্রমোশন ফিরিয়ে আনলক করুন' : 'আনলক করার মতো সম্পূর্ণ শ্রেণি নেই — আগে কোনো শ্রেণির প্রমোশন সম্পূর্ণ করুন'}>
+                  <Unlock size={15} /> আনলক করুন
+                </button>
+              )}
             </>
           )}
         </div>
