@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  ArrowUpRight, Download, FileSpreadsheet, FileText, Lock, Printer, Settings2, Sparkles, Upload,
+  ArrowUpRight, Download, FileSpreadsheet, FileText, Lock, Printer, Settings2, Sparkles, Unlock, Upload,
 } from 'lucide-react';
 
 import { useSchoolData } from '../context/SchoolDataContext.jsx';
@@ -74,6 +74,7 @@ export default function ResultsPage() {
     advanceClassYear,
     undoClassPromotion,
     viewPromotionState,
+    viewPromotionPending,
     isReadOnly,
     isClassLocked,
     saveResultConfig,
@@ -97,6 +98,14 @@ export default function ResultsPage() {
   /** `false` = the single-pupil preview, `true` = the whole class in the print-root. */
   const [bulkPrint, setBulkPrint] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const [unlockOnly, setUnlockOnly] = useState(false);
+  // দেখা সালে অন্তত একটা শ্রেণির প্রমোশন সম্পূর্ণ হলে তবেই আনলক বাটন চালু হবে।
+  const hasCompletedClass = CLASS_LEVELS.some((level) => viewPromotionState?.classes?.[level.id]?.completedAt);
+  // বাকি শ্রেণি না থাকলে (সব সম্পূর্ণ) বার্ষিক উত্তরণের কিছু নেই — শুধু আনলক চলবে।
+  const hasPendingClass = viewPromotionPending.length > 0;
+  // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, যদি তার
+  // গন্তব্য সালটাই সক্রিয় সাল হয় (যেমন ২০২৬ → ২০২৭, যখন ২০২৭ সক্রিয়)।
+  const canLatePromote = isReadOnly && String(nextSessionYear(viewYear)) === String(activeYear);
   const [profileTarget, setProfileTarget] = useState(null);
   const [resultTarget, setResultTarget] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -595,9 +604,14 @@ export default function ResultsPage() {
             <Settings2 size={15} /> বিষয় ও নম্বর সেটিংস
           </button>
           {canManageStudents && (
-            <button type="button" className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly} title={isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined}>
-              <ArrowUpRight size={15} /> বার্ষিক শ্রেণি উত্তরণ
-            </button>
+            <>
+              <button type="button" className="btn-secondary" onClick={() => setPromoting(true)} disabled={(isReadOnly && !canLatePromote) || !hasPendingClass} title={!hasPendingClass ? 'সব শ্রেণির প্রমোশন সম্পূর্ণ — শুধু আনলক করা যাবে' : (canLatePromote ? 'আগের সালের বাকি শ্রেণির প্রমোশন করা যাবে — শিক্ষার্থীরা সক্রিয় সালে যাবে' : (isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined))}>
+                <ArrowUpRight size={15} /> বার্ষিক শ্রেণি উত্তরণ
+              </button>
+              <button type="button" className="btn-secondary" onClick={() => { setUnlockOnly(true); setPromoting(true); }} disabled={!hasCompletedClass} title={hasCompletedClass ? 'সম্পূর্ণ শ্রেণির প্রমোশন ফিরিয়ে আনলক করুন' : 'আনলক করার মতো সম্পূর্ণ শ্রেণি নেই — আগে কোনো শ্রেণির প্রমোশন সম্পূর্ণ করুন'}>
+                <Unlock size={15} /> আনলক করুন
+              </button>
+            </>
           )}
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -937,7 +951,10 @@ export default function ResultsPage() {
 
     <AutoPromotionModal
       open={promoting}
-      onClose={() => setPromoting(false)}
+      onClose={() => { setPromoting(false); setUnlockOnly(false); }}
+      unlockOnly={unlockOnly}
+      isReadOnly={isReadOnly}
+      canLatePromote={canLatePromote}
       students={allStudents}
       defaultClassId={classId}
       allStudents={allStudents}

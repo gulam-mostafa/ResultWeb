@@ -44,6 +44,7 @@ import { dbPaths, normalizeSessionYear } from './dbPaths.js';
 import {
   cleanForCloud,
   safeRead,
+  safeRemove,
   safeSubscribe,
   safeUpdate,
   safeMultiPathUpdate,
@@ -443,13 +444,23 @@ export function checkUndoSafety({
     pupilsWithMarks: [...pupilsWithMarks],
     pupilsWithAttendance: [...pupilsWithAttendance],
   };
-  if (missing.length) return { ...empty, reason: 'pupil-missing', details };
-  if (relocated.length) return { ...empty, reason: 'pupil-relocated', details };
-  if (editedAfterPromotion.length) return { ...empty, reason: 'pupil-edited', details };
-  if (newAdmissions.length) return { ...empty, reason: 'new-admission', details };
-  if (pupilsWithMarks.size) return { ...empty, reason: 'has-marks', details };
-  if (pupilsWithAttendance.size) return { ...empty, reason: 'has-attendance', details };
-  return { ok: true, reason: '', details };
+  // নতুন ভর্তি আর পরের সাল থেকে হারিয়ে যাওয়া (মোছা) শিক্ষার্থী — কোনোটাই
+  // আনলককে আটকায় না। আনলক শুধু প্রমোশনে যাওয়া শিক্ষার্থীদের পরের সালের
+  // ভর্তি মোছে — হাতে ভর্তি হওয়া শিক্ষার্থীকে ছোঁয়ই না, আর মোছা হয়ে যাওয়া
+  // শিক্ষার্থীর মোছার কিছুই নেই (আনলকের লুপ এমনিতেই তাদের এড়িয়ে যায়)।
+  // সোর্স সালের রোস্টার প্রমোশনে কখনো বদলায় না, তাই আবার প্রমোশন দিলে
+  // তারাই নতুন করে যাবে। দুটোই শুধু সতর্কতা হিসেবে জানানো হবে (কমা দিয়ে
+  // জোড়া — যেমন 'new-admission,pupil-missing')। নম্বর/উপস্থিতি/বদলানো
+  // তথ্য/অন্য শ্রেণিতে সরানো এখনো আটকায় — সেগুলো আসলেই ক্ষতি করতো।
+  const warning = [
+    ...(newAdmissions.length ? ['new-admission'] : []),
+    ...(missing.length ? ['pupil-missing'] : []),
+  ].join(',');
+  if (relocated.length) return { ...empty, reason: 'pupil-relocated', details, warning };
+  if (editedAfterPromotion.length) return { ...empty, reason: 'pupil-edited', details, warning };
+  if (pupilsWithMarks.size) return { ...empty, reason: 'has-marks', details, warning };
+  if (pupilsWithAttendance.size) return { ...empty, reason: 'has-attendance', details, warning };
+  return { ok: true, reason: '', details, warning };
 }
 
 /** Bangla message for an undo block reason (used by the UI). */
@@ -650,7 +661,7 @@ export async function recordPromotionUnlock(schoolId, {
     name: actor?.name ?? '',
     email: actor?.email ?? '',
     by: actor?.role ?? '',
-    mode: mode === 'undo' ? 'undo' : 'unlock',
+    mode: mode === 'undo' ? 'undo' : mode === 'reactivate' ? 'reactivate' : 'unlock',
     message: String(message ?? ''),
     classId,
     year: normalizeSessionYear(year),
@@ -780,6 +791,10 @@ export async function undoClassPromotion(schoolId, {
     });
   });
   graduatedIds.forEach((id) => {
+    // আর্কাইভ এখন পরের সালে জমা হয়; আগের প্রমোশনের পুরনো এন্ট্রি আগের সালেও
+    // থাকতে পারে — দুই সাল থেকেই মোছা হয়, না থাকলে কিছুই হয় না।
+    entries[`${toBase}/passedArchive/${id}`] = null;
+    entries[`${toBase}/passedArchive/years/${toYear}/${id}`] = null;
     entries[`${fromBase}/passedArchive/${id}`] = null;
     entries[`${fromBase}/passedArchive/years/${fromYear}/${id}`] = null;
     entries[`${masterBase}/${id}`] = cleanForCloud({
@@ -813,7 +828,37 @@ export async function undoClassPromotion(schoolId, {
     synced: true,
     audit,
     undone: { promoted, retained, graduated: graduatedIds.length },
+    warning: safety.warning || '',
   };
+}
+
+
+/**
+ * Reactivates a LOCKED year: every completed class of that year goes back to
+ * "বাকি", exactly like before any promotion — nothing stays locked. Only the
+ * completion records are deleted; the next year's enrolments stay untouched,
+ * so re-promoting a class re-enrols the same pupils (their rolls are kept by
+ * the promotion writer). Each unlocked class gets an audit row (mode
+ * 'reactivate') so the log still says who reopened the year and when.
+ */
+export async function reactivateYear(schoolId, { year = '', actor = null } = {}) {
+  const yearKey = normalizeSessionYear(year);
+  if (!schoolId || !yearKey) return { synced: false, unlocked: [] };
+  const state = await readPromotionState(schoolId, yearKey);
+  const completed = completedClassIds(state);
+  if (completed.length === 0) return { synced: true, unlocked: [] };
+  const removed = await safeRemove(`${promotionMetaPath(schoolId, yearKey)}/classes`);
+  if (removed?.synced === false) return { synced: false, unlocked: [] };
+  for (const classId of completed) {
+    await recordPromotionUnlock(schoolId, {
+      year: yearKey,
+      classId,
+      actor,
+      mode: 'reactivate',
+      message: 'শিক্ষাবর্ষ আবার সক্রিয় করা হয়েছে — শ্রেণির লক খুলে দেওয়া হয়েছে',
+    });
+  }
+  return { synced: true, unlocked: completed };
 }
 
 export default {

@@ -294,6 +294,8 @@ export function useStudents({
   schoolId,
   schoolRef = null,
   activeYear = '',
+  /** The REAL active year (the context's `activeYear`, not the viewed year) — only `advanceAcademicYear` uses it, to allow a late promotion into the active year. */
+  promotionActiveYear = '',
   canWriteTenant,
   runCloudSave,
   markSynced,
@@ -1214,7 +1216,14 @@ export function useStudents({
       if (!schoolId || !sourceYear || !targetYear || targetYear === sourceYear) {
         return { ...failed, reason: 'invalid-target-year' };
       }
-      if (!canWriteCloud || !canWriteTenant) return { ...failed, reason: 'offline' };
+      // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি সক্রিয় সালে যাবে — দেখা সাল
+      // লক থাকলেও। কনটেক্সট আগেই এটা অনুমোদন করেছে, আর লেখক শুধু গন্তব্য
+      // (সক্রিয়) সালেই লেখে — সোর্স সাল শুধু পড়া হয়। অন্য সব লক-ভিউ লেখা
+      // আগের মতোই বন্ধ থাকবে।
+      const isLatePromotion = promotionActiveYear
+        && Number(sourceYear) < Number(promotionActiveYear)
+        && targetYear === promotionActiveYear;
+      if (!canWriteCloud || (!canWriteTenant && !isLatePromotion)) return { ...failed, reason: 'offline' };
 
       // The source year is only READ here: `promoteSession` writes the destination year,
       // the leavers' archive and — only when the caller asks — the profile's active year.
@@ -1238,7 +1247,7 @@ export function useStudents({
         demoted: result?.demoted ?? 0,
       };
     },
-    [schoolId, year, canWriteCloud, canWriteTenant, runCloudSave, markSynced],
+    [schoolId, year, canWriteCloud, canWriteTenant, runCloudSave, markSynced, promotionActiveYear],
   );
 
   return {

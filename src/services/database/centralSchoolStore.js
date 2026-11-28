@@ -362,6 +362,91 @@ const finalMeritOf = (resultsTree, classId, studentMasterId) => {
   };
 };
 
+
+/**
+ * One term row's total marks. The stored `grandTotal` wins when it exists;
+ * otherwise the total is summed from the row's own subject marks, so a row
+ * written by an older save path (subjects only, no stored total) still ranks
+ * by its real marks. Returns `{ total, hasMarks }`.
+ */
+const termTotalOf = (row) => {
+  const record = asRecord(row);
+  const stored = Number(record.grandTotal ?? record.total);
+  if (Number.isFinite(stored)) return { total: stored, hasMarks: true };
+  let sum = 0;
+  let hasMarks = false;
+  Object.values(asRecord(record.subjects)).forEach((mark) => {
+    const total = Number(mark?.total);
+    if (Number.isFinite(total)) { sum += total; hasMarks = true; return; }
+    const f = Number(mark?.formative);
+    const s = Number(mark?.summative);
+    if (Number.isFinite(f) || Number.isFinite(s)) {
+      sum += (Number.isFinite(f) ? f : 0) + (Number.isFinite(s) ? s : 0);
+      hasMarks = true;
+      return;
+    }
+    if (typeof mark === 'number' && Number.isFinite(mark)) { sum += mark; hasMarks = true; }
+  });
+  return { total: sum, hasMarks };
+};
+
+/** Term weights as percentages summing to 100 (default 15/15/70). */
+const DEFAULT_TERM_WEIGHTS = { term1: 15, term2: 15, annual: 70 };
+const weightsForClass = (configTree, classId) => {
+  const raw = asRecord(asRecord(configTree)?.[classKey(classId)]?.weights);
+  const pick = (key) => {
+    const value = Number(raw[key]);
+    return Number.isFinite(value) && value >= 0 ? value : DEFAULT_TERM_WEIGHTS[key];
+  };
+  const weights = { term1: pick('term1'), term2: pick('term2'), annual: pick('annual') };
+  const sum = weights.term1 + weights.term2 + weights.annual;
+  if (!(sum > 0)) return { ...DEFAULT_TERM_WEIGHTS };
+  return {
+    term1: (weights.term1 / sum) * 100,
+    term2: (weights.term2 / sum) * 100,
+    annual: (weights.annual / sum) * 100,
+  };
+};
+
+/**
+ * One pupil's ANNUAL merit for the COMBINED destination-class ranking:
+ * the previous year's বার্ষিক ফলাফল total marks — the SAME weighted total
+ * (`term1 × w1 + term2 × w2 + annual × wA`) the result sheet and the
+ * promotion modal rank by. (The old code read only the raw annual-term
+ * `grandTotal`, a different number with a different order — that is why the
+ * new rolls looked jumbled next to the modal's merit list.)
+ * The source class is the class the pupil sat in during the source year — for a
+ * newly promoted pupil that is the class being promoted, for a pupil already in
+ * the destination class it is the class they came from (`promotedFromClass`).
+ * Returns `{ total }`, or `null` when the pupil has no marks in any term of
+ * the source year (new admission, or a year with no marks entered) — such a
+ * pupil keeps their current roll.
+ */
+const combinedMeritOf = (resultsTree, sourceClassId, studentMasterId, configTree) => {
+  if (!sourceClassId || !studentMasterId) return null;
+  const classNode = asRecord(resultsTree?.[classKey(sourceClassId)]);
+  const weights = weightsForClass(configTree, sourceClassId);
+  const t1 = termTotalOf(asRecord(classNode.term1)[studentMasterId]);
+  const t2 = termTotalOf(asRecord(classNode.term2)[studentMasterId]);
+  const ta = termTotalOf(asRecord(classNode.final ?? classNode.annual)[studentMasterId]);
+  if (!t1.hasMarks && !t2.hasMarks && !ta.hasMarks) return null;
+  const total = Math.round(
+    ((t1.total * weights.term1 + t2.total * weights.term2 + ta.total * weights.annual) / 100) * 100,
+  ) / 100;
+  return { total };
+};
+
+/**
+ * Combined merit order — TOTAL MARKS of the previous year's annual result
+ * only (no GPA, no per-class merit position, which cannot compare two
+ * classes). Ties fall to the old roll, then name, so the order is stable.
+ */
+const byCombinedMerit = (a, b) => (
+  (b.merit.total - a.merit.total)
+  || (Number(a.record?.roll) || Number.MAX_SAFE_INTEGER) - (Number(b.record?.roll) || Number.MAX_SAFE_INTEGER)
+  || String(a.record?.name ?? '').localeCompare(String(b.record?.name ?? ''), 'bn')
+);
+
 /**
  * Year-end promotion for one school (`sessions/{currentYear}` ➔ `sessions/{nextYear}`).
  *
@@ -370,8 +455,8 @@ const finalMeritOf = (resultsTree, classId, studentMasterId) => {
  *    finished year stays complete history;
  *  - every pupil keeps the same permanent `studentMasterId`; the destination year
  *    receives `sessions/{nextYear}/students/{classId}/{studentMasterId}` with a roll
- *    ordered by the final merit position of the destination class;
- *  - Class-5 leavers are filed into `sessions/{currentYear}/passedArchive/{id}` and
+ *    ordered by the previous year's annual total marks (বার্ষিক ফলাফল);
+ *  - Class-5 leavers are filed into `sessions/{nextYear}/passedArchive/{id}` and
  *    their `studentMaster/{id}` is stamped `overallStatus: 'graduated'`.
  *
  * @param {object} location complete school location (division/district/upazila/schoolId)
@@ -404,10 +489,13 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
   await ensureSchoolYearBuckets(normalized, fromYear);
   await ensureSchoolYearBuckets(normalized, toYear);
 
-  const [studentsNode, resultsTree, masterMap] = await Promise.all([
+  const [studentsNode, resultsTree, masterMap, resultConfigTree] = await Promise.all([
     safeRead(`${fromYearPath}/students`, {}),
     safeRead(`${fromYearPath}/results`, {}),
     safeRead(`${basePath}/studentMaster`, {}),
+    // আগের সালের বার্ষিক ওজন (১৫/১৫/৭০ বা শিক্ষকের নিজের সেটিং) — মেধার
+    // মোট নম্বরটা রেজাল্ট শিটের বার্ষিক ফলাফলের মতোই ওজনযুক্ত হয়।
+    safeRead(`${fromYearPath}/meta/resultConfig`, {}),
   ]);
 
   // দেরিতে প্রমোশন: গন্তব্য সালে আগেই শিক্ষার্থী থাকতে পারে (নতুন ভর্তি, বা আগের
@@ -503,23 +591,28 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
   const archiveUpdates = {};
   const masterUpdates = {};
 
-  // নতুন রোল ওই শ্রেণি + শাখায় এখনো থাকা সর্বোচ্চ রোলের পর থেকে শুরু হয় —
-  // ১ থেকে আবার শুরু করলে দুজন শিক্ষার্থীর একই রোল হয়ে যেত। তবে এই প্রমোশনে
-  // যাওয়া শিক্ষার্থীরা হিসাব থেকে বাদ যায়: একই শ্রেণি আবার প্রমোশন করলে
-  // তাদের রোল আগের মতোই থাকে (মেধাক্রম অনুযায়ী), বদলে যায় না।
+  // গন্তব্য শ্রেণির রোল মেধাক্রমে নতুন করে সাজে — নতুন ব্যাচ + ওই শ্রেণিতে আগে
+  // থেকে থাকা শিক্ষার্থী (যেমন আগের প্রমোশনে একই শ্রেণিতে থেকে যাওয়া শিক্ষার্থী)
+  // সবাই একসঙ্গে মেধা অনুযায়ী রোল পায়। আগে থাকা শিক্ষার্থী আগে এসেছে বলে
+  // সামনের রোল ধরে বসে থাকে না — মেধায় যে এগিয়ে, রোল তারই আগে।
+  // মেধা তথ্য নেই এমন শিক্ষার্থী (যেমন নতুন ভর্তি) তাদের বর্তমান রোলেই থাকে,
+  // তাদের রোল নম্বর ফাঁকা রেখে বাকিদের রোল দেওয়া হয়।
   const batchIds = new Set(promotions.map((move) => move.studentMasterId));
-  const existingMaxRoll = new Map();
+  const existingByClassSection = new Map();
   Object.entries(asRecord(targetEnrollment)).forEach(([classId, byStudent]) => {
     Object.entries(asRecord(byStudent)).forEach(([studentMasterId, row]) => {
       if (batchIds.has(studentMasterId)) return;
       const key = `${classId}/${sectionSegment(row?.section)}`;
-      existingMaxRoll.set(key, Math.max(existingMaxRoll.get(key) ?? 0, Number(row?.roll) || 0));
+      existingByClassSection.set(key, [...(existingByClassSection.get(key) ?? []), { studentMasterId, record: row }]);
     });
   });
+  // গন্তব্য শ্রেণিতে আগে থেকে থাকা শিক্ষার্থীদের রোল বদলে থাকলে শুধু সেই রোলটাই
+  // আপডেট হয় (পুরো রো নয়) — একই atomic লেখায়, প্রমোশনের সঙ্গে।
+  const existingRollUpdates = {};
 
-  // Rolls are re-numbered ১..n per destination class AND শাখা, ordered by each
-  // pupil's published final merit position in the class they are leaving. A pupil
-  // stays in their own section folder (the default `ক` when they never had one).
+  // Rolls are re-numbered ১..n per destination class AND শাখা, ordered by the
+  // combined merit of everyone in that class+section. A pupil stays in their
+  // own section folder (the default `ক` when they never had one).
   CLASS_ORDER.forEach((targetClassId) => {
     const inClass = promotions.filter((move) => move.targetClassId === targetClassId);
     if (inClass.length === 0) return;
@@ -530,13 +623,46 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       bySection.set(section, [...(bySection.get(section) ?? []), move]);
     });
     bySection.forEach((bucket, section) => {
-      orderByMeritAndRoll(bucket, resultsTree).forEach((entry, index) => {
+      const existing = existingByClassSection.get(`${targetClassId}/${section}`) ?? [];
+      // মেধা তথ্য আছে এমন আগের শিক্ষার্থীরা নতুন ব্যাচের সঙ্গে একসঙ্গে সাজে।
+      const rankedExisting = [];
+      const fixedRolls = new Set();
+      existing.forEach((entry) => {
+        const fromClass = entry.record?.promotedFromClass || entry.record?.previousClassId || '';
+        const merit = String(entry.record?.promotedFromYear ?? '') === String(fromYear)
+          ? combinedMeritOf(resultsTree, fromClass, entry.studentMasterId, resultConfigTree)
+          : null;
+        if (merit) rankedExisting.push({ ...entry, sourceClassId: fromClass, merit });
+        else fixedRolls.add(Number(entry.record?.roll) || 0);
+      });
+      const rankedBatch = bucket.map((entry) => ({
+        ...entry,
+        merit: combinedMeritOf(resultsTree, entry.sourceClassId, entry.studentMasterId, resultConfigTree),
+      }));
+      const ranked = [...rankedExisting, ...rankedBatch].sort((a, b) => {
+        if (a.merit && b.merit) return byCombinedMerit(a, b);
+        if (Boolean(a.merit) !== Boolean(b.merit)) return a.merit ? -1 : 1;
+        const rollDiff = (Number(a.record?.roll) || 0) - (Number(b.record?.roll) || 0);
+        if (rollDiff !== 0) return rollDiff;
+        return String(a.record?.name ?? '').localeCompare(String(b.record?.name ?? ''), 'bn');
+      });
+      // রোল ১ থেকে শুরু; মেধা তথ্য নেই এমন শিক্ষার্থীর রোল নম্বর ফাঁকা রাখা হয়।
+      const usedRolls = new Set([...fixedRolls].filter((roll) => roll > 0));
+      let nextRoll = 1;
+      const newRollOf = new Map();
+      ranked.forEach((entry) => {
+        while (usedRolls.has(nextRoll)) nextRoll += 1;
+        newRollOf.set(entry.studentMasterId, nextRoll);
+        usedRolls.add(nextRoll);
+        nextRoll += 1;
+      });
+      rankedBatch.forEach((entry) => {
         nextYearClassUpdates[`${targetClassId}/${section}/${entry.studentMasterId}`] = cleanForCloud({
           ...entry.record,
           studentMasterId: entry.studentMasterId,
           legacyId: entry.record?.legacyId ?? entry.record?.id ?? entry.studentMasterId,
           classId: targetClassId,
-          roll: (existingMaxRoll.get(`${targetClassId}/${section}`) ?? 0) + index + 1,
+          roll: newRollOf.get(entry.studentMasterId),
           section,
           status: 'active',
           year: toYear,
@@ -554,10 +680,19 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
           updatedAt: now,
         });
       });
+      rankedExisting.forEach((entry) => {
+        const newRoll = newRollOf.get(entry.studentMasterId);
+        const oldRoll = Number(entry.record?.roll) || 0;
+        if (newRoll && newRoll !== oldRoll) {
+          existingRollUpdates[`${targetClassId}/${section}/${entry.studentMasterId}`] = newRoll;
+        }
+      });
     });
   });
 
-  // Class-5 leavers: this year's `passedArchive`, never a rewrite of the roster.
+  // Class-5 leavers: the NEXT year's `passedArchive`, never a rewrite of the roster.
+  // `passedYear` stays the source year (the year they passed — the backfill and the
+  // undo safety check filter on it); `archivedYear` is the archive node it lives in.
   graduates.forEach((entry) => {
     const merit = finalMeritOf(resultsTree, entry.sourceClassId, entry.studentMasterId);
     archiveUpdates[entry.studentMasterId] = cleanForCloud({
@@ -567,7 +702,7 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       classId: entry.sourceClassId,
       status: 'passed',
       passedYear: fromYear,
-      archivedYear: fromYear,
+      archivedYear: toYear,
       archivedFromClass: entry.sourceClassId,
       meritPosition: merit.meritPosition,
       gpa: merit.gpa,
@@ -595,7 +730,7 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
         currentClassId: 'archived',
         overallStatus: 'graduated',
         graduatedYear: fromYear,
-        archivedYear: fromYear,
+        archivedYear: toYear,
       },
     });
   });
@@ -614,9 +749,19 @@ export async function promoteStudentsToNextYear(location, currentYear, nextYear,
       primaryPatch[`${toYear}/students/${key}`] = value;
     });
   }
+  // আগে থেকে থাকা শিক্ষার্থীদের বদলে যাওয়া রোল — শুধু রোল ফিল্ডটাই লেখা হয়।
+  if (Object.keys(existingRollUpdates).length > 0) {
+    Object.entries(existingRollUpdates).forEach(([key, newRoll]) => {
+      primaryPatch[`${toYear}/students/${key}/roll`] = newRoll;
+    });
+  }
   if (Object.keys(archiveUpdates).length > 0) {
     Object.entries(archiveUpdates).forEach(([key, value]) => {
-      primaryPatch[`${fromYear}/passedArchive/${key}`] = value;
+      primaryPatch[`${toYear}/passedArchive/${key}`] = value;
+      // আগের প্রমোশনে একই শিক্ষার্থীর আগের সালের আর্কাইভে এন্ট্রি থাকলে (যেমন
+      // সাল আবার সক্রিয় করে আবার প্রমোশন করলে) সেটা মুছে যায় — নইলে দুই সালে
+      // দুটো আর্কাইভ জমে যেত।
+      primaryPatch[`${fromYear}/passedArchive/${key}`] = null;
     });
   }
   const primaryResults = Object.keys(primaryPatch).length

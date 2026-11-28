@@ -161,7 +161,7 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
           </p>
           {isReadOnly ? (
             <p className="border-b border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">
-              {toBanglaNumber(shownYear)} সালের তথ্য দেখছেন — এই সালটি লক করা, কিছুই এডিট করা যাবে না। সক্রিয় সালে ফিরতে "সক্রিয়" সালটি বাছুন।
+              {toBanglaNumber(shownYear)} সালের তথ্য দেখছেন — এই সালটি লক করা, কিছুই এডিট করা যাবে না। সক্রিয় সালে ফিরতে "সক্রিয়" সালটি বাছুন, অথবা নিচে এই সালটি লিখে সক্রিয় করলে সব শ্রেণির লক খুলে যাবে।
             </p>
           ) : null}
           <ul className="max-h-56 overflow-y-auto py-1 scroll-thin">
@@ -199,10 +199,10 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
             })}
           </ul>
 
-          {canManage && !isReadOnly ? (
+          {canManage ? (
             <form onSubmit={create} className="space-y-2 border-t border-slate-100 bg-slate-50/70 p-2.5">
               <label className="block">
-                <span className="label-base">নতুন বছরের বছর লিখুন</span>
+                <span className="label-base">{isReadOnly ? 'শিক্ষাবর্ষ লিখুন' : 'নতুন বছরের বছর লিখুন'}</span>
                 <input
                   type="number"
                   inputMode="numeric"
@@ -217,8 +217,11 @@ function AcademicYearSelector({ schoolId, activeYear, viewYear, isReadOnly, canM
               </label>
               <button type="submit" disabled={creating} className="btn-primary btn-sm w-full">
                 {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-                {creating ? 'শুরু হচ্ছে…' : '+ নতুন শিক্ষাবর্ষ শুরু করুন'}
+                {creating ? 'শুরু হচ্ছে…' : (isReadOnly ? 'সক্রিয় করুন' : '+ নতুন শিক্ষাবর্ষ শুরু করুন')}
               </button>
+              {isReadOnly ? (
+                <p className="text-[11px] font-semibold text-slate-500">লক করা সাল লিখে সক্রিয় করলে ওই সালের সব শ্রেণির লক খুলে যাবে — একদম আগের মতো হবে।</p>
+              ) : null}
               {message ? (
                 <p role="alert" className="text-[11px] font-semibold text-rose-600">
                   {message}
@@ -359,7 +362,7 @@ function AdminNotificationBell({ schoolId, user, pending, noticeCount }) {
 
 export default function Topbar({ onMenuClick, title, subtitle }) {
   const { user, role, canApproveTeachers } = useAuth();
-  const { notices, schoolProfile, saveProfile, viewYear, setViewYear, isReadOnly } = useSchoolData();
+  const { notices, schoolProfile, saveProfile, viewYear, setViewYear, isReadOnly, reactivateYear } = useSchoolData();
   const navigate = useNavigate();
   /** Student search — Enter jumps to the roster with that query applied. */
   const [search, setSearch] = useState('');
@@ -382,6 +385,10 @@ export default function Topbar({ onMenuClick, title, subtitle }) {
   const changeYear = async (year) => {
     if (!canManageYear) return false;
     const sessionResult = await ensureSession(schoolId, year, { activatedBy: user?.uid || '' });
+    // লক করা সাল আবার সক্রিয় করলে আগে সব লক খুলে যায়: ওই সালের সব সম্পূর্ণ
+    // শ্রেণি "বাকি" হয়ে যায় — একদম আগের মতো, কিছুই লক থাকে না। লক না থাকলে
+    // এটা কিছুই করে না। আনলক ব্যর্থ হলেও সক্রিয় করা আটকাবে না।
+    await reactivateYear(year);
     const profileResult = await saveProfile({ academicYear: year });
     return Boolean(sessionResult?.synced && profileResult?.synced);
   };

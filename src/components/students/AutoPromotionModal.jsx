@@ -248,9 +248,16 @@ export default function AutoPromotionModal({
     setUndoBusy(false);
     setUndoArmed(false);
     if (result?.synced) {
-      setUndoMessage(mode === 'undo'
+      const base = mode === 'undo'
         ? 'প্রমোশন ফেরানো হয়েছে — শ্রেণিটি আবার "প্রমোশন হয়নি" অবস্থায় ফিরেছে, পরের সালের ভর্তি ও আর্কাইভ মুছে গেছে। সক্রিয় সাল যেমন ছিল তেমনই আছে।'
-        : 'শ্রেণিটি আনলক করা হয়েছে — এখন আবার প্রমোশন করা যাবে। পরের সালে এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে গেছে; সক্রিয় সাল যেমন ছিল তেমনই আছে।');
+        : 'শ্রেণিটি আনলক করা হয়েছে — এখন আবার প্রমোশন করা যাবে। পরের সালে এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে গেছে; সক্রিয় সাল যেমন ছিল তেমনই আছে।';
+      // নতুন ভর্তি আর মোছা শিক্ষার্থী — কোনোটাই আনলককে আটকায় না।
+      const warning = String(result?.warning ?? '');
+      const notes = [
+        ...(warning.includes('new-admission') ? ['পরের সালে নতুন ভর্তি আছে — তারা যেমন আছে তেমনই থাকবে।'] : []),
+        ...(warning.includes('pupil-missing') ? ['পরের সালের কয়েকজন শিক্ষার্থীর তথ্য পাওয়া যায়নি (মোছা হয়ে থাকতে পারে) — আবার প্রমোশন দিলে তারা নতুন করে যাবে।'] : []),
+      ];
+      setUndoMessage(base + (notes.length ? ' ' + notes.join(' ') : ''));
       return;
     }
     setUndoMessage(result?.message || 'প্রমোশন ফেরানো যায়নি — আবার চেষ্টা করুন।');
@@ -712,7 +719,7 @@ export default function AutoPromotionModal({
                   <p className="mt-1">
                     পরের সালে ({toBanglaNumber(nextYear)}) এই শ্রেণির জন্য তৈরি ভর্তি ও আর্কাইভ মুছে যাবে, আর শ্রেণিটি আবার &quot;প্রমোশন হয়নি&quot; হবে — এরপর একই নিয়মে আবার প্রমোশন করা যাবে। সক্রিয় সাল যেমন আছে তেমনই থাকবে।
                     কে আনলক করলেন (নাম, ইমেইল ও সময়) প্রমোশন রেকর্ডে সংরক্ষিত হবে।
-                    পরের সালে নতুন ভর্তি হয়ে থাকলে বা কারো নম্বর/উপস্থিতি লেখা হয়ে থাকলে আনলক করা যাবে না।
+                    পরের সালে কারো নম্বর বা উপস্থিতি লেখা হয়ে থাকলে আনলক করা যাবে না। নতুন ভর্তি থাকলে সমস্যা নেই — তারা যেমন আছে তেমনই থাকবে। পরের সালের তথ্য মোছা হয়ে থাকলেও সমস্যা নেই — আবার প্রমোশন দিলে ওই শিক্ষার্থীরা নতুন করে যাবে।
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button type="button" className="btn-primary btn-sm" onClick={() => runUndo(undoMode)} disabled={undoBusy}>
@@ -743,7 +750,7 @@ export default function AutoPromotionModal({
         <p
           role="status"
           className={`rounded-lg p-2.5 text-[12px] font-semibold ${
-            undoMessage.startsWith('প্রমোশন ফেরানো হয়েছে')
+            (undoMessage.startsWith('প্রমোশন ফেরানো হয়েছে') || undoMessage.startsWith('শ্রেণিটি আনলক করা হয়েছে'))
               ? 'bg-emerald-50 text-emerald-800'
               : 'bg-rose-50 text-rose-700'
           }`}
@@ -770,8 +777,8 @@ export default function AutoPromotionModal({
         </div>
       </div>
       <div className="max-h-80 overflow-auto rounded-xl border border-slate-200">
-        <table className="table-base min-w-[980px]">
-          <thead><tr><th>মেধাক্রম</th><th>রোল / নাম</th><th>শাখা</th><th>উৎস</th><th>ফলাফল</th><th>সিদ্ধান্ত</th><th>নতুন শাখা</th></tr></thead>
+        <table className="table-base min-w-[1060px]">
+          <thead><tr><th>মেধাক্রম</th><th>রোল / নাম</th><th>শাখা</th><th>উৎস</th><th>ফলাফল</th><th>বার্ষিক ফলাফল</th><th>সিদ্ধান্ত</th><th>নতুন শাখা</th></tr></thead>
           <tbody>{visibleRows.map((row, index) => {
             const status = statusOf(row.student);
             const result = row.result;
@@ -805,6 +812,12 @@ export default function AutoPromotionModal({
                   aria-label={`${row.student.name} এর ফলাফল`}
                 >{result.hasAnyMark ? `${result.grade} · GPA ${result.gpa?.toFixed(2)}` : 'ফলাফল নেই'}</button>
               </td>
+              <td className="font-bold">
+                {/* বার্ষিক ফলাফল: তিন প্রান্তিকের ওজনযুক্ত মোট নম্বর (১৫+১৫+৭০) —
+                    বার্ষিক মূল্যায়নের (একক প্রান্তিকের) মোট নয়। `row.total` মেধাক্রমের
+                    হিসাব থেকেই আসে, তাই এই নম্বর আর মেধাক্রম সবসময় মিলবে। */}
+                {result.hasAnyMark ? toBanglaNumber(row.total) : '—'}
+              </td>
               <td><select className="input-base min-w-40 py-1.5 text-xs" value={status} disabled={isClassComplete} onChange={(event) => setOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}><option value={STATUS_PASS}>{isGraduating ? 'উত্তীর্ণ (আর্কাইভ)' : 'উত্তীর্ণ'}</option><option value={STATUS_FAIL}>এই ক্লাসেই থাকুক</option></select></td>
               <td><select className="input-base min-w-28 py-1.5 text-xs" value={sectionOf(row.student)} disabled={isClassComplete} aria-label={`${row.student.name} এর নতুন শাখা`} onChange={(event) => setSectionOverrides((previous) => ({ ...previous, [row.student.id]: event.target.value }))}>{sectionOptionsFor(sectionOf(row.student)).map((option) => <option key={option} value={option}>{option}</option>)}</select></td>
             </tr>;
@@ -814,7 +827,7 @@ export default function AutoPromotionModal({
       </div>
       {monthFilter ? <p className="rounded-lg bg-amber-50 p-2.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">ফিল্টার শুধু তালিকা দেখার জন্য — “উত্তরণ কার্যকর” চাপলে শ্রেণির <b>সব {toBanglaNumber(ranked.length)} জন</b> শিক্ষার্থীর সিদ্ধান্তই মেধাক্রম অনুযায়ী সংরক্ষিত হবে।</p> : null}
 
-      <p className="text-xs text-slate-500"><b>মেধাক্রম</b> অনুযায়ী ১ম শিক্ষার্থী সবার উপরে; সব শাখার শিক্ষার্থীরা একসাথে দেখানো হয়েছে এবং প্রত্যেকের বর্তমান শাখা আলাদা কলামে লেখা আছে। <b>উৎস</b> কলামে <b>নতুন উত্তীর্ণ</b> মানে শিক্ষার্থী আগের শ্রেণি থেকে এসেছে, আর <b>এই শ্রেণিতেই ছিল</b> মানে সে আগে থেকেই এই শ্রেণিতে ছিল (যেমন ২য় শ্রেণিতে আগের শিক্ষার্থীদের সঙ্গে ১ম থেকে উত্তীর্ণরা যোগ দিলে)। ডিফল্টভাবে পাস করা শিক্ষার্থী <b>উত্তীর্ণ</b> ও ফেল করা শিক্ষার্থী <b>এই ক্লাসেই থাকুক</b> — যেকোনো শিক্ষার্থীর সিদ্ধান্ত বদলানো যাবে। “শিক্ষার্থী সংখ্যা / মেধাক্রম” ঘরে শুধু একটি সংখ্যা (যেমন <b>৩০</b>) দিলে প্রথম ততজন নির্বাচিত শাখায় যাবে; আর <b>১-৩০</b> বা <b>২০-৩০</b> এর মতো রেঞ্জ দিলে ঠিক ওই মেধাক্রমের শিক্ষার্থীরা নির্বাচিত শাখায় এবং বাকিরা অন্য শাখায় (<b>{otherSection}</b>) যাবে। ডান দিকের <b>নতুন শাখা</b> কলামে যেকোনো শিক্ষার্থীর শাখা আলাদাভাবে বদলানো যাবে এবং সেই পরিবর্তন বণ্টন নিয়মকে অগ্রাহ্য করে “উত্তরণ কার্যকর” এ সংরক্ষিত হবে। <b>উত্তরণের মাস</b> ও <b>ক্রম</b> শুধু তালিকা দেখার জন্য — উত্তরণ ও রোল বণ্টন সর্বদা মেধাক্রম অনুযায়ী হয়। উত্তরণের ৩ মাস (৯০ দিন) পর্যন্ত শিক্ষার্থীর নামের পাশে <b>মাস ও বছর</b> ব্যাজ দেখা যায়, এরপর ব্যাজটি সম্পূর্ণভাবে সরে যায়। ৫ম শ্রেণির উত্তীর্ণরা বছরভিত্তিক <b>passedArchive</b>-এ যাবে।</p>
+      <p className="text-xs text-slate-500"><b>মেধাক্রম</b> অনুযায়ী ১ম শিক্ষার্থী সবার উপরে; <b>বার্ষিক ফলাফল</b> কলামে তিন প্রান্তিকের ওজনযুক্ত মোট নম্বর (১৫+১৫+৭০) দেখানো হয়েছে — মেধাক্রম এই নম্বরের ভিত্তিতেই হয়। সব শাখার শিক্ষার্থীরা একসাথে দেখানো হয়েছে এবং প্রত্যেকের বর্তমান শাখা আলাদা কলামে লেখা আছে। <b>উৎস</b> কলামে <b>নতুন উত্তীর্ণ</b> মানে শিক্ষার্থী আগের শ্রেণি থেকে এসেছে, আর <b>এই শ্রেণিতেই ছিল</b> মানে সে আগে থেকেই এই শ্রেণিতে ছিল (যেমন ২য় শ্রেণিতে আগের শিক্ষার্থীদের সঙ্গে ১ম থেকে উত্তীর্ণরা যোগ দিলে)। ডিফল্টভাবে পাস করা শিক্ষার্থী <b>উত্তীর্ণ</b> ও ফেল করা শিক্ষার্থী <b>এই ক্লাসেই থাকুক</b> — যেকোনো শিক্ষার্থীর সিদ্ধান্ত বদলানো যাবে। “শিক্ষার্থী সংখ্যা / মেধাক্রম” ঘরে শুধু একটি সংখ্যা (যেমন <b>৩০</b>) দিলে প্রথম ততজন নির্বাচিত শাখায় যাবে; আর <b>১-৩০</b> বা <b>২০-৩০</b> এর মতো রেঞ্জ দিলে ঠিক ওই মেধাক্রমের শিক্ষার্থীরা নির্বাচিত শাখায় এবং বাকিরা অন্য শাখায় (<b>{otherSection}</b>) যাবে। ডান দিকের <b>নতুন শাখা</b> কলামে যেকোনো শিক্ষার্থীর শাখা আলাদাভাবে বদলানো যাবে এবং সেই পরিবর্তন বণ্টন নিয়মকে অগ্রাহ্য করে “উত্তরণ কার্যকর” এ সংরক্ষিত হবে। <b>উত্তরণের মাস</b> ও <b>ক্রম</b> শুধু তালিকা দেখার জন্য — উত্তরণ ও রোল বণ্টন সর্বদা মেধাক্রম অনুযায়ী হয়। উত্তরণের ৩ মাস (৯০ দিন) পর্যন্ত শিক্ষার্থীর নামের পাশে <b>মাস ও বছর</b> ব্যাজ দেখা যায়, এরপর ব্যাজটি সম্পূর্ণভাবে সরে যায়। ৫ম শ্রেণির উত্তীর্ণরা বছরভিত্তিক <b>passedArchive</b>-এ যাবে।</p>
 
       <div className="flex justify-end gap-2">
         <button className="btn-secondary" onClick={onClose}>বাতিল</button>

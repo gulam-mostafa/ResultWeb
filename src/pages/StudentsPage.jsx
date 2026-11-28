@@ -44,6 +44,8 @@ export default function StudentsPage() {
   const [unlockOnly, setUnlockOnly] = useState(false);
   // দেখা সালে অন্তত একটা শ্রেণির প্রমোশন সম্পূর্ণ হলে তবেই আনলক বাটন চালু হবে।
   const hasCompletedClass = CLASS_LEVELS.some((level) => viewPromotionState?.classes?.[level.id]?.completedAt);
+  // বাকি শ্রেণি না থাকলে (সব সম্পূর্ণ) বার্ষিক উত্তরণের কিছু নেই — শুধু আনলক চলবে।
+  const hasPendingClass = viewPromotionPending.length > 0;
   // দেরিতে প্রমোশন: আগের সালের বাকি শ্রেণি এখনো প্রমোশন করা যাবে, যদি তার
   // গন্তব্য সালটাই সক্রিয় সাল হয় (যেমন ২০২৬ → ২০২৭, যখন ২০২৭ সক্রিয়)।
   const canLatePromote = isReadOnly && String(nextSessionYear(viewYear)) === String(activeYear);
@@ -342,7 +344,7 @@ export default function StudentsPage() {
           <Upload size={15} /> {parsing ? 'যাচাই হচ্ছে…' : 'এক্সেল আপলোড'}
           <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={parsing || isReadOnly} aria-label="শিক্ষার্থী এক্সেল আপলোড" />
         </label>
-        <button className="btn-secondary" onClick={() => setPromoting(true)} disabled={isReadOnly && !canLatePromote} title={canLatePromote ? 'আগের সালের বাকি শ্রেণির প্রমোশন করা যাবে — শিক্ষার্থীরা সক্রিয় সালে যাবে' : (isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined)}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
+        <button className="btn-secondary" onClick={() => setPromoting(true)} disabled={(isReadOnly && !canLatePromote) || !hasPendingClass} title={!hasPendingClass ? 'সব শ্রেণির প্রমোশন সম্পূর্ণ — শুধু আনলক করা যাবে' : (canLatePromote ? 'আগের সালের বাকি শ্রেণির প্রমোশন করা যাবে — শিক্ষার্থীরা সক্রিয় সালে যাবে' : (isReadOnly ? 'এই সালটি লক করা — প্রমোশন করা যাবে না' : undefined))}><ArrowUpRight size={15} /> বার্ষিক উত্তরণ</button>
         <button className="btn-secondary" onClick={() => { setUnlockOnly(true); setPromoting(true); }} disabled={!hasCompletedClass} title={hasCompletedClass ? 'সম্পূর্ণ শ্রেণির প্রমোশন ফিরিয়ে আনলক করুন' : 'আনলক করার মতো সম্পূর্ণ শ্রেণি নেই — আগে কোনো শ্রেণির প্রমোশন সম্পূর্ণ করুন'}><Unlock size={15} /> আনলক করুন</button>
         <button className="btn-primary" onClick={() => setAdding(true)} disabled={isReadOnly || isClassLocked(tab)} title={isClassLocked(tab) ? 'এই শ্রেণির প্রমোশন সম্পূর্ণ হয়েছে — নতুন ভর্তি নেওয়া যাবে না' : undefined}><UserPlus size={15} /> নতুন ভর্তি</button>
       </>}

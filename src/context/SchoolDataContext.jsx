@@ -48,6 +48,7 @@ import {
   backfillMissingPromotionRecords,
   markAutoPromotionDone,
   undoClassPromotion as undoClassPromotionService,
+  reactivateYear as reactivateYearService,
 } from '../services/database/promotionService.js';
 import { normalizeResultConfig, defaultResultConfig } from '../utils/resultConfig.js';
 import { flushOfflineQueue, pendingOfflineCount } from '../services/database/dbFallback.js';
@@ -616,8 +617,12 @@ export function SchoolDataProvider({ children }) {
     schoolRef,
     // The hooks read and write the VIEWED year; in a past year the effective
     // write right is off, so every cloud write is refused at the hook level
-    // and every local write at the `updateDataset` gate above.
+    // and every local write at the `updateDataset` gate above. The ONE
+    // exception is a late promotion (a past year's pending class into the
+    // ACTIVE year) — the hook needs the real active year to allow exactly
+    // that, so it is passed separately and never changes what the hook reads.
     activeYear: viewYear,
+    promotionActiveYear: activeYear,
     canWriteTenant: effectiveCanWriteTenant,
     runCloudSave,
     markSynced,
@@ -924,6 +929,28 @@ export function SchoolDataProvider({ children }) {
     return result;
   }, [schoolId, activeYear, canWriteTenant, runCloudSave, user?.uid, user?.name, user?.email, user?.role]);
 
+  /**
+   * Reactivates a year (Topbar year form): the year becomes active, and if it
+   * was LOCKED, every completed class of that year goes back to "বাকি" —
+   * exactly like before any promotion, nothing stays locked. The unlock is
+   * best-effort: a failed unlock never blocks the activation itself.
+   */
+  const reactivateYear = useCallback(async (year) => {
+    const yearKey = normalizeSessionYear(year, activeYear);
+    if (!schoolId || !yearKey || !canWriteTenant) return { synced: false, unlocked: [] };
+    const actor = { uid: user?.uid ?? '', name: user?.name ?? '', email: user?.email ?? '', role: user?.role ?? '' };
+    const result = await runCloudSave(
+      () => reactivateYearService(schoolId, { year: yearKey, actor }),
+      { timeoutMs: 15000 },
+    );
+    if (result?.synced) {
+      const fresh = await readPromotionState(schoolId, yearKey);
+      if (yearKey === activeYear) setPromotionState(fresh);
+      else setViewedPromotionState(fresh);
+    }
+    return result ?? { synced: false, unlocked: [] };
+  }, [schoolId, activeYear, canWriteTenant, runCloudSave, user?.uid, user?.name, user?.email, user?.role]);
+
   /** Classes still waiting for promotion (with pupils, no completion record). */
   const promotionPending = useMemo(
     () => pendingPromotionClasses(promotionState, classStudentCounts(dataset.students)),
@@ -1109,6 +1136,7 @@ export function SchoolDataProvider({ children }) {
       viewClassPromotionStatuses,
       viewPromotionDefaultClassId,
       undoClassPromotion,
+      reactivateYear,
       // sync status
       syncState,
       isOnline,
@@ -1181,6 +1209,7 @@ export function SchoolDataProvider({ children }) {
       viewClassPromotionStatuses,
       viewPromotionDefaultClassId,
       undoClassPromotion,
+      reactivateYear,
       syncState,
       isOnline,
       hydrating,
